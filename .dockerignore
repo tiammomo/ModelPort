@@ -1,0 +1,8 @@
+target
+.git
+.github
+.env
+.env.*
+!.env.example
+.modelport
+*.log

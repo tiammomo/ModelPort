@@ -1,0 +1,26 @@
+[Unit]
+Description=ModelPort local Claude model gateway
+Documentation=https://github.com/tiammomo/ModelPort
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/modelport/modelport.env
+Environment=RUST_LOG=model_port=info,tower_http=info
+ExecStart=/usr/local/bin/model-port
+Restart=always
+RestartSec=3
+
+DynamicUser=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

@@ -16,6 +16,7 @@
 - 请求体大小限制、并发请求限制、响应体大小限制。
 - Mimo 第三方地址 `BASE_URL=https://w.ciykj.cn/v1` 和模型 `mimo-v2.5-pro` 已适配。
 - 覆盖模型路由、OpenAI-compatible 转换、上游 401、流式错误、请求过大的自动化测试。
+- 提供快速启动脚本、doctor 自检、Docker Compose、systemd 模板和 GitHub Actions CI。
 
 投产边界也要明确：
 
@@ -23,7 +24,7 @@
 - 适合在内网小团队前面加反向代理后使用。
 - 不建议直接暴露到公网。
 - 暂不作为多租户 SaaS 网关使用，因为它不做用户体系、计费、额度、审计留存和细粒度 RBAC。
-- 真实可用还取决于上游 API key。当前本机 `.env` 中 `MIMO_OPENAI_API_KEY` 仍是占位符，必须换成真实 key。
+- 真实可用还取决于上游 API key。仓库示例里的 `MIMO_OPENAI_API_KEY` 是占位符，必须换成真实 key。
 
 ## 项目定位
 
@@ -132,7 +133,13 @@ ModelPort listening on http://127.0.0.1:17878
 
 ### 4. 验证服务
 
-推荐使用内置冒烟测试：
+推荐先跑完整本机自检：
+
+```bash
+scripts/doctor.sh
+```
+
+再使用内置冒烟测试：
 
 ```bash
 scripts/smoke-test.sh
@@ -141,6 +148,7 @@ scripts/smoke-test.sh
 上面只验证本机网关和鉴权。填入真实 `MIMO_OPENAI_API_KEY` 后，可以验证真实上游模型回复：
 
 ```bash
+scripts/doctor.sh --upstream
 scripts/smoke-test.sh --upstream
 ```
 
@@ -301,6 +309,23 @@ scripts/dev.sh
 
 需要退出窗口但保持服务运行时，按 `Ctrl-b` 再按 `d`。
 
+### Docker Compose 运行
+
+适合把 ModelPort 固定成一个本机服务。先确认 `.env` 中已经填好真实 token 和上游 key，然后运行：
+
+```bash
+docker compose up -d --build
+docker compose logs -f modelport
+```
+
+Compose 会把容器内监听地址改成 `0.0.0.0:17878`，但宿主机只暴露到 `127.0.0.1:17878`，便于 VS Code Claude 本机访问。
+
+停止：
+
+```bash
+docker compose down
+```
+
 ### systemd 运行
 
 如果是标准 Linux 主机，可以编译二进制后用 systemd：
@@ -309,29 +334,10 @@ scripts/dev.sh
 cargo build --release
 sudo install -m 0755 target/release/model-port /usr/local/bin/model-port
 sudo mkdir -p /etc/modelport
-sudo cp .env /etc/modelport/modelport.env
+sudo cp deploy/systemd/modelport.env.example /etc/modelport/modelport.env
+sudo nano /etc/modelport/modelport.env
 sudo chmod 600 /etc/modelport/modelport.env
-```
-
-创建 `/etc/systemd/system/modelport.service`：
-
-```ini
-[Unit]
-Description=ModelPort local Claude model gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=/etc/modelport/modelport.env
-Environment=RUST_LOG=model_port=info,tower_http=info
-ExecStart=/usr/local/bin/model-port
-Restart=always
-RestartSec=3
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
+sudo cp deploy/systemd/modelport.service /etc/systemd/system/modelport.service
 ```
 
 启动：
@@ -342,6 +348,8 @@ sudo systemctl enable --now modelport
 sudo systemctl status modelport
 journalctl -u modelport -f
 ```
+
+`/etc/modelport/modelport.env` 必须填真实 `MODELPORT_AUTH_TOKEN`、`ANTHROPIC_AUTH_TOKEN` 和 `MIMO_OPENAI_API_KEY`；不要把真实 env 文件提交到 git。
 
 WSL 默认不一定启用 systemd；如果 systemd 不可用，用 `tmux` 或进程管理器即可。
 
@@ -509,6 +517,7 @@ RUST_LOG=model_port=debug,tower_http=info
 
 ```bash
 scripts/check.sh
+scripts/doctor.sh --upstream
 ```
 
 升级步骤：
@@ -551,6 +560,8 @@ HTTP 传输层使用原生 reqwest/rustls 客户端，支持连接池、真实 H
 | `scripts/stop.sh` | 停止当前项目的 ModelPort 进程。 |
 | `scripts/restart.sh` | 停止后重新后台启动。 |
 | `scripts/status.sh` | 查看 PID、日志位置和 `/health` 状态。 |
+| `scripts/doctor.sh` | 检查 `.env`、本机服务、鉴权、VS Code settings 和关键配置。 |
+| `scripts/doctor.sh --upstream` | 在 doctor 基础上验证真实 Mimo 上游消息回复。 |
 | `scripts/dev.sh` | 加载 `.env` 后前台 `cargo run`，适合开发调试。 |
 | `scripts/smoke-test.sh` | 验证本机网关和鉴权。 |
 | `scripts/smoke-test.sh --upstream` | 验证真实上游模型回复，需要真实 Mimo key。 |

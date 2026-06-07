@@ -1,0 +1,12 @@
+services:
+  modelport:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      MODELPORT_BIND: 0.0.0.0:17878
+      RUST_LOG: model_port=info,tower_http=info
+    ports:
+      - "127.0.0.1:17878:17878"
+    restart: unless-stopped
