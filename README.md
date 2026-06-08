@@ -127,6 +127,18 @@ CLAUDE_CODE_SUBAGENT_MODEL=mimo-v2.5-pro
 - `MIMO_OPENAI_API_KEY` 是第三方 Mimo 上游 key，不能用占位符。
 - `.env` 已被 `.gitignore` 忽略，不要提交真实 key。
 
+启动前可以先做静态配置校验：
+
+```bash
+scripts/config-validate.sh
+```
+
+它会检查默认 provider、provider base URL、placeholder key、alias 循环、非本机监听地址等问题，但不会打印真实密钥。已经安装 release 二进制后，也可以直接运行：
+
+```bash
+model-port config validate
+```
+
 ### 3. 启动服务
 
 推荐快速启动后台服务：
@@ -617,6 +629,7 @@ HTTP 传输层使用原生 reqwest/rustls 客户端，支持连接池、真实 H
 | `scripts/status.sh` | 查看 PID、日志位置和 `/health` 状态。 |
 | `scripts/doctor.sh` | 检查 `.env`、本机服务、鉴权、VS Code settings 和关键配置。 |
 | `scripts/doctor.sh --upstream` | 在 doctor 基础上验证真实 Mimo 上游消息回复。 |
+| `scripts/config-validate.sh` | 静态校验 ModelPort 配置，不启动服务。 |
 | `scripts/provider-matrix.sh` | 验证指定模型的非流式和流式 provider 兼容性。 |
 | `scripts/provider-matrix.sh --all` | 验证 `/v1/models` 中全部已注册模型，会产生真实上游调用成本。 |
 | `scripts/bench.sh` | 测量本机 `/health` 和 `/v1/models` 延迟。 |
@@ -729,6 +742,18 @@ Important notes:
 - `ANTHROPIC_AUTH_TOKEN` must match `MODELPORT_AUTH_TOKEN`.
 - `MIMO_OPENAI_API_KEY` must be a real upstream key.
 - `.env` is ignored by git. Never commit real secrets.
+
+Validate configuration before startup:
+
+```bash
+scripts/config-validate.sh
+```
+
+It checks the default provider, provider base URLs, placeholder keys, alias cycles, non-loopback bind addresses, and related static configuration issues without printing secrets. After installing the release binary, you can also run:
+
+```bash
+model-port config validate
+```
 
 Start the service:
 
@@ -1102,6 +1127,7 @@ Rollback by checking out a previous commit or restoring a previous binary, then 
 | `scripts/status.sh` | Show PID, log path, listener, and `/health` status. |
 | `scripts/doctor.sh` | Check `.env`, local service, auth, VS Code settings, and key configuration. |
 | `scripts/doctor.sh --upstream` | Run doctor plus a real Mimo upstream message call. |
+| `scripts/config-validate.sh` | Validate ModelPort configuration without starting the service. |
 | `scripts/provider-matrix.sh` | Check non-streaming and streaming compatibility for selected models. |
 | `scripts/provider-matrix.sh --all` | Check every registered model returned by `/v1/models`. This may incur model cost. |
 | `scripts/bench.sh` | Measure local `/health` and `/v1/models` latency. |

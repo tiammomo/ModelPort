@@ -40,7 +40,7 @@ Mimo / DeepSeek / OpenAI-compatible / custom provider
 - `src/providers/`：Anthropic 和 OpenAI-compatible 协议适配。
 - `src/http.rs`：上游 HTTP 客户端、SSE 解析、超时和响应体限制。
 - `src/metrics.rs`：轻量 Prometheus 文本指标，用于长期运行观测。
-- `scripts/`：本机运行、自检、冒烟和 benchmark。
+- `scripts/`：本机运行、配置校验、自检、冒烟和 benchmark。
 - `deploy/`：systemd 等生产部署模板。
 - `docs/`：长期维护指导。
 
@@ -76,6 +76,7 @@ Mimo / DeepSeek / OpenAI-compatible / custom provider
 
 - Provider 实测矩阵：用 `scripts/provider-matrix.sh` 记录 Mimo、DeepSeek、OpenRouter、DashScope、Gemini 等真实测试状态。
 - 路由策略：按模型名前缀、别名、fallback、provider 优先级扩展。
+- 配置校验：已有 `model-port config validate` 和 `scripts/config-validate.sh`，后续可扩展成更完整 CLI。
 - 可观测性：已有 `/metrics` 基础指标，后续补上更细的上游状态码和 provider 失败率。
 - 图像能力：独立支持 `gpt-image-2` 的 Image API，不混入 Claude Code 文本主路径。
 - 管理面：只在多人使用和配置复杂度上来后再做。

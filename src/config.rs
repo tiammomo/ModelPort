@@ -63,6 +63,18 @@ pub struct ResolvedProvider {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigIssueSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigIssue {
+    pub severity: ConfigIssueSeverity,
+    pub message: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct FileConfig {
     server: Option<ServerSection>,
@@ -184,6 +196,93 @@ impl AppConfig {
         }
 
         models
+    }
+
+    pub fn validation_issues(&self) -> Vec<ConfigIssue> {
+        let mut issues = Vec::new();
+
+        if self.auth_token.is_none() {
+            issues.push(ConfigIssue::warning(
+                "client authentication is disabled; only use MODELPORT_ALLOW_NO_AUTH=1 in isolated local testing",
+            ));
+        } else if self.auth_token.as_deref().is_some_and(is_placeholder_value) {
+            issues.push(ConfigIssue::error(
+                "MODELPORT_AUTH_TOKEN or ANTHROPIC_AUTH_TOKEN is still a placeholder",
+            ));
+        } else if self
+            .auth_token
+            .as_deref()
+            .is_some_and(|token| token.len() < 16)
+        {
+            issues.push(ConfigIssue::warning(
+                "client auth token is short; use a long random local token for production",
+            ));
+        }
+
+        if !self.bind_addr.ip().is_loopback() {
+            issues.push(ConfigIssue::warning(format!(
+                "MODELPORT_BIND is {bind}; keep a reverse proxy or firewall in front when not binding loopback",
+                bind = self.bind_addr
+            )));
+        }
+
+        if self.providers.is_empty() {
+            issues.push(ConfigIssue::error(
+                "at least one provider must be configured",
+            ));
+        }
+
+        if self.provider_order.is_empty() {
+            issues.push(ConfigIssue::error(
+                "provider_order is empty; at least one provider must be routable",
+            ));
+        }
+
+        if !self.providers.contains_key(&self.default_provider) {
+            issues.push(ConfigIssue::error(format!(
+                "default provider `{}` is not configured",
+                self.default_provider
+            )));
+        }
+
+        for id in &self.provider_order {
+            if !self.providers.contains_key(id) {
+                issues.push(ConfigIssue::error(format!(
+                    "provider_order references missing provider `{id}`"
+                )));
+            }
+        }
+
+        let mut seen_models = HashMap::<String, String>::new();
+        for (id, provider) in &self.providers {
+            validate_provider(
+                id,
+                provider,
+                id == &self.default_provider,
+                &mut seen_models,
+                &mut issues,
+            );
+        }
+
+        for (alias, target) in &self.aliases {
+            if alias.trim().is_empty() {
+                issues.push(ConfigIssue::error("model alias name cannot be empty"));
+                continue;
+            }
+            if target.trim().is_empty() {
+                issues.push(ConfigIssue::error(format!(
+                    "alias `{alias}` has an empty target"
+                )));
+                continue;
+            }
+            if let Err(err) = self.resolve(alias) {
+                issues.push(ConfigIssue::error(format!(
+                    "alias `{alias}` cannot resolve target `{target}`: {err}"
+                )));
+            }
+        }
+
+        issues
     }
 
     fn resolve_inner(
@@ -525,6 +624,22 @@ impl AppConfig {
             providers,
             aliases,
         })
+    }
+}
+
+impl ConfigIssue {
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            severity: ConfigIssueSeverity::Error,
+            message: message.into(),
+        }
+    }
+
+    fn warning(message: impl Into<String>) -> Self {
+        Self {
+            severity: ConfigIssueSeverity::Warning,
+            message: message.into(),
+        }
     }
 }
 
@@ -1053,6 +1168,133 @@ fn resolve_usize_env(value: Option<usize>, env_name: &str, default: usize) -> us
         .unwrap_or(default)
 }
 
+fn validate_provider(
+    id: &str,
+    provider: &ProviderConfig,
+    is_default_provider: bool,
+    seen_models: &mut HashMap<String, String>,
+    issues: &mut Vec<ConfigIssue>,
+) {
+    if id.trim().is_empty() {
+        issues.push(ConfigIssue::error("provider id cannot be empty"));
+    }
+    if provider.display_name.trim().is_empty() {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` display_name cannot be empty"
+        )));
+    }
+    if provider.base_url.trim().is_empty() {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` base_url cannot be empty"
+        )));
+    } else if !provider.base_url.starts_with("http://")
+        && !provider.base_url.starts_with("https://")
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` base_url must start with http:// or https://"
+        )));
+    } else if provider.base_url.contains(char::is_whitespace) {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` base_url contains whitespace"
+        )));
+    }
+
+    if provider.base_url.ends_with("/chat/completions") || provider.base_url.ends_with("/messages")
+    {
+        issues.push(ConfigIssue::warning(format!(
+            "provider `{id}` base_url looks like a full endpoint; configure the API base URL instead"
+        )));
+    }
+
+    if provider.api_key_required && provider.api_key.is_none() {
+        let name = provider
+            .api_key_env
+            .as_deref()
+            .unwrap_or("<provider api key env>");
+        if is_default_provider {
+            issues.push(ConfigIssue::error(format!(
+                "default provider `{id}` requires API key env `{name}`"
+            )));
+        } else {
+            issues.push(ConfigIssue::warning(format!(
+                "provider `{id}` requires API key env `{name}` and will fail if selected"
+            )));
+        }
+    }
+
+    if provider
+        .api_key
+        .as_deref()
+        .is_some_and(is_placeholder_value)
+    {
+        let name = provider
+            .api_key_env
+            .as_deref()
+            .unwrap_or("provider API key");
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` API key `{name}` is still a placeholder"
+        )));
+    }
+
+    if provider.default_model.trim().is_empty() {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` default_model cannot be empty"
+        )));
+    }
+
+    if provider.models.iter().any(|model| model.trim().is_empty()) {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` models cannot contain empty values"
+        )));
+    }
+
+    if !provider.models.is_empty()
+        && !provider.models.contains(&provider.default_model)
+        && !provider.passthrough_unknown_models
+    {
+        issues.push(ConfigIssue::warning(format!(
+            "provider `{id}` default_model `{}` is not listed in models",
+            provider.default_model
+        )));
+    }
+
+    for model in &provider.models {
+        if let Some(previous_provider) = seen_models.insert(model.clone(), id.to_owned())
+            && previous_provider != id
+        {
+            issues.push(ConfigIssue::warning(format!(
+                "model `{model}` is listed by both `{previous_provider}` and `{id}`; first provider order wins"
+            )));
+        }
+    }
+
+    if provider
+        .model_prefixes
+        .iter()
+        .any(|prefix| prefix.trim().is_empty())
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` model_prefixes cannot contain empty values"
+        )));
+    }
+
+    if id == "mimo" && !provider.deduplicate_stream_text {
+        issues.push(ConfigIssue::warning(
+            "provider `mimo` should keep deduplicate_stream_text=true for stable streaming output",
+        ));
+    }
+}
+
+fn is_placeholder_value(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty()
+        || value.starts_with("replace-with-")
+        || value.contains("placeholder")
+        || value.contains("your-")
+        || value == "changeme"
+        || value == "change-me"
+}
+
 fn default_auth_token() -> Option<String> {
     env::var("MODELPORT_AUTH_TOKEN")
         .ok()
@@ -1196,5 +1438,106 @@ mod tests {
         assert!(
             matches!(err, AppError::ProviderNotFound(provider) if provider == "missing-provider")
         );
+    }
+
+    #[test]
+    fn validation_accepts_test_config_without_errors() {
+        let mut config = test_config();
+        config.auth_token = Some("long-local-client-token".to_owned());
+
+        let issues = config.validation_issues();
+
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity != ConfigIssueSeverity::Error),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_missing_default_provider() {
+        let mut config = test_config();
+        config.default_provider = "missing".to_owned();
+
+        let issues = config.validation_issues();
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Error
+                && issue.message.contains("default provider `missing`")
+        }));
+    }
+
+    #[test]
+    fn validation_rejects_placeholder_provider_secret() {
+        let mut config = test_config();
+        config
+            .providers
+            .get_mut("mimo")
+            .unwrap()
+            .api_key
+            .replace("replace-with-real-key".to_owned());
+
+        let issues = config.validation_issues();
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Error
+                && issue.message.contains("provider `mimo` API key")
+        }));
+    }
+
+    #[test]
+    fn validation_warns_for_missing_non_default_provider_secret() {
+        let mut config = test_config();
+        config
+            .providers
+            .get_mut("openrouter")
+            .unwrap()
+            .api_key
+            .take();
+
+        let issues = config.validation_issues();
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Warning
+                && issue
+                    .message
+                    .contains("provider `openrouter` requires API key")
+        }));
+        assert!(!issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Error
+                && issue
+                    .message
+                    .contains("provider `openrouter` requires API key")
+        }));
+    }
+
+    #[test]
+    fn validation_rejects_missing_default_provider_secret() {
+        let mut config = test_config();
+        config.providers.get_mut("mimo").unwrap().api_key.take();
+
+        let issues = config.validation_issues();
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Error
+                && issue
+                    .message
+                    .contains("default provider `mimo` requires API key")
+        }));
+    }
+
+    #[test]
+    fn validation_rejects_alias_cycles() {
+        let mut config = test_config();
+        config.aliases.insert("a".to_owned(), "b".to_owned());
+        config.aliases.insert("b".to_owned(), "a".to_owned());
+
+        let issues = config.validation_issues();
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Error
+                && issue.message.contains("alias `a` cannot resolve")
+        }));
     }
 }

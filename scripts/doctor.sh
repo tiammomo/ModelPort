@@ -114,7 +114,7 @@ check_env_is_ignored() {
 check_binary_and_scripts() {
   local script
 
-  for script in start stop restart status smoke-test provider-matrix build-release check doctor; do
+  for script in start stop restart status smoke-test provider-matrix config-validate build-release check doctor; do
     if [[ -x "$SCRIPT_DIR/$script.sh" ]]; then
       ok "scripts/$script.sh is executable"
     else
@@ -159,6 +159,19 @@ check_mimo_env() {
     ok "ANTHROPIC_MODEL matches Mimo model"
   else
     warn "ANTHROPIC_MODEL is '${ANTHROPIC_MODEL:-unset}', MIMO_MODEL is '${MIMO_MODEL:-unset}'"
+  fi
+}
+
+check_static_config() {
+  local body_file
+  body_file="$(mktemp)"
+  temp_files+=("$body_file")
+
+  if "$SCRIPT_DIR/config-validate.sh" > "$body_file" 2>&1; then
+    ok "static config validation passed"
+  else
+    fail "static config validation failed"
+    sed -n '1,80p' "$body_file" >&2 || true
   fi
 }
 
@@ -305,6 +318,7 @@ load_doctor_env
 check_env_is_ignored
 check_binary_and_scripts
 check_mimo_env
+check_static_config
 check_gateway
 check_vscode_settings
 check_upstream_message
