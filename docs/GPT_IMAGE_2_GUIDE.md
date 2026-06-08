@@ -11,14 +11,20 @@ README 里的项目含义图和快速上手图采用“图像模型出方向稿�
 
 这种方式比直接引用外部生成图片更稳：GitHub 能长期渲染，文字可搜索，后续改模型名、端口、provider 时可以直接编辑 SVG。
 
+图示维护原则：
+
+- 只展示已经实现或已经验证的能力，不把路线图能力画成已完成能力。
+- 单行文字要短，代码片段要放在足够宽的区域内，避免 GitHub README 缩放后遮挡。
+- 优先使用克制的浅色技术图，不使用外部 logo、复杂截图或密集小字。
+
 可用于 `gpt-image-2` 重新生成方向稿的 prompt：
 
 ```text
-Create a clean technical README hero infographic for an open source developer tool called "ModelPort". Wide aspect ratio 16:9, modern GitHub README style, crisp readable labels. Visual concept: VS Code Claude / Claude Code on the left sends Anthropic Messages API to a local gateway box labeled "ModelPort" in the center, then routes to providers on the right: Mimo v2.5 Pro, DeepSeek, OpenAI-compatible, OpenRouter, Ollama, Custom. Show key ideas as small labeled badges: Local token auth, Fast routing, Streaming SSE, Model aliases, Provider fallback. Use a professional light theme with white background, deep teal and graphite accents, small orange highlight for Mimo. Avoid clutter, no fake UI screenshots, no tiny unreadable text, no logos except simple generic icons.
+Create a clean technical README architecture infographic for an open source developer tool called "ModelPort". Wide 16:9 aspect ratio, modern GitHub README style, crisp readable labels, generous spacing. Visual concept: VS Code Claude / Claude Code on the left sends Anthropic Messages API to a local gateway box labeled "ModelPort" in the center, then ModelPort routes to configured providers on the right: Mimo v2.5 Pro, DeepSeek, Anthropic, OpenAI-compatible, OpenRouter, Ollama / Custom. Show only implemented or validated ideas as small badges: Local token auth, Model routing, Protocol transform, Streaming SSE, Mimo text de-dup, Health and metrics. Use a professional light theme with white background, deep teal and graphite accents, small orange highlight for Mimo. Avoid clutter, no fake UI screenshots, no tiny unreadable text, no unsupported fallback claim, no external logos.
 ```
 
 ```text
-Create a clean GitHub README quick-start infographic for a developer tool named "ModelPort". Wide 16:9 but simple and readable. Show four numbered steps as a horizontal flow: 1 Copy .env, 2 Start ModelPort, 3 Configure VS Code Claude, 4 Ask with Mimo v2.5 Pro. Include minimal command snippets: cp .env.example .env, scripts/start.sh, ANTHROPIC_BASE_URL=http://127.0.0.1:17878, model=mimo-v2.5-pro. Use professional light theme, teal and graphite accents, orange highlight for Mimo. Add small status chips: health ok, auth ok, upstream ok. No fake logos, no clutter, no tiny text.
+Create a clean GitHub README quick-start infographic for a developer tool named "ModelPort". Wide 16:9 but simple and readable. Show four numbered steps in a spacious 2x2 grid: 1 Prepare env, 2 Validate config, 3 Start gateway, 4 Connect Claude. Include short command snippets only: cp .env.example .env, BASE_URL=https://w.ciykj.cn/v1, scripts/config-validate.sh, scripts/start.sh, ANTHROPIC_MODEL=mimo-v2.5-pro, ANTHROPIC_BASE_URL=http://127.0.0.1:17878. Use professional light theme, teal and graphite accents, orange highlight for Mimo. Add status chips: health ok, auth ok, Mimo upstream ok, stream ok. Keep every text line short enough to remain readable on GitHub. No fake logos, no clutter, no tiny text.
 ```
 
 ## 官方能力边界

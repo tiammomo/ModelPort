@@ -1,111 +1,86 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
   <title id="title">ModelPort quick start</title>
-  <desc id="desc">Four steps to start ModelPort: copy env, start service, configure VS Code Claude, ask with Mimo v2.5 Pro.</desc>
+  <desc id="desc">Four readable quick-start steps for configuring ModelPort, validating configuration, starting the gateway, and connecting VS Code Claude to Mimo v2.5 Pro.</desc>
+
   <defs>
-    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#fbfefd"/>
-      <stop offset="63%" stop-color="#eef8f7"/>
-      <stop offset="100%" stop-color="#fff4ea"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#173635" flood-opacity="0.12"/>
-    </filter>
-    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto">
-      <path d="M2 2 L10 6 L2 10 Z" fill="#17716d"/>
-    </marker>
     <style>
-      .bg { fill: url(#bg); }
-      .title { fill: #102a2a; font: 800 54px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .subtitle { fill: #4b6260; font: 500 25px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .card { fill: #ffffff; stroke: #d7e7e5; stroke-width: 2; filter: url(#shadow); }
-      .step { fill: #102a2a; font: 850 32px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .label { fill: #102a2a; font: 800 27px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .small { fill: #526865; font: 600 20px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .code { fill: #e9fffb; font: 700 18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; }
-      .codeBox { fill: #132f2e; }
-      .num { fill: #ffffff; font: 900 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .line { fill: none; stroke: #17716d; stroke-width: 6; stroke-linecap: round; marker-end: url(#arrow); }
-      .chip { fill: #ffffff; stroke: #c9dedb; stroke-width: 2; }
-      .chipText { fill: #244946; font: 750 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing: 0; }
-      .ok { fill: #16a34a; }
-      .orange { fill: #ef7d24; }
-      .teal { fill: #17716d; }
-      .icon { fill: none; stroke: #17716d; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+      .bg { fill: #f6f8fb; }
+      .header { fill: #ffffff; }
+      .card { fill: #ffffff; stroke: #d7e0e8; stroke-width: 2; }
+      .card-hot { fill: #ffffff; stroke: #0f766e; stroke-width: 3; }
+      .title { fill: #10202b; font: 700 54px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .subtitle { fill: #536473; font: 400 24px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .step-num { fill: #ffffff; font: 800 24px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .h2 { fill: #10202b; font: 700 30px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .body { fill: #536473; font: 400 20px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .code { fill: #dffaf5; font: 600 21px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .code-dim { fill: #adc8c3; font: 600 19px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .code-bg { fill: #10202b; }
+      .chip { fill: #e7f5f3; stroke: #b8ddd7; stroke-width: 1.4; }
+      .chip-hot { fill: #fff0dd; stroke: #ffc46b; stroke-width: 1.4; }
+      .chip-text { fill: #144f49; font: 700 17px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .chip-hot-text { fill: #8a4b00; font: 700 17px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .band { fill: #10202b; }
+      .band-title { fill: #ffffff; font: 700 24px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .band-text { fill: #d4dde5; font: 500 18px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     </style>
   </defs>
 
   <rect class="bg" width="1600" height="900"/>
-  <circle cx="1365" cy="138" r="210" fill="#fff0df" opacity="0.7"/>
-  <circle cx="170" cy="770" r="230" fill="#e0f2f0" opacity="0.75"/>
+  <rect class="header" x="0" y="0" width="1600" height="132"/>
+  <line x1="0" y1="132" x2="1600" y2="132" stroke="#d7e0e8" stroke-width="2"/>
 
-  <text class="title" x="96" y="106">Start ModelPort in four steps</text>
-  <text class="subtitle" x="100" y="150">Connect VS Code Claude to Mimo v2.5 Pro through a local gateway</text>
+  <text class="title" x="80" y="82">Quick Start</text>
+  <text class="subtitle" x="80" y="116">Configure once, validate locally, then let VS Code Claude use Mimo through ModelPort</text>
+  <rect class="chip-hot" x="1260" y="48" width="260" height="44" rx="8"/>
+  <text class="chip-hot-text" x="1292" y="77">mimo-v2.5-pro</text>
 
-  <g transform="translate(85 245)">
-    <rect class="card" width="325" height="330" rx="26"/>
-    <circle cx="58" cy="62" r="32" class="teal"/>
-    <text class="num" x="50" y="72">1</text>
-    <path class="icon" d="M52 128h74l28 28v82H52zM126 128v30h28"/>
-    <text class="label" x="42" y="280">Copy env</text>
-    <rect class="codeBox" x="42" y="206" width="241" height="48" rx="14"/>
-    <text class="code" x="62" y="236">cp .env.example .env</text>
-  </g>
+  <rect class="card" x="80" y="188" width="680" height="232" rx="8"/>
+  <circle cx="128" cy="236" r="25" fill="#0f766e"/>
+  <text class="step-num" x="121" y="245">1</text>
+  <text class="h2" x="176" y="246">Prepare env</text>
+  <text class="body" x="176" y="286">Copy the template and set tokens.</text>
+  <rect class="code-bg" x="112" y="318" width="616" height="72" rx="8"/>
+  <text class="code" x="138" y="348">cp .env.example .env</text>
+  <text class="code-dim" x="138" y="376">BASE_URL=https://w.ciykj.cn/v1</text>
 
-  <path class="line" d="M430 410 H444"/>
+  <rect class="card" x="840" y="188" width="680" height="232" rx="8"/>
+  <circle cx="888" cy="236" r="25" fill="#0f766e"/>
+  <text class="step-num" x="880" y="245">2</text>
+  <text class="h2" x="936" y="246">Validate config</text>
+  <text class="body" x="936" y="286">Catch missing keys before startup.</text>
+  <rect class="code-bg" x="872" y="318" width="616" height="72" rx="8"/>
+  <text class="code" x="898" y="348">scripts/config-validate.sh</text>
+  <text class="code-dim" x="898" y="376">checks .env before startup</text>
 
-  <g transform="translate(455 245)">
-    <rect class="card" width="325" height="330" rx="26"/>
-    <circle cx="58" cy="62" r="32" class="teal"/>
-    <text class="num" x="49" y="72">2</text>
-    <path class="icon" d="M50 151h96M50 190h74M50 229h112M185 151l44 39-44 39"/>
-    <text class="label" x="42" y="280">Start gateway</text>
-    <rect class="codeBox" x="42" y="206" width="241" height="48" rx="14"/>
-    <text class="code" x="70" y="236">scripts/start.sh</text>
-  </g>
+  <rect class="card-hot" x="80" y="476" width="680" height="232" rx="8"/>
+  <circle cx="128" cy="524" r="25" fill="#0f766e"/>
+  <text class="step-num" x="120" y="533">3</text>
+  <text class="h2" x="176" y="534">Start gateway</text>
+  <text class="body" x="176" y="574">Run ModelPort on the local Anthropic-compatible port.</text>
+  <rect class="code-bg" x="112" y="606" width="616" height="72" rx="8"/>
+  <text class="code" x="138" y="636">scripts/start.sh</text>
+  <text class="code-dim" x="138" y="664">http://127.0.0.1:17878</text>
 
-  <path class="line" d="M800 410 H819"/>
+  <rect class="card" x="840" y="476" width="680" height="232" rx="8"/>
+  <circle cx="888" cy="524" r="25" fill="#0f766e"/>
+  <text class="step-num" x="880" y="533">4</text>
+  <text class="h2" x="936" y="534">Connect Claude</text>
+  <text class="body" x="936" y="574">VS Code Claude points to ModelPort and selects Mimo.</text>
+  <rect class="code-bg" x="872" y="606" width="616" height="72" rx="8"/>
+  <text class="code" x="898" y="636">ANTHROPIC_MODEL=mimo-v2.5-pro</text>
+  <text class="code-dim" x="898" y="664">ANTHROPIC_BASE_URL=http://127.0.0.1:17878</text>
 
-  <g transform="translate(830 245)">
-    <rect class="card" width="325" height="330" rx="26"/>
-    <circle cx="58" cy="62" r="32" class="teal"/>
-    <text class="num" x="49" y="72">3</text>
-    <path class="icon" d="M54 150h164v100H54zM78 178h116M78 212h86"/>
-    <text class="label" x="42" y="280">Configure Claude</text>
-    <rect class="codeBox" x="42" y="206" width="241" height="48" rx="14"/>
-    <text class="code" x="58" y="236">ANTHROPIC_BASE_URL</text>
-  </g>
+  <rect class="band" x="80" y="756" width="1440" height="88" rx="8"/>
+  <text class="band-title" x="114" y="792">Expected result</text>
+  <text class="band-text" x="114" y="822">Health, auth, upstream, and stream checks pass.</text>
 
-  <path class="line" d="M1175 410 H1194"/>
-
-  <g transform="translate(1165 610)">
-    <rect class="chip" width="268" height="52" rx="26"/>
-    <circle cx="35" cy="26" r="9" class="ok"/>
-    <text class="chipText" x="58" y="33">health ok</text>
-  </g>
-  <g transform="translate(850 610)">
-    <rect class="chip" width="268" height="52" rx="26"/>
-    <circle cx="35" cy="26" r="9" class="ok"/>
-    <text class="chipText" x="58" y="33">auth ok</text>
-  </g>
-  <g transform="translate(535 610)">
-    <rect class="chip" width="268" height="52" rx="26"/>
-    <circle cx="35" cy="26" r="9" class="ok"/>
-    <text class="chipText" x="58" y="33">upstream ok</text>
-  </g>
-
-  <g transform="translate(1205 245)">
-    <rect class="card" width="347" height="330" rx="26"/>
-    <circle cx="58" cy="62" r="32" class="orange"/>
-    <text class="num" x="49" y="72">4</text>
-    <path class="icon" d="M54 160h156a28 28 0 0 1 28 28v14a28 28 0 0 1-28 28H90l-36 35v-35h0"/>
-    <text class="label" x="42" y="280">Ask with Mimo</text>
-    <rect class="codeBox" x="42" y="206" width="263" height="48" rx="14"/>
-    <text class="code" x="68" y="236">model=mimo-v2.5-pro</text>
-  </g>
-
-  <g transform="translate(120 722)">
-    <rect width="1360" height="78" rx="24" fill="#132f2e"/>
-    <circle cx="42" cy="39" r="10" fill="#4ade80"/>
-    <text x="68" y="48" fill="#e7fffb" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="24" font-weight="800">Use scripts/doctor.sh --upstream to verify VS Code settings, local auth, and real Mimo connectivity.</text>
-  </g>
+  <rect x="872" y="779" width="118" height="42" rx="8" fill="#ffffff" opacity="0.95"/>
+  <text class="chip-text" x="896" y="806">health ok</text>
+  <rect x="1008" y="779" width="104" height="42" rx="8" fill="#ffffff" opacity="0.95"/>
+  <text class="chip-text" x="1032" y="806">auth ok</text>
+  <rect x="1130" y="779" width="220" height="42" rx="8" fill="#ffffff" opacity="0.95"/>
+  <text class="chip-text" x="1156" y="806">Mimo upstream ok</text>
+  <rect x="1370" y="779" width="116" height="42" rx="8" fill="#ffffff" opacity="0.95"/>
+  <text class="chip-text" x="1388" y="806">stream ok</text>
 </svg>
