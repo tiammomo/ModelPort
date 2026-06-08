@@ -61,6 +61,7 @@ Mimo / DeepSeek / OpenAI-compatible / custom provider
 
 - README：面向使用者，回答“是什么、怎么用、怎么排查”。
 - `docs/PROJECT_GUIDE.md`：面向维护者，说明定位和路线。
+- `docs/PROVIDER_MATRIX.md`：面向 provider 接入，记录实测状态和验收标准。
 - `docs/PERFORMANCE.md`：说明效率、瓶颈和 benchmark。
 - `docs/GPT_IMAGE_2_GUIDE.md`：说明图像能力如何扩展。
 - CI：fmt、test、clippy。
@@ -72,11 +73,24 @@ Mimo / DeepSeek / OpenAI-compatible / custom provider
 
 建议按风险从低到高推进：
 
-- Provider 实测矩阵：记录 Mimo、DeepSeek、OpenRouter、DashScope、Gemini 等真实测试状态。
+- Provider 实测矩阵：用 `scripts/provider-matrix.sh` 记录 Mimo、DeepSeek、OpenRouter、DashScope、Gemini 等真实测试状态。
 - 路由策略：按模型名前缀、别名、fallback、provider 优先级扩展。
 - 可观测性：请求耗时、上游状态码、provider 失败率。
 - 图像能力：独立支持 `gpt-image-2` 的 Image API，不混入 Claude Code 文本主路径。
 - 管理面：只在多人使用和配置复杂度上来后再做。
+
+## Provider 验收标准
+
+新增或声明支持某个 provider 前，至少完成：
+
+1. 填好真实 key 和模型变量。
+2. 启动或重启 ModelPort。
+3. 运行 `scripts/doctor.sh`。
+4. 运行 `scripts/provider-matrix.sh --model <model-id>`。
+5. 同时通过非流式和流式 `/v1/messages`。
+6. 把结果记录到 `docs/PROVIDER_MATRIX.md`。
+
+如果 provider 只是在配置中存在，但没有真实 key 跑过，应标记为“待真实 key 验证”，不要对外宣称已生产验证。
 
 ## 不建议做的事
 

@@ -68,6 +68,7 @@ scripts/bench.sh --upstream
 ## 项目文档
 
 - [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)：项目定位、架构边界、长期路线。
+- [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)：provider 兼容矩阵、实测状态和验收标准。
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md)：中转效率、benchmark 和投产调优。
 - [docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md)：GitHub 仓库设置、分支保护、release 建议。
 - [docs/GPT_IMAGE_2_GUIDE.md](docs/GPT_IMAGE_2_GUIDE.md)：基于 OpenAI `gpt-image-2` 的后续图像能力扩展指导。
@@ -183,6 +184,18 @@ scripts/smoke-test.sh
 ```bash
 scripts/doctor.sh --upstream
 scripts/smoke-test.sh --upstream
+```
+
+需要验证某个 provider/model 的非流式和流式兼容性时：
+
+```bash
+scripts/provider-matrix.sh --model mimo-v2.5-pro
+```
+
+需要验证 `/v1/models` 返回的全部已注册模型时：
+
+```bash
+scripts/provider-matrix.sh --all
 ```
 
 健康检查不需要 token：
@@ -595,6 +608,8 @@ HTTP 传输层使用原生 reqwest/rustls 客户端，支持连接池、真实 H
 | `scripts/status.sh` | 查看 PID、日志位置和 `/health` 状态。 |
 | `scripts/doctor.sh` | 检查 `.env`、本机服务、鉴权、VS Code settings 和关键配置。 |
 | `scripts/doctor.sh --upstream` | 在 doctor 基础上验证真实 Mimo 上游消息回复。 |
+| `scripts/provider-matrix.sh` | 验证指定模型的非流式和流式 provider 兼容性。 |
+| `scripts/provider-matrix.sh --all` | 验证 `/v1/models` 中全部已注册模型，会产生真实上游调用成本。 |
 | `scripts/bench.sh` | 测量本机 `/health` 和 `/v1/models` 延迟。 |
 | `scripts/bench.sh --upstream` | 测量真实 `/v1/messages` 上游调用延迟，会产生模型调用成本。 |
 | `scripts/dev.sh` | 加载 `.env` 后前台 `cargo run`，适合开发调试。 |
@@ -657,6 +672,7 @@ Core routing modes:
 ### Documentation
 
 - [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md): positioning, architecture boundaries, and roadmap.
+- [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md): provider compatibility matrix, verified status, and acceptance checklist.
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md): gateway efficiency, benchmarks, and production tuning.
 - [docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md): GitHub repository setup, branch protection, and release suggestions.
 - [docs/GPT_IMAGE_2_GUIDE.md](docs/GPT_IMAGE_2_GUIDE.md): future image capability extension notes.
@@ -743,6 +759,18 @@ After setting a real Mimo key, verify the real upstream route:
 ```bash
 scripts/doctor.sh --upstream
 scripts/smoke-test.sh --upstream
+```
+
+Check non-streaming and streaming compatibility for one provider/model:
+
+```bash
+scripts/provider-matrix.sh --model mimo-v2.5-pro
+```
+
+Check every registered model returned by `/v1/models`:
+
+```bash
+scripts/provider-matrix.sh --all
 ```
 
 Health check:
@@ -1056,6 +1084,8 @@ Rollback by checking out a previous commit or restoring a previous binary, then 
 | `scripts/status.sh` | Show PID, log path, listener, and `/health` status. |
 | `scripts/doctor.sh` | Check `.env`, local service, auth, VS Code settings, and key configuration. |
 | `scripts/doctor.sh --upstream` | Run doctor plus a real Mimo upstream message call. |
+| `scripts/provider-matrix.sh` | Check non-streaming and streaming compatibility for selected models. |
+| `scripts/provider-matrix.sh --all` | Check every registered model returned by `/v1/models`. This may incur model cost. |
 | `scripts/bench.sh` | Measure local `/health` and `/v1/models` latency. |
 | `scripts/bench.sh --upstream` | Measure real `/v1/messages` upstream latency. This may incur model cost. |
 | `scripts/dev.sh` | Load `.env` and run `cargo run` in the foreground. |
