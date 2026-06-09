@@ -307,6 +307,43 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn deduplicates_cumulative_stream_tool_arguments() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Agent","arguments":""}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"description\": "}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"description\": "}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\""}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"scan"}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"description\": \"scan\", \"prompt\": "}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\""}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"list project files"}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"description\": \"scan\", \"prompt\": \"list project files\"}"}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\""}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":null,"index":0}]}
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}
+data: [DONE]
+
+"#,
+            "text/event-stream",
+        )
+        .await;
+        let app = router(test_state(upstream, 1024 * 1024));
+
+        let (status, body) = post_message(app, message_body(true)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#""name":"Agent""#));
+        assert!(!body.contains(r#""partial_json":"""#));
+        assert_eq!(body.matches(r#""partial_json":"#).count(), 1);
+        assert!(body.contains(
+            r#""partial_json":"{\"description\": \"scan\", \"prompt\": \"list project files\"}""#
+        ));
+        assert_eq!(body.matches(r#""stop_reason":"tool_use""#).count(), 1);
+        assert!(!body.contains("event: error"));
+    }
+
+    #[tokio::test]
     async fn rejects_oversized_message_request_body() {
         let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
         let app = router(test_state(upstream, 16));

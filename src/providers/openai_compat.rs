@@ -10,7 +10,7 @@ use axum::{
 };
 use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
@@ -170,6 +170,8 @@ fn openai_stream_to_anthropic(
                                     upstream_id: None,
                                     name: None,
                                     started: false,
+                                    arguments_seen: String::new(),
+                                    raw_arguments: Vec::new(),
                                     pending_arguments: String::new(),
                                 }
                             });
@@ -182,17 +184,31 @@ fn openai_stream_to_anthropic(
                                     state.name = Some(name);
                                 }
                                 if let Some(arguments) = function.arguments {
-                                    if state.started {
-                                        yield anthropic_event("content_block_delta", json!({
-                                            "type": "content_block_delta",
-                                            "index": state.index,
-                                            "delta": {
-                                                "type": "input_json_delta",
-                                                "partial_json": arguments
+                                    if deduplicate_stream_text {
+                                        if !arguments.is_empty() {
+                                            state.raw_arguments.push(arguments.clone());
+                                            let arguments = text_delta(
+                                                &mut state.arguments_seen,
+                                                &arguments,
+                                                true,
+                                            );
+                                            if !arguments.is_empty() {
+                                                state.pending_arguments.push_str(&arguments);
                                             }
-                                        }))?;
-                                    } else {
-                                        state.pending_arguments.push_str(&arguments);
+                                        }
+                                    } else if !arguments.is_empty() {
+                                        if state.started {
+                                            yield anthropic_event("content_block_delta", json!({
+                                                "type": "content_block_delta",
+                                                "index": state.index,
+                                                "delta": {
+                                                    "type": "input_json_delta",
+                                                    "partial_json": arguments
+                                                }
+                                            }))?;
+                                        } else {
+                                            state.pending_arguments.push_str(&arguments);
+                                        }
                                     }
                                 }
                             }
@@ -258,6 +274,19 @@ fn openai_stream_to_anthropic(
 
         for state in tools.values() {
             if state.started {
+                if deduplicate_stream_text
+                    && let Some(arguments) = state.complete_arguments()
+                {
+                    yield anthropic_event("content_block_delta", json!({
+                        "type": "content_block_delta",
+                        "index": state.index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments
+                        }
+                    }))?;
+                }
+
                 yield anthropic_event("content_block_stop", json!({
                     "type": "content_block_stop",
                     "index": state.index
@@ -363,7 +392,21 @@ struct ToolState {
     upstream_id: Option<String>,
     name: Option<String>,
     started: bool,
+    arguments_seen: String,
+    raw_arguments: Vec<String>,
     pending_arguments: String,
+}
+
+impl ToolState {
+    fn complete_arguments(&self) -> Option<String> {
+        let joined_raw_arguments = self.raw_arguments.concat();
+        best_complete_json_object(
+            std::iter::once(self.arguments_seen.as_str())
+                .chain(std::iter::once(self.pending_arguments.as_str()))
+                .chain(std::iter::once(joined_raw_arguments.as_str()))
+                .chain(self.raw_arguments.iter().map(String::as_str)),
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,9 +457,49 @@ fn map_finish_reason(reason: &str) -> &'static str {
     }
 }
 
+fn best_complete_json_object<'a>(sources: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut best = None::<String>;
+
+    for source in sources {
+        collect_complete_json_objects(source, &mut best);
+    }
+
+    best
+}
+
+fn collect_complete_json_objects(source: &str, best: &mut Option<String>) {
+    for (start, ch) in source.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+
+        let slice = &source[start..];
+        let mut values = serde_json::Deserializer::from_str(slice).into_iter::<Value>();
+        let Some(Ok(value)) = values.next() else {
+            continue;
+        };
+        if !value.is_object() {
+            continue;
+        }
+
+        let end = values.byte_offset();
+        if end == 0 {
+            continue;
+        }
+
+        let candidate = &slice[..end];
+        if best
+            .as_ref()
+            .is_none_or(|current| candidate.len() > current.len())
+        {
+            *best = Some(candidate.to_owned());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::text_delta;
+    use super::{best_complete_json_object, text_delta};
 
     #[test]
     fn cumulative_stream_text_is_reduced_to_suffix() {
@@ -458,5 +541,57 @@ mod tests {
         assert_eq!(text_delta(&mut seen, "小米Mi", true), "");
         assert_eq!(text_delta(&mut seen, "Mo团队开发的", true), "");
         assert_eq!(text_delta(&mut seen, "MiMo-v2", true), "MiMo-v2");
+    }
+
+    #[test]
+    fn cumulative_tool_arguments_are_reduced_to_suffixes() {
+        let mut seen = String::new();
+        let chunks = [
+            "",
+            "{\"description\": ",
+            "",
+            "{\"description\": ",
+            "\"",
+            "",
+            "{\"description\": ",
+            "\"",
+            "scan",
+            "",
+            "{\"description\": ",
+            "\"",
+            "scan",
+            "\"",
+            "{\"description\": \"scan\", \"prompt\": ",
+            "\"",
+            "{\"description\": \"scan\", \"prompt\": \"list project files",
+            "\"",
+            "{\"description\": \"scan\", \"prompt\": \"list project files\"}",
+            "",
+            "{\"description\": \"scan\", \"prompt\": \"list project files\"}",
+        ];
+
+        let reduced = chunks
+            .into_iter()
+            .map(|chunk| text_delta(&mut seen, chunk, true))
+            .collect::<String>();
+
+        assert_eq!(
+            reduced,
+            "{\"description\": \"scan\", \"prompt\": \"list project files\"}"
+        );
+    }
+
+    #[test]
+    fn best_complete_json_object_ignores_trailing_replayed_tool_fragments() {
+        let sources = [
+            "{\"description\": \"scan\", \"prompt\": \"list project files\"}\"}\"}",
+            "{\"description\": \"scan\"}",
+            "scan",
+        ];
+
+        assert_eq!(
+            best_complete_json_object(sources),
+            Some("{\"description\": \"scan\", \"prompt\": \"list project files\"}".to_owned())
+        );
     }
 }
