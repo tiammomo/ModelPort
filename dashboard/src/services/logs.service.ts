@@ -1,5 +1,42 @@
 import type { RequestLog, LogFilters, LatencyStats } from '@/types'
 import { api } from '@/lib/api-client'
+import { isMockMode, mockDelay } from '@/lib/mock-mode'
+import { mockLogs } from '@/mock'
+
+const latencyValues = mockLogs.map((log) => log.latencyMs).sort((a, b) => a - b)
+
+function percentile(values: number[], p: number) {
+  if (values.length === 0) return 0
+  const index = Math.min(values.length - 1, Math.floor(values.length * p))
+  return values[index]
+}
+
+function mockLatencyStats(): LatencyStats {
+  const avg = latencyValues.reduce((sum, value) => sum + value, 0) / Math.max(latencyValues.length, 1)
+  const byProvider: LatencyStats['byProvider'] = {}
+  const byModel: LatencyStats['byModel'] = {}
+
+  for (const log of mockLogs) {
+    for (const [key, bucket] of [[log.provider, byProvider], [log.model, byModel]] as const) {
+      const current = bucket[key] || { p50: 0, p95: 0, avg: 0 }
+      current.avg = Math.round((current.avg + log.latencyMs) / (current.avg === 0 ? 1 : 2))
+      current.p50 = Math.max(current.p50, Math.round(log.latencyMs * 0.7))
+      current.p95 = Math.max(current.p95, log.latencyMs)
+      bucket[key] = current
+    }
+  }
+
+  return {
+    p50: percentile(latencyValues, 0.5),
+    p90: percentile(latencyValues, 0.9),
+    p95: percentile(latencyValues, 0.95),
+    p99: percentile(latencyValues, 0.99),
+    avg: Math.round(avg),
+    max: latencyValues.at(-1) || 0,
+    byModel,
+    byProvider,
+  }
+}
 
 export const logsService = {
   getLogs: async (
@@ -7,7 +44,9 @@ export const logsService = {
     page = 1,
     pageSize = 20
   ): Promise<{ logs: RequestLog[]; total: number }> => {
-    const data = await api.get<{ logs: RequestLog[]; total: number }>('/admin/logs')
+    const data = isMockMode
+      ? { logs: mockLogs, total: mockLogs.length }
+      : await api.get<{ logs: RequestLog[]; total: number }>('/admin/logs')
     let filtered = data.logs
 
     if (filters?.userId) filtered = filtered.filter((log) => log.userId === filters.userId)
@@ -27,15 +66,19 @@ export const logsService = {
 
     const total = filtered.length
     const start = (page - 1) * pageSize
-    return { logs: filtered.slice(start, start + pageSize), total }
+    const result = { logs: filtered.slice(start, start + pageSize), total }
+    return isMockMode ? mockDelay(result) : result
   },
 
   getLogById: async (id: string): Promise<RequestLog> => {
-    const data = await api.get<{ logs: RequestLog[]; total: number }>('/admin/logs')
+    const data = isMockMode
+      ? { logs: mockLogs, total: mockLogs.length }
+      : await api.get<{ logs: RequestLog[]; total: number }>('/admin/logs')
     const log = data.logs.find((item) => item.id === id)
     if (!log) throw new Error('日志不存在')
-    return log
+    return isMockMode ? mockDelay(log) : log
   },
 
-  getLatencyStats: (): Promise<LatencyStats> => api.get('/admin/latency'),
+  getLatencyStats: (): Promise<LatencyStats> =>
+    isMockMode ? mockDelay(mockLatencyStats()) : api.get('/admin/latency'),
 }

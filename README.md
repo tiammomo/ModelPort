@@ -454,6 +454,13 @@ Service-level variables:
 | `MODELPORT_INCLUDE_UNAVAILABLE_PROVIDERS` | unset | Set to `1` to list providers without configured keys. |
 | `MODELPORT_ALLOW_NO_AUTH` | unset | Set to `1` only for isolated tests; do not enable in production. |
 
+Dashboard-only variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | current origin | Backend base URL for the dashboard during Vite development or split deployment. |
+| `VITE_MODELPORT_MOCK` | unset | Set to `1` to use local dashboard mock data for demos and UI testing. Do not enable in production builds. |
+
 ## Long-Running Usage
 
 ### Background Scripts

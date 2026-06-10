@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env,
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -20,14 +21,14 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     auth::{AuthStore, CreateUserInput, LoginInput, PublicUser},
     config::{AppConfig, ProviderProtocol},
     control::{
-        ClientIdentity, ControlStore, CreateApiKeyInput, UpsertQuotaInput, UsageEstimate,
-        UsageEventInput,
+        ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput, UpsertQuotaInput,
+        UsageEstimate, UsageEventInput,
     },
     error::AppError,
     http::HttpTransport,
@@ -151,8 +152,8 @@ async fn models(
     let started = Instant::now();
     let result = (|| {
         authenticate_client(&state, &headers)?;
-        let data = state
-            .config
+        let config = effective_config(&state);
+        let data = config
             .model_list()
             .into_iter()
             .map(|(id, display_name)| {
@@ -202,7 +203,8 @@ async fn messages(
     }
 
     let requested_model = request.model.clone();
-    let resolved = match state.config.resolve(&request.model) {
+    let config = effective_config(&state);
+    let resolved = match config.resolve(&request.model) {
         Ok(resolved) => resolved,
         Err(err) => {
             state
@@ -282,6 +284,14 @@ async fn admin_login(
     Json(input): Json<LoginInput>,
 ) -> Result<Response, AppError> {
     let login = state.auth.login(input)?;
+    record_admin_activity(
+        &state,
+        &login.user,
+        "config_change",
+        format!("user:{}", login.user.id),
+        format!("管理员 {} 登录控制台", login.user.username),
+        "info",
+    );
     let mut response = Json(json!({
         "user": login.user,
         "expiresAt": login.expires_at_ms.to_string(),
@@ -325,6 +335,25 @@ fn require_admin_user(state: &AppState, headers: &HeaderMap) -> Result<PublicUse
         Ok(user)
     } else {
         Err(AppError::Forbidden("admin role required".to_owned()))
+    }
+}
+
+fn record_admin_activity(
+    state: &AppState,
+    actor: &PublicUser,
+    activity_type: &str,
+    target: impl Into<String>,
+    message: impl Into<String>,
+    severity: &str,
+) {
+    if let Err(err) = state.control.record_activity(ActivityInput {
+        activity_type: activity_type.to_owned(),
+        actor: actor.username.clone(),
+        target: target.into(),
+        message: message.into(),
+        severity: severity.to_owned(),
+    }) {
+        warn!(error = %err, "failed to record admin activity");
     }
 }
 
@@ -427,7 +456,48 @@ async fn admin_dashboard(
         .count();
     let active_users = state.auth.active_user_count();
     let usage_summary = state.control.usage_summary_today();
+    let (usage_request_series, usage_error_series) = state.control.usage_time_series_24h();
+    let usage_series_has_data = usage_request_series
+        .iter()
+        .any(|point| point.get("value").and_then(Value::as_u64).unwrap_or(0) > 0);
+    let metric_top_models = snapshot
+        .messages
+        .iter()
+        .map(|message| {
+            json!({
+                "model": message.model,
+                "provider": message.provider,
+                "requests": message.requests_total,
+            })
+        })
+        .collect::<Vec<_>>();
+    let usage_top_models = state.control.usage_top_models_today(8);
+    let persisted_provider_usage = state.control.provider_usage_today();
     let now = now_millis_string();
+    let recent_activity = state.control.activity_rows(8);
+    let fallback_activity = vec![
+        json!({
+            "id": "act_health",
+            "timestamp": now.clone(),
+            "type": "request",
+            "message": format!("ModelPort gateway is healthy; busiest route: {busiest_route}"),
+            "severity": "info",
+        }),
+        json!({
+            "id": "act_messages",
+            "timestamp": now_millis_string(),
+            "type": if total_failures > 0 { "error" } else { "request" },
+            "message": format!("{total_requests} model message request(s), {total_failures} failure(s) since startup"),
+            "severity": if total_failures > 0 { "warning" } else { "info" },
+        }),
+        json!({
+            "id": "act_routes",
+            "timestamp": now_millis_string(),
+            "type": if route_failures > 0 { "error" } else { "request" },
+            "message": format!("{route_requests} route request(s), {route_successes} success(es), avg {} ms", average(route_duration, route_requests)),
+            "severity": if route_failures > 0 { "warning" } else { "info" },
+        }),
+    ];
 
     Ok(Json(json!({
         "uptimeSeconds": snapshot.uptime_seconds,
@@ -446,51 +516,38 @@ async fn admin_dashboard(
         "todayCacheWriteTokens": usage_summary.total_cache_write_tokens,
         "todayCacheReadTokens": usage_summary.total_cache_read_tokens,
         "todayCostEstimate": usage_summary.total_cost_estimate,
-        "requestTimeSeries": time_series(total_requests),
-        "errorTimeSeries": time_series(total_failures),
-        "topModels": snapshot.messages.iter().map(|message| json!({
-            "model": message.model,
-            "provider": message.provider,
-            "requests": message.requests_total,
-        })).collect::<Vec<_>>(),
+        "requestTimeSeries": if usage_series_has_data { usage_request_series } else { time_series(total_requests) },
+        "errorTimeSeries": if usage_series_has_data { usage_error_series } else { time_series(total_failures) },
+        "topModels": if metric_top_models.is_empty() { usage_top_models } else { metric_top_models },
         "providerHealth": providers.iter().map(|provider| {
             let id = provider.get("id").and_then(Value::as_str).unwrap_or("");
             let provider_messages = snapshot.messages.iter().filter(|message| message.provider == id).collect::<Vec<_>>();
-            let requests = provider_messages.iter().map(|message| message.requests_total).sum::<u64>();
-            let successes = provider_messages.iter().map(|message| message.successes_total).sum::<u64>();
-            let duration = provider_messages.iter().map(|message| message.duration_ms_total).sum::<u64>();
+            let metric_requests = provider_messages.iter().map(|message| message.requests_total).sum::<u64>();
+            let metric_successes = provider_messages.iter().map(|message| message.successes_total).sum::<u64>();
+            let metric_duration = provider_messages.iter().map(|message| message.duration_ms_total).sum::<u64>();
+            let persisted = persisted_provider_usage.get(id);
+            let requests = if metric_requests > 0 { metric_requests } else { persisted.map(|stats| stats.requests_total).unwrap_or(0) };
+            let successes = if metric_requests > 0 { metric_successes } else { persisted.map(|stats| stats.successes_total).unwrap_or(0) };
+            let duration = if metric_requests > 0 { metric_duration } else { persisted.map(|stats| stats.duration_ms_total).unwrap_or(0) };
+            let success_rate = percent(successes, requests);
+            let provider_status = provider.get("status").and_then(Value::as_str).unwrap_or("inactive");
+            let health_status = if provider_status != "active" {
+                "down"
+            } else if requests > 0 && success_rate < 99.0 {
+                "degraded"
+            } else {
+                "healthy"
+            };
             json!({
                 "providerId": id,
                 "displayName": provider.get("displayName").cloned().unwrap_or_else(|| json!(id)),
-                "status": provider.get("status").cloned().unwrap_or_else(|| json!("inactive")),
+                "status": health_status,
                 "requestsTotal": requests,
-                "successRate": percent(successes, requests),
+                "successRate": success_rate,
                 "avgLatencyMs": average(duration, requests),
             })
         }).collect::<Vec<_>>(),
-        "recentActivity": vec![
-            json!({
-                "id": "act_health",
-                "timestamp": now,
-                "type": "request",
-                "message": format!("ModelPort gateway is healthy; busiest route: {busiest_route}"),
-                "severity": "info",
-            }),
-            json!({
-                "id": "act_messages",
-                "timestamp": now_millis_string(),
-                "type": if total_failures > 0 { "error" } else { "request" },
-                "message": format!("{total_requests} model message request(s), {total_failures} failure(s) since startup"),
-                "severity": if total_failures > 0 { "warning" } else { "info" },
-            }),
-            json!({
-                "id": "act_routes",
-                "timestamp": now_millis_string(),
-                "type": if route_failures > 0 { "error" } else { "request" },
-                "message": format!("{route_requests} route request(s), {route_successes} success(es), avg {} ms", average(route_duration, route_requests)),
-                "severity": if route_failures > 0 { "warning" } else { "info" },
-            }),
-        ],
+        "recentActivity": if recent_activity.is_empty() { fallback_activity } else { recent_activity },
     })))
 }
 
@@ -515,17 +572,41 @@ async fn admin_create_alias(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     let alias = body.get("alias").and_then(Value::as_str).unwrap_or("");
     let target = body.get("target").and_then(Value::as_str).unwrap_or("");
-    Ok(Json(alias_row(&state, alias, target)))
+    validate_alias_target(&state, alias, target)?;
+    state
+        .control
+        .upsert_alias(alias.to_owned(), target.to_owned())?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("alias:{alias}"),
+        format!("创建模型别名 {alias} -> {target}"),
+        "info",
+    );
+    let config = effective_config(&state);
+    Ok(Json(alias_row(&config, alias, target)))
 }
 
 async fn admin_delete_alias(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Path(alias): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
+    let tombstone = state.config.aliases.contains_key(&alias);
+    state.control.delete_alias(&alias, tombstone)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("alias:{alias}"),
+        format!("删除模型别名 {alias}"),
+        "warning",
+    );
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -542,12 +623,37 @@ async fn admin_update_settings(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
-    Ok(Json(if body.is_object() {
-        body
-    } else {
-        settings_row(&state)
-    }))
+    let actor = require_admin_user(&state, &headers)?;
+    let mut changes = Vec::new();
+    if let Some(gateway) = body.get("gateway") {
+        if let Some(provider_id) = gateway.get("defaultProvider").and_then(Value::as_str) {
+            if !state.config.providers.contains_key(provider_id) {
+                return Err(AppError::ProviderNotFound(provider_id.to_owned()));
+            }
+            state.control.set_default_provider(provider_id.to_owned())?;
+            changes.push(format!("默认供应商设为 {provider_id}"));
+        }
+
+        if let Some(order) = gateway.get("providerOrder") {
+            let provider_order = parse_provider_order(&state.config, order)?;
+            let provider_count = provider_order.len();
+            state.control.set_provider_order(provider_order)?;
+            changes.push(format!("供应商路由顺序更新为 {provider_count} 个节点"));
+        }
+    }
+
+    if !changes.is_empty() {
+        record_admin_activity(
+            &state,
+            &actor,
+            "config_change",
+            "gateway",
+            changes.join("；"),
+            "info",
+        );
+    }
+
+    Ok(Json(settings_row(&state)))
 }
 
 async fn admin_test_provider(
@@ -555,7 +661,7 @@ async fn admin_test_provider(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     let provider_id = body
         .get("providerId")
         .and_then(Value::as_str)
@@ -567,13 +673,31 @@ async fn admin_test_provider(
         })));
     };
 
+    let success = provider
+        .api_key()
+        .is_ok_and(|key| key.is_some() || !provider.api_key_required);
+    let message = if success {
+        "configured"
+    } else {
+        "missing API key"
+    };
+    let tested_at =
+        state
+            .control
+            .record_provider_test(provider_id.to_owned(), success, message.to_owned())?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{provider_id}"),
+        format!("测试供应商 {provider_id}: {message}"),
+        if success { "info" } else { "warning" },
+    );
+
     Ok(Json(json!({
-        "success": provider.api_key().is_ok_and(|key| key.is_some() || !provider.api_key_required),
-        "message": if provider.api_key().is_ok_and(|key| key.is_some() || !provider.api_key_required) {
-            "configured"
-        } else {
-            "missing API key"
-        },
+        "success": success,
+        "message": message,
+        "testedAt": tested_at.to_string(),
     })))
 }
 
@@ -646,8 +770,17 @@ async fn admin_create_user(
     headers: HeaderMap,
     Json(body): Json<CreateUserInput>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
-    Ok(Json(json!(state.auth.create_user(body)?)))
+    let actor = require_admin_user(&state, &headers)?;
+    let user = state.auth.create_user(body)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("user:{}", user.id),
+        format!("创建用户 {}", user.username),
+        "info",
+    );
+    Ok(Json(json!(user)))
 }
 
 async fn admin_delete_user(
@@ -658,6 +791,14 @@ async fn admin_delete_user(
     let current_user = require_admin_user(&state, &headers)?;
     state.auth.delete_user(&user_id, &current_user.id)?;
     state.control.delete_user_resources(&user_id)?;
+    record_admin_activity(
+        &state,
+        &current_user,
+        "config_change",
+        format!("user:{user_id}"),
+        format!("删除用户 {user_id} 并回收相关资源"),
+        "warning",
+    );
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -683,7 +824,7 @@ async fn admin_create_api_key(
     headers: HeaderMap,
     Json(mut body): Json<CreateApiKeyInput>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     if body.username.is_none()
         && let Some(user) = state
             .auth
@@ -693,7 +834,19 @@ async fn admin_create_api_key(
     {
         body.username = Some(user.username);
     }
-    Ok(Json(json!(state.control.create_api_key(body)?)))
+    let created = state.control.create_api_key(body)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("api_key:{}", created.public.id),
+        format!(
+            "为用户 {} 创建 API Key {}",
+            created.public.username, created.public.name
+        ),
+        "info",
+    );
+    Ok(Json(json!(created)))
 }
 
 async fn admin_revoke_api_key(
@@ -701,8 +854,16 @@ async fn admin_revoke_api_key(
     headers: HeaderMap,
     Path(key_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     state.control.revoke_api_key(&key_id)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("api_key:{key_id}"),
+        format!("吊销 API Key {key_id}"),
+        "warning",
+    );
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -711,8 +872,16 @@ async fn admin_delete_api_key(
     headers: HeaderMap,
     Path(key_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     state.control.delete_api_key(&key_id)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("api_key:{key_id}"),
+        format!("删除 API Key {key_id}"),
+        "warning",
+    );
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -729,8 +898,20 @@ async fn admin_create_quota(
     headers: HeaderMap,
     Json(body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
-    Ok(Json(json!(state.control.upsert_quota(body)?)))
+    let actor = require_admin_user(&state, &headers)?;
+    let quota = state.control.upsert_quota(body)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("quota:{}", quota.id),
+        format!(
+            "为用户 {} 配置 {} 配额 {} / {}",
+            quota.username, quota.quota_type, quota.limit, quota.period
+        ),
+        "info",
+    );
+    Ok(Json(json!(quota)))
 }
 
 async fn admin_update_quota(
@@ -739,9 +920,21 @@ async fn admin_update_quota(
     Path(quota_id): Path<String>,
     Json(mut body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     body.id = Some(quota_id);
-    Ok(Json(json!(state.control.upsert_quota(body)?)))
+    let quota = state.control.upsert_quota(body)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("quota:{}", quota.id),
+        format!(
+            "更新用户 {} 的 {} 配额为 {} / {}",
+            quota.username, quota.quota_type, quota.limit, quota.period
+        ),
+        "info",
+    );
+    Ok(Json(json!(quota)))
 }
 
 async fn admin_delete_quota(
@@ -749,18 +942,27 @@ async fn admin_delete_quota(
     headers: HeaderMap,
     Path(quota_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_admin_user(&state, &headers)?;
     state.control.delete_quota(&quota_id)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("quota:{quota_id}"),
+        format!("删除配额 {quota_id}"),
+        "warning",
+    );
     Ok(Json(json!({ "ok": true })))
 }
 
 fn provider_rows(state: &AppState) -> Vec<Value> {
-    state
-        .config
+    let config = effective_config(state);
+    let provider_tests = state.control.provider_test_rows();
+    config
         .provider_order
         .iter()
         .filter_map(|id| {
-            let provider = state.config.providers.get(id)?;
+            let provider = config.providers.get(id)?;
             let has_api_key = provider.api_key().ok().flatten().is_some();
             Some(json!({
                 "id": id,
@@ -778,22 +980,23 @@ fn provider_rows(state: &AppState) -> Vec<Value> {
                 "bufferStreamText": provider.buffer_stream_text,
                 "status": if has_api_key || !provider.api_key_required { "active" } else { "inactive" },
                 "hasApiKey": has_api_key,
+                "lastTest": provider_tests.get(id).cloned(),
             }))
         })
         .collect()
 }
 
 fn alias_rows(state: &AppState) -> Vec<Value> {
-    state
-        .config
+    let config = effective_config(state);
+    config
         .aliases
         .iter()
-        .map(|(alias, target)| alias_row(state, alias, target))
+        .map(|(alias, target)| alias_row(&config, alias, target))
         .collect()
 }
 
-fn alias_row(state: &AppState, alias: &str, target: &str) -> Value {
-    let resolved = state.config.resolve(alias).ok();
+fn alias_row(config: &AppConfig, alias: &str, target: &str) -> Value {
+    let resolved = config.resolve(alias).ok();
     json!({
         "alias": alias,
         "target": target,
@@ -803,28 +1006,103 @@ fn alias_row(state: &AppState, alias: &str, target: &str) -> Value {
 }
 
 fn settings_row(state: &AppState) -> Value {
+    let config = effective_config(state);
     json!({
         "server": {
-            "bindAddress": state.config.bind_addr.to_string(),
-            "maxRequestBodyBytes": state.config.max_request_body_bytes,
-            "maxConcurrentRequests": state.config.max_concurrent_requests,
+            "bindAddress": config.bind_addr.to_string(),
+            "maxRequestBodyBytes": config.max_request_body_bytes,
+            "maxConcurrentRequests": config.max_concurrent_requests,
         },
         "auth": {
-            "enabled": state.config.auth_token.is_some(),
+            "enabled": config.auth_token.is_some(),
             "tokenEnvVar": "MODELPORT_AUTH_TOKEN",
-            "allowNoAuth": state.config.auth_token.is_none(),
+            "allowNoAuth": config.auth_token.is_none(),
         },
         "gateway": {
-            "defaultProvider": state.config.default_provider,
-            "providerOrder": state.config.provider_order,
+            "defaultProvider": config.default_provider,
+            "providerOrder": config.provider_order,
         },
         "rateLimits": {
-            "maxConcurrentRequests": state.config.max_concurrent_requests,
-            "maxRequestBodyBytes": state.config.max_request_body_bytes,
+            "maxConcurrentRequests": config.max_concurrent_requests,
+            "maxRequestBodyBytes": config.max_request_body_bytes,
             "requestTimeoutSecs": env_u64("MODELPORT_HTTP_REQUEST_TIMEOUT_SECS", 600),
             "streamIdleTimeoutSecs": env_u64("MODELPORT_HTTP_STREAM_IDLE_TIMEOUT_SECS", 300),
         },
     })
+}
+
+fn effective_config(state: &AppState) -> AppConfig {
+    let mut config = state.config.as_ref().clone();
+    let snapshot = state.control.routing_config();
+    config.aliases = state.control.effective_aliases(&config.aliases);
+
+    if let Some(provider_id) = snapshot.default_provider
+        && config.providers.contains_key(&provider_id)
+    {
+        config.default_provider = provider_id;
+    }
+
+    if let Some(provider_order) = snapshot.provider_order {
+        let filtered = provider_order
+            .into_iter()
+            .filter(|provider_id| config.providers.contains_key(provider_id))
+            .collect::<Vec<_>>();
+        if !filtered.is_empty() {
+            config.provider_order = filtered;
+        }
+    }
+
+    config
+}
+
+fn validate_alias_target(state: &AppState, alias: &str, target: &str) -> Result<(), AppError> {
+    let alias = alias.trim();
+    let target = target.trim();
+    if alias.is_empty() || target.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "alias and target are required".to_owned(),
+        ));
+    }
+
+    let mut config = effective_config(state);
+    config.aliases.insert(alias.to_owned(), target.to_owned());
+    config.resolve(alias)?;
+    Ok(())
+}
+
+fn parse_provider_order(config: &AppConfig, value: &Value) -> Result<Vec<String>, AppError> {
+    let Some(values) = value.as_array() else {
+        return Err(AppError::InvalidRequest(
+            "gateway.providerOrder must be an array".to_owned(),
+        ));
+    };
+
+    let mut seen = BTreeSet::new();
+    let mut order = Vec::new();
+    for value in values {
+        let Some(provider_id) = value.as_str().map(str::trim) else {
+            return Err(AppError::InvalidRequest(
+                "gateway.providerOrder values must be strings".to_owned(),
+            ));
+        };
+        if provider_id.is_empty() {
+            continue;
+        }
+        if !config.providers.contains_key(provider_id) {
+            return Err(AppError::ProviderNotFound(provider_id.to_owned()));
+        }
+        if seen.insert(provider_id.to_owned()) {
+            order.push(provider_id.to_owned());
+        }
+    }
+
+    if order.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "gateway.providerOrder cannot be empty".to_owned(),
+        ));
+    }
+
+    Ok(order)
 }
 
 fn log_rows(state: &AppState) -> Vec<Value> {
@@ -1243,6 +1521,96 @@ data: [DONE]
             .await
             .unwrap();
         assert_eq!(dashboard_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_alias_updates_runtime_message_routing() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","model":"mimo-v2.5-pro","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+            "application/json",
+        )
+        .await;
+        let app = router(test_state_with_admin(upstream, 1024 * 1024));
+
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .body(Body::from(
+                        json!({
+                            "username": "admin",
+                            "password": "strong-password-123",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let session_cookie = login_response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("login should set a session cookie")
+            .clone();
+
+        let alias_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/aliases")
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .header(COOKIE, session_cookie)
+                    .body(Body::from(
+                        json!({
+                            "alias": "fast",
+                            "target": "mimo:mimo-v2.5-pro",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(alias_response.status(), StatusCode::OK);
+
+        let (message_status, _) = post_message(
+            app.clone(),
+            json!({
+                "model": "fast",
+                "max_tokens": 32,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "hello"
+                    }
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(message_status, StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .header("x-api-key", CLIENT_TOKEN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(
+            r#"modelport_message_requests_total{provider="mimo",model="mimo-v2.5-pro",stream="false"} 1"#
+        ));
     }
 
     async fn post_message(app: Router, body: Value) -> (StatusCode, String) {

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     env, fs,
     path::PathBuf,
     sync::Mutex,
@@ -29,6 +29,9 @@ struct ControlInner {
     api_keys: BTreeMap<String, ApiKeyRecord>,
     quotas: BTreeMap<String, QuotaRecord>,
     usage: Vec<UsageRecord>,
+    route_config: RouteConfigRecord,
+    activities: Vec<ActivityRecord>,
+    provider_tests: BTreeMap<String, ProviderTestRecord>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -40,6 +43,53 @@ struct ControlFile {
     quotas: Vec<QuotaRecord>,
     #[serde(default)]
     usage: Vec<UsageRecord>,
+    #[serde(default)]
+    route_config: RouteConfigRecord,
+    #[serde(default)]
+    activities: Vec<ActivityRecord>,
+    #[serde(default)]
+    provider_tests: Vec<ProviderTestRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteConfigRecord {
+    #[serde(default)]
+    aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    deleted_aliases: BTreeSet<String>,
+    default_provider: Option<String>,
+    provider_order: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivityRecord {
+    id: String,
+    timestamp_ms: u64,
+    activity_type: String,
+    actor: String,
+    target: String,
+    message: String,
+    severity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderTestRecord {
+    provider_id: String,
+    tested_at_ms: u64,
+    success: bool,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityInput {
+    pub activity_type: String,
+    pub actor: String,
+    pub target: String,
+    pub message: String,
+    pub severity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +258,19 @@ pub struct UsageSummary {
     pub average_latency_ms: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProviderUsageStats {
+    pub requests_total: u64,
+    pub successes_total: u64,
+    pub duration_ms_total: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoutingConfigSnapshot {
+    pub default_provider: Option<String>,
+    pub provider_order: Option<Vec<String>>,
+}
+
 impl ControlStore {
     pub fn load() -> Result<Self, AppError> {
         let path = control_store_path();
@@ -236,6 +299,13 @@ impl ControlStore {
                     .map(|record| (record.id.clone(), record))
                     .collect(),
                 usage: file.usage,
+                route_config: file.route_config,
+                activities: file.activities,
+                provider_tests: file
+                    .provider_tests
+                    .into_iter()
+                    .map(|record| (record.provider_id.clone(), record))
+                    .collect(),
             }),
             usage_limit,
         })
@@ -248,6 +318,167 @@ impl ControlStore {
             inner: Mutex::new(ControlInner::default()),
             usage_limit: DEFAULT_USAGE_LIMIT,
         }
+    }
+
+    pub fn routing_config(&self) -> RoutingConfigSnapshot {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        RoutingConfigSnapshot {
+            default_provider: inner.route_config.default_provider.clone(),
+            provider_order: inner.route_config.provider_order.clone(),
+        }
+    }
+
+    pub fn effective_aliases(
+        &self,
+        base_aliases: &HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        effective_aliases_locked(base_aliases, &inner.route_config)
+    }
+
+    pub fn upsert_alias(&self, alias: String, target: String) -> Result<(), AppError> {
+        let alias = alias.trim();
+        let target = target.trim();
+        if alias.is_empty() || alias.len() > 120 {
+            return Err(AppError::InvalidRequest(
+                "alias must be 1-120 characters".to_owned(),
+            ));
+        }
+        if alias.contains(':') {
+            return Err(AppError::InvalidRequest(
+                "alias cannot contain provider selector ':'".to_owned(),
+            ));
+        }
+        if target.is_empty() || target.len() > 240 {
+            return Err(AppError::InvalidRequest(
+                "alias target must be 1-240 characters".to_owned(),
+            ));
+        }
+
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner
+            .route_config
+            .aliases
+            .insert(alias.to_owned(), target.to_owned());
+        inner.route_config.deleted_aliases.remove(alias);
+        self.save_locked(&inner)
+    }
+
+    pub fn delete_alias(&self, alias: &str, tombstone: bool) -> Result<(), AppError> {
+        let alias = alias.trim();
+        if alias.is_empty() {
+            return Err(AppError::InvalidRequest("alias is required".to_owned()));
+        }
+
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner.route_config.aliases.remove(alias);
+        if tombstone {
+            inner.route_config.deleted_aliases.insert(alias.to_owned());
+        } else {
+            inner.route_config.deleted_aliases.remove(alias);
+        }
+        self.save_locked(&inner)
+    }
+
+    pub fn set_default_provider(&self, provider_id: String) -> Result<(), AppError> {
+        let provider_id = provider_id.trim();
+        if provider_id.is_empty() {
+            return Err(AppError::InvalidRequest(
+                "default provider is required".to_owned(),
+            ));
+        }
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner.route_config.default_provider = Some(provider_id.to_owned());
+        self.save_locked(&inner)
+    }
+
+    pub fn set_provider_order(&self, provider_order: Vec<String>) -> Result<(), AppError> {
+        if provider_order.is_empty() {
+            return Err(AppError::InvalidRequest(
+                "provider order cannot be empty".to_owned(),
+            ));
+        }
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner.route_config.provider_order = Some(provider_order);
+        self.save_locked(&inner)
+    }
+
+    pub fn record_activity(&self, input: ActivityInput) -> Result<(), AppError> {
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner.activities.push(ActivityRecord {
+            id: format!("act_{}", Uuid::new_v4().simple()),
+            timestamp_ms: now_millis(),
+            activity_type: input.activity_type,
+            actor: input.actor,
+            target: input.target,
+            message: input.message,
+            severity: input.severity,
+        });
+        let overflow = inner.activities.len().saturating_sub(500);
+        if overflow > 0 {
+            inner.activities.drain(0..overflow);
+        }
+        self.save_locked(&inner)
+    }
+
+    pub fn activity_rows(&self, limit: usize) -> Vec<serde_json::Value> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        inner
+            .activities
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|record| {
+                json!({
+                    "id": record.id,
+                    "timestamp": record.timestamp_ms.to_string(),
+                    "type": record.activity_type,
+                    "actor": record.actor,
+                    "target": record.target,
+                    "message": record.message,
+                    "severity": record.severity,
+                })
+            })
+            .collect()
+    }
+
+    pub fn record_provider_test(
+        &self,
+        provider_id: String,
+        success: bool,
+        message: String,
+    ) -> Result<u64, AppError> {
+        let tested_at_ms = now_millis();
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner.provider_tests.insert(
+            provider_id.clone(),
+            ProviderTestRecord {
+                provider_id,
+                tested_at_ms,
+                success,
+                message,
+            },
+        );
+        self.save_locked(&inner)?;
+        Ok(tested_at_ms)
+    }
+
+    pub fn provider_test_rows(&self) -> BTreeMap<String, serde_json::Value> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        inner
+            .provider_tests
+            .iter()
+            .map(|(provider_id, record)| {
+                (
+                    provider_id.clone(),
+                    json!({
+                        "testedAt": record.tested_at_ms.to_string(),
+                        "success": record.success,
+                        "message": record.message,
+                    }),
+                )
+            })
+            .collect()
     }
 
     pub fn authenticate_headers(
@@ -551,6 +782,113 @@ impl ControlStore {
             .collect()
     }
 
+    pub fn usage_time_series_24h(&self) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        let now = now_millis();
+        let hour_ms = 60 * 60 * 1_000;
+        let window_start = now.saturating_sub(23 * hour_ms);
+        let mut requests = [0u64; 24];
+        let mut errors = [0u64; 24];
+
+        for record in inner
+            .usage
+            .iter()
+            .filter(|record| record.timestamp_ms >= window_start)
+        {
+            let offset = record.timestamp_ms.saturating_sub(window_start) / hour_ms;
+            let index = usize::try_from(offset.min(23)).unwrap_or(23);
+            requests[index] = requests[index].saturating_add(1);
+            if record.status != "success" {
+                errors[index] = errors[index].saturating_add(1);
+            }
+        }
+
+        let request_series = requests
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                json!({
+                    "timestamp": window_start.saturating_add(u64::try_from(index).unwrap_or(0) * hour_ms).to_string(),
+                    "value": value,
+                })
+            })
+            .collect();
+        let error_series = errors
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                json!({
+                    "timestamp": window_start.saturating_add(u64::try_from(index).unwrap_or(0) * hour_ms).to_string(),
+                    "value": value,
+                })
+            })
+            .collect();
+        (request_series, error_series)
+    }
+
+    pub fn usage_top_models_today(&self, limit: usize) -> Vec<serde_json::Value> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        let today_start = day_start(now_millis());
+        let mut models: BTreeMap<(String, String), u64> = BTreeMap::new();
+
+        for record in inner
+            .usage
+            .iter()
+            .filter(|record| record.timestamp_ms >= today_start)
+        {
+            let key = (record.resolved_model.clone(), record.provider.clone());
+            let count = models.entry(key).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+
+        let mut rows = models
+            .into_iter()
+            .map(|((model, provider), requests)| {
+                json!({
+                    "model": model,
+                    "provider": provider,
+                    "requests": requests,
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            let left_count = left
+                .get("requests")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let right_count = right
+                .get("requests")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            right_count.cmp(&left_count)
+        });
+        rows.truncate(limit);
+        rows
+    }
+
+    pub fn provider_usage_today(&self) -> BTreeMap<String, ProviderUsageStats> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        let today_start = day_start(now_millis());
+        let mut providers = BTreeMap::new();
+
+        for record in inner
+            .usage
+            .iter()
+            .filter(|record| record.timestamp_ms >= today_start)
+        {
+            let stats = providers
+                .entry(record.provider.clone())
+                .or_insert_with(ProviderUsageStats::default);
+            stats.requests_total = stats.requests_total.saturating_add(1);
+            if record.status == "success" {
+                stats.successes_total = stats.successes_total.saturating_add(1);
+            }
+            stats.duration_ms_total = stats.duration_ms_total.saturating_add(record.latency_ms);
+        }
+
+        providers
+    }
+
     pub fn usage_summary_today(&self) -> UsageSummary {
         let inner = self.inner.lock().expect("control lock poisoned");
         let today_start = day_start(now_millis());
@@ -611,6 +949,9 @@ impl ControlStore {
             api_keys: inner.api_keys.values().cloned().collect(),
             quotas: inner.quotas.values().cloned().collect(),
             usage: inner.usage.clone(),
+            route_config: inner.route_config.clone(),
+            activities: inner.activities.clone(),
+            provider_tests: inner.provider_tests.values().cloned().collect(),
         };
         fs::write(&tmp_path, serde_json::to_string_pretty(&file)?)?;
         fs::rename(tmp_path, path)?;
@@ -648,6 +989,20 @@ fn public_api_key(record: &ApiKeyRecord, usage: &[UsageRecord]) -> PublicApiKey 
         requests_today,
         tokens_today,
     }
+}
+
+fn effective_aliases_locked(
+    base_aliases: &HashMap<String, String>,
+    route_config: &RouteConfigRecord,
+) -> HashMap<String, String> {
+    let mut aliases = base_aliases.clone();
+    for alias in &route_config.deleted_aliases {
+        aliases.remove(alias);
+    }
+    for (alias, target) in &route_config.aliases {
+        aliases.insert(alias.clone(), target.clone());
+    }
+    aliases
 }
 
 fn public_quota(record: &QuotaRecord) -> PublicQuota {
@@ -833,6 +1188,30 @@ mod tests {
             store
                 .check_quotas(&identity, UsageEstimate::default())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn route_alias_overrides_are_persistent_in_control_store() {
+        let store = ControlStore::for_tests();
+        let base_aliases = HashMap::from([("base".to_owned(), "mimo".to_owned())]);
+
+        store
+            .upsert_alias("fast".to_owned(), "mimo:mimo-v2.5-pro".to_owned())
+            .unwrap();
+        let aliases = store.effective_aliases(&base_aliases);
+        assert_eq!(
+            aliases.get("fast").map(String::as_str),
+            Some("mimo:mimo-v2.5-pro")
+        );
+        assert_eq!(aliases.get("base").map(String::as_str), Some("mimo"));
+
+        store.delete_alias("base", true).unwrap();
+        let aliases = store.effective_aliases(&base_aliases);
+        assert!(!aliases.contains_key("base"));
+        assert_eq!(
+            aliases.get("fast").map(String::as_str),
+            Some("mimo:mimo-v2.5-pro")
         );
     }
 }

@@ -1,7 +1,16 @@
 import type { RequestLog } from '@/types'
 
-const providers = ['mimo', 'deepseek', 'openrouter', 'openai', 'anthropic', 'gemini', 'dashscope', 'kimi', 'zhipu']
-const models = ['mimo-v2.5-pro', 'deepseek-v4-pro', 'openrouter/auto', 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.5-flash', 'qwen-plus', 'kimi-k2.6', 'glm-4.7']
+const routes = [
+  { provider: 'mimo', model: 'mimo-v2.5-pro' },
+  { provider: 'deepseek', model: 'deepseek-v4-pro' },
+  { provider: 'openrouter', model: 'openrouter/auto' },
+  { provider: 'openai', model: 'gpt-5.5' },
+  { provider: 'anthropic', model: 'claude-fable-5' },
+  { provider: 'gemini', model: 'gemini-3.5-flash' },
+  { provider: 'dashscope', model: 'qwen-plus' },
+  { provider: 'kimi', model: 'kimi-k2.6' },
+  { provider: 'zhipu', model: 'glm-4.7' },
+]
 const users = [
   { id: 'usr_001', username: 'admin' },
   { id: 'usr_002', username: 'alice' },
@@ -20,12 +29,14 @@ function randomItem<T>(arr: T[]): T {
 }
 
 function generateLog(id: number, hoursAgo: number): RequestLog {
-  const providerIdx = randomInt(0, providers.length - 1)
-  const provider = providers[providerIdx]
-  const model = models[providerIdx]
+  const route = randomItem(routes)
   const user = randomItem(users)
   const isSuccess = Math.random() > 0.08
   const isStream = Math.random() > 0.3
+  const inputTokens = randomInt(50, 4000)
+  const outputTokens = randomInt(100, 8000)
+  const cacheReadTokens = Math.random() > 0.55 ? randomInt(0, 2400) : 0
+  const cacheWriteTokens = Math.random() > 0.8 ? randomInt(0, 1200) : 0
 
   const timestamp = new Date(Date.now() - hoursAgo * 3600000 - randomInt(0, 3599) * 1000)
 
@@ -34,15 +45,18 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
     timestamp: timestamp.toISOString(),
     userId: user.id,
     username: user.username,
-    model,
-    resolvedModel: model,
-    provider,
-    protocol: provider === 'anthropic' || provider === 'deepseek' ? 'anthropic' : 'openai-compat',
+    model: route.model,
+    resolvedModel: route.model,
+    provider: route.provider,
+    protocol: route.provider === 'anthropic' || route.provider === 'deepseek' ? 'anthropic' : 'openai-compat',
     stream: isStream ? 'stream' : 'non-stream',
     status: isSuccess ? 'success' : Math.random() > 0.5 ? 'error' : 'timeout',
     statusCode: isSuccess ? 200 : randomItem([400, 401, 429, 500, 502, 503]),
-    inputTokens: randomInt(50, 4000),
-    outputTokens: randomInt(100, 8000),
+    inputTokens,
+    outputTokens,
+    cacheWriteTokens,
+    cacheReadTokens,
+    costEstimate: ((inputTokens + cacheWriteTokens + cacheReadTokens * 0.1) * 0.000001 + outputTokens * 0.000004),
     latencyMs: randomInt(200, 12000),
     errorMessage: isSuccess ? null : randomItem([
       'Rate limit exceeded',

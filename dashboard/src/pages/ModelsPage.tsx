@@ -455,7 +455,7 @@ export function ModelsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                同名模型会按供应商优先级解析；需要固定渠道时使用 provider:model，例如 mimo:gpt-5.5。
+                同名模型会按供应商优先级解析；需要固定渠道时使用 provider:model，例如 openai:gpt-5.5。
               </p>
               <div className="space-y-2">
                 <Label>默认提供商</Label>

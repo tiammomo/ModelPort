@@ -17,6 +17,11 @@ export interface Provider {
   bufferStreamText: boolean
   status: 'active' | 'inactive' | 'error'
   hasApiKey: boolean
+  lastTest?: {
+    testedAt: string
+    success: boolean
+    message: string
+  } | null
 }
 
 export interface ModelAlias {

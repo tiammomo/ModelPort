@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
+import { isMockMode } from '@/lib/mock-mode'
 import { Moon, Sun, Monitor, LogOut, User } from 'lucide-react'
 
 export function Header() {
@@ -29,6 +30,11 @@ export function Header() {
     <header className="flex h-14 items-center justify-between border-b bg-background px-6">
       <div className="flex items-center gap-2">
         <h1 className="text-lg font-semibold">{currentNav?.label || 'ModelPort'}</h1>
+        {isMockMode && (
+          <span className="rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300">
+            演示数据
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

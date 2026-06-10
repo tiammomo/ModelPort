@@ -1,17 +1,20 @@
 import { useState } from 'react'
-import { useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
+import { useProviders, useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { formatBytes } from '@/lib/utils'
 import { Save, Plug, Loader2 } from 'lucide-react'
 import type { SystemSettings } from '@/types'
+
+type ProviderTestResult = { success: boolean; message: string; testedAt: string }
 
 export function SettingsPage() {
   const { data: settings, isLoading } = useSettings()
@@ -26,11 +29,39 @@ export function SettingsPage() {
 function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) {
   const updateSettings = useUpdateSettings()
   const testConnection = useTestProviderConnection()
+  const { data: providers = [] } = useProviders()
 
   const [form, setForm] = useState<SystemSettings>(initialSettings)
+  const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({})
+
+  const providerById = new Map(providers.map((provider) => [provider.id, provider]))
 
   const handleSave = () => {
     if (form) updateSettings.mutate(form)
+  }
+
+  const handleTestProvider = (providerId: string) => {
+    setTestingProviderId(providerId)
+    testConnection.mutate(providerId, {
+      onSuccess: (result) => {
+        setTestResults((current) => ({
+          ...current,
+          [providerId]: { ...result, testedAt: result.testedAt || new Date().toISOString() },
+        }))
+      },
+      onError: (error) => {
+        setTestResults((current) => ({
+          ...current,
+          [providerId]: {
+            success: false,
+            message: error instanceof Error ? error.message : '测试失败',
+            testedAt: new Date().toISOString(),
+          },
+        }))
+      },
+      onSettled: () => setTestingProviderId(null),
+    })
   }
 
   return (
@@ -184,28 +215,18 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
             <CardContent>
               <div className="space-y-3">
                 {form.gateway.providerOrder.map((providerId) => (
-                  <div key={providerId} className="flex items-center justify-between rounded-lg border p-4">
-                    <div className="space-y-0.5">
-                      <p className="text-sm font-medium">{providerId}</p>
-                      <p className="text-xs text-muted-foreground font-mono">{providerId.toUpperCase()}_API_KEY</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <StatusBadge status={providerId === form.gateway.defaultProvider ? 'active' : 'inactive'} />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => testConnection.mutate(providerId)}
-                        disabled={testConnection.isPending}
-                      >
-                        {testConnection.isPending ? (
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        ) : (
-                          <Plug className="mr-1 h-3 w-3" />
-                        )}
-                        测试连接
-                      </Button>
-                    </div>
-                  </div>
+                  <ProviderCredentialRow
+                    key={providerId}
+                    providerId={providerId}
+                    displayName={providerById.get(providerId)?.displayName || providerId}
+                    apiKeyEnv={providerById.get(providerId)?.apiKeyEnv || `${providerId.toUpperCase()}_API_KEY`}
+                    isDefault={providerId === form.gateway.defaultProvider}
+                    status={providerById.get(providerId)?.status || 'inactive'}
+                    lastTest={testResults[providerId] || providerById.get(providerId)?.lastTest || null}
+                    isTesting={testingProviderId === providerId}
+                    isDisabled={testConnection.isPending}
+                    onTest={() => handleTestProvider(providerId)}
+                  />
                 ))}
               </div>
             </CardContent>
@@ -214,4 +235,69 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
       </Tabs>
     </div>
   )
+}
+
+function ProviderCredentialRow({
+  providerId,
+  displayName,
+  apiKeyEnv,
+  isDefault,
+  status,
+  lastTest,
+  isTesting,
+  isDisabled,
+  onTest,
+}: {
+  providerId: string
+  displayName: string
+  apiKeyEnv: string
+  isDefault: boolean
+  status: string
+  lastTest: ProviderTestResult | null
+  isTesting: boolean
+  isDisabled: boolean
+  onTest: () => void
+}) {
+  const displayStatus = lastTest ? (lastTest.success ? 'success' : 'error') : status
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+      <div className="min-w-0 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-medium">{displayName}</p>
+          {isDefault && <Badge variant="outline">默认</Badge>}
+        </div>
+        <p className="font-mono text-xs text-muted-foreground">{apiKeyEnv}</p>
+        {lastTest && (
+          <p className={lastTest.success ? 'text-xs text-green-700 dark:text-green-300' : 'text-xs text-red-700 dark:text-red-300'}>
+            {lastTest.message} · {formatTestTime(lastTest.testedAt)}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        <StatusBadge status={displayStatus} />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onTest}
+          disabled={isDisabled}
+          aria-label={`测试 ${providerId} 连接`}
+        >
+          {isTesting ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          ) : (
+            <Plug className="mr-1 h-3 w-3" />
+          )}
+          测试连接
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function formatTestTime(value: string) {
+  const timestamp = Number(value)
+  const date = Number.isFinite(timestamp) ? new Date(timestamp) : new Date(value)
+  if (Number.isNaN(date.getTime())) return '刚刚'
+  return date.toLocaleString()
 }
