@@ -10,6 +10,33 @@ pub struct Metrics {
     inner: Mutex<MetricsInner>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MetricsSnapshot {
+    pub uptime_seconds: u64,
+    pub routes: Vec<RouteMetricsSnapshot>,
+    pub messages: Vec<MessageMetricsSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouteMetricsSnapshot {
+    pub route: String,
+    pub requests_total: u64,
+    pub successes_total: u64,
+    pub failures_total: u64,
+    pub duration_ms_total: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageMetricsSnapshot {
+    pub provider: String,
+    pub model: String,
+    pub stream: bool,
+    pub requests_total: u64,
+    pub successes_total: u64,
+    pub failures_total: u64,
+    pub duration_ms_total: u64,
+}
+
 #[derive(Debug, Default)]
 struct MetricsInner {
     routes: BTreeMap<String, CounterSet>,
@@ -114,6 +141,38 @@ impl Metrics {
         }
 
         output
+    }
+
+    pub fn snapshot(&self) -> MetricsSnapshot {
+        let inner = self.inner.lock().expect("metrics lock poisoned");
+
+        MetricsSnapshot {
+            uptime_seconds: self.started_at.elapsed().as_secs(),
+            routes: inner
+                .routes
+                .iter()
+                .map(|(route, counters)| RouteMetricsSnapshot {
+                    route: route.clone(),
+                    requests_total: counters.requests_total,
+                    successes_total: counters.successes_total,
+                    failures_total: counters.failures_total,
+                    duration_ms_total: counters.duration_ms_total,
+                })
+                .collect(),
+            messages: inner
+                .messages
+                .iter()
+                .map(|(key, counters)| MessageMetricsSnapshot {
+                    provider: key.provider.clone(),
+                    model: key.model.clone(),
+                    stream: key.stream,
+                    requests_total: counters.requests_total,
+                    successes_total: counters.successes_total,
+                    failures_total: counters.failures_total,
+                    duration_ms_total: counters.duration_ms_total,
+                })
+                .collect(),
+        }
     }
 }
 
