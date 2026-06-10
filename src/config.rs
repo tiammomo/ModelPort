@@ -710,7 +710,7 @@ const MIMO_SPEC: ProviderSpec = ProviderSpec {
     default_model_env: "MIMO_MODEL",
     default_model: "mimo-v2.5-pro",
     models_env: "MIMO_MODELS",
-    models: &["mimo-v2.5-pro", "gpt-5.5"],
+    models: &["mimo-v2.5-pro"],
     model_prefixes: &["mimo-"],
     passthrough_unknown_models: false,
     max_tokens_field: MaxTokensField::MaxCompletionTokens,
@@ -718,6 +718,30 @@ const MIMO_SPEC: ProviderSpec = ProviderSpec {
 };
 
 const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
+    ProviderSpec {
+        id: "deepseek_openai",
+        display_name: "DeepSeek Official OpenAI-Compatible",
+        protocol: ProviderProtocol::OpenaiCompat,
+        base_url_env: "DEEPSEEK_OPENAI_BASE_URL",
+        base_url_env_fallbacks: &[],
+        default_base_url: "https://api.deepseek.com",
+        api_key_env: Some("DEEPSEEK_OPENAI_API_KEY"),
+        api_key_env_fallbacks: &["DEEPSEEK_API_KEY"],
+        api_key_required: true,
+        default_model_env: "DEEPSEEK_OPENAI_MODEL",
+        default_model: "deepseek-v4-pro",
+        models_env: "DEEPSEEK_OPENAI_MODELS",
+        models: &[
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+        model_prefixes: &["deepseek-"],
+        passthrough_unknown_models: false,
+        max_tokens_field: MaxTokensField::MaxTokens,
+        deduplicate_stream_text: false,
+    },
     ProviderSpec {
         id: "anthropic",
         display_name: "Anthropic Claude",
@@ -729,9 +753,16 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         api_key_env_fallbacks: &[],
         api_key_required: true,
         default_model_env: "ANTHROPIC_UPSTREAM_MODEL",
-        default_model: "claude-sonnet-4-20250514",
+        default_model: "claude-fable-5",
         models_env: "ANTHROPIC_UPSTREAM_MODELS",
         models: &[
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
             "claude-opus-4-20250514",
             "claude-sonnet-4-20250514",
             "claude-3-5-haiku-20241022",
@@ -752,9 +783,22 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         api_key_env_fallbacks: &[],
         api_key_required: true,
         default_model_env: "OPENAI_MODEL",
-        default_model: "gpt-4o",
+        default_model: "gpt-5.5",
         models_env: "OPENAI_MODELS",
-        models: &["gpt-4o", "gpt-4o-mini", "o3"],
+        models: &[
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.4",
+            "gpt-5.4-pro",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.3-codex",
+            "gpt-5.2",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+        ],
         model_prefixes: &["gpt-", "o1", "o3", "o4", "o5", "chatgpt-"],
         passthrough_unknown_models: false,
         max_tokens_field: MaxTokensField::MaxCompletionTokens,
@@ -801,9 +845,15 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         api_key_env_fallbacks: &["GOOGLE_API_KEY"],
         api_key_required: true,
         default_model_env: "GEMINI_MODEL",
-        default_model: "gemini-2.5-flash",
+        default_model: "gemini-3.5-flash",
         models_env: "GEMINI_MODELS",
-        models: &["gemini-2.5-pro", "gemini-2.5-flash"],
+        models: &[
+            "gemini-3.5-flash",
+            "gemini-3.5-pro",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        ],
         model_prefixes: &["gemini-"],
         passthrough_unknown_models: false,
         max_tokens_field: MaxTokensField::MaxCompletionTokens,
@@ -860,7 +910,15 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         default_model_env: "DASHSCOPE_MODEL",
         default_model: "qwen-plus",
         models_env: "DASHSCOPE_MODELS",
-        models: &["qwen-plus", "qwen-max", "qwen-turbo"],
+        models: &[
+            "qwen-plus",
+            "qwen-max",
+            "qwen-turbo",
+            "qwen3-plus",
+            "qwen3-max",
+            "qwq-plus",
+            "qvq-max",
+        ],
         model_prefixes: &["qwen-", "qwq-", "qvq-"],
         passthrough_unknown_models: false,
         max_tokens_field: MaxTokensField::MaxTokens,
@@ -879,7 +937,13 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         default_model_env: "KIMI_MODEL",
         default_model: "kimi-k2.6",
         models_env: "KIMI_MODELS",
-        models: &["kimi-k2.6", "moonshot-v1-128k"],
+        models: &[
+            "kimi-k2.6",
+            "kimi-k2",
+            "moonshot-v1-128k",
+            "moonshot-v1-32k",
+            "moonshot-v1-8k",
+        ],
         model_prefixes: &["kimi-", "moonshot-"],
         passthrough_unknown_models: false,
         max_tokens_field: MaxTokensField::MaxCompletionTokens,
@@ -898,7 +962,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         default_model_env: "ZHIPU_MODEL",
         default_model: "glm-4.7",
         models_env: "ZHIPU_MODELS",
-        models: &["glm-4.7", "glm-4-flash"],
+        models: &["glm-4.7", "glm-4.6", "glm-4-flash", "glm-z1-flash"],
         model_prefixes: &["glm-", "charglm-", "codegeex-"],
         passthrough_unknown_models: false,
         max_tokens_field: MaxTokensField::MaxTokens,
@@ -996,7 +1060,10 @@ fn insert_spec(
 ) {
     let default_model = env::var(spec.default_model_env).unwrap_or_else(|_| {
         if spec.id == "mimo" {
-            env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| spec.default_model.to_owned())
+            env::var("ANTHROPIC_MODEL")
+                .ok()
+                .filter(|model| model.starts_with("mimo-"))
+                .unwrap_or_else(|| spec.default_model.to_owned())
         } else {
             spec.default_model.to_owned()
         }
@@ -1101,7 +1168,7 @@ fn extend_mimo_models_from_claude_env(models: &mut Vec<String>) {
         "ANTHROPIC_SMALL_FAST_MODEL",
     ] {
         if let Ok(value) = env::var(name)
-            && !value.starts_with("deepseek-")
+            && value.starts_with("mimo-")
             && !models.contains(&value)
         {
             models.push(value);
@@ -1283,13 +1350,9 @@ fn validate_provider(
     }
 
     for model in &provider.models {
-        if let Some(previous_provider) = seen_models.insert(model.clone(), id.to_owned())
-            && previous_provider != id
-        {
-            issues.push(ConfigIssue::warning(format!(
-                "model `{model}` is listed by both `{previous_provider}` and `{id}`; first provider order wins"
-            )));
-        }
+        seen_models
+            .entry(model.clone())
+            .or_insert_with(|| id.to_owned());
     }
 
     if provider
@@ -1351,12 +1414,11 @@ fn default_aliases() -> HashMap<String, String> {
         "ANTHROPIC_SMALL_FAST_MODEL",
     ] {
         if let Ok(model) = env::var(name) {
-            let provider = if model.starts_with("deepseek-") {
-                "deepseek"
-            } else {
-                "mimo"
-            };
-            aliases.insert(model, provider.to_owned());
+            if model.starts_with("deepseek-") {
+                aliases.insert(model, "deepseek".to_owned());
+            } else if model.starts_with("mimo-") {
+                aliases.insert(model, "mimo".to_owned());
+            }
         }
     }
     aliases

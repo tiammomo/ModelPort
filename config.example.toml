@@ -1,6 +1,7 @@
 default_provider = "mimo"
 provider_order = [
   "deepseek",
+  "deepseek_openai",
   "mimo",
   "openrouter",
   "openai",
@@ -53,13 +54,29 @@ api_key_env = "MIMO_OPENAI_API_KEY"
 default_model = "mimo-v2.5-pro"
 models = [
   "mimo-v2.5-pro",
-  "gpt-5.5",
 ]
 model_prefixes = ["mimo-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_completion_tokens"
 deduplicate_stream_text = true
 buffer_stream_text = true
+
+[providers.deepseek_openai]
+display_name = "DeepSeek Official OpenAI-Compatible"
+protocol = "openai-compat"
+base_url_env = "DEEPSEEK_OPENAI_BASE_URL"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_OPENAI_API_KEY"
+default_model = "deepseek-v4-pro"
+models = [
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "deepseek-chat",
+  "deepseek-reasoner",
+]
+model_prefixes = ["deepseek-"]
+passthrough_unknown_models = false
+max_tokens_field = "max_tokens"
 
 [providers.openrouter]
 display_name = "OpenRouter"
@@ -90,8 +107,21 @@ protocol = "openai-compat"
 base_url_env = "OPENAI_BASE_URL"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
-default_model = "gpt-4o"
-models = ["gpt-4o", "gpt-4o-mini", "o3"]
+default_model = "gpt-5.5"
+models = [
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5.4",
+  "gpt-5.4-pro",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+]
 model_prefixes = ["gpt-", "o1", "o3", "o4", "o5", "chatgpt-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_completion_tokens"
@@ -102,8 +132,15 @@ protocol = "anthropic"
 base_url_env = "ANTHROPIC_UPSTREAM_BASE_URL"
 base_url = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
+default_model = "claude-fable-5"
 models = [
+  "claude-fable-5",
+  "claude-mythos-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
   "claude-opus-4-20250514",
   "claude-sonnet-4-20250514",
   "claude-3-5-haiku-20241022",
@@ -117,8 +154,14 @@ protocol = "openai-compat"
 base_url_env = "GEMINI_OPENAI_BASE_URL"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GEMINI_API_KEY"
-default_model = "gemini-2.5-flash"
-models = ["gemini-2.5-pro", "gemini-2.5-flash"]
+default_model = "gemini-3.5-flash"
+models = [
+  "gemini-3.5-flash",
+  "gemini-3.5-pro",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+]
 model_prefixes = ["gemini-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_completion_tokens"
@@ -154,7 +197,7 @@ base_url_env = "DASHSCOPE_BASE_URL"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "DASHSCOPE_API_KEY"
 default_model = "qwen-plus"
-models = ["qwen-plus", "qwen-max", "qwen-turbo"]
+models = ["qwen-plus", "qwen-max", "qwen-turbo", "qwen3-plus", "qwen3-max", "qwq-plus", "qvq-max"]
 model_prefixes = ["qwen-", "qwq-", "qvq-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_tokens"
@@ -166,7 +209,7 @@ base_url_env = "KIMI_BASE_URL"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "MOONSHOT_API_KEY"
 default_model = "kimi-k2.6"
-models = ["kimi-k2.6", "moonshot-v1-128k"]
+models = ["kimi-k2.6", "kimi-k2", "moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"]
 model_prefixes = ["kimi-", "moonshot-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_completion_tokens"
@@ -178,7 +221,7 @@ base_url_env = "ZHIPU_BASE_URL"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
 api_key_env = "ZHIPU_API_KEY"
 default_model = "glm-4.7"
-models = ["glm-4.7", "glm-4-flash"]
+models = ["glm-4.7", "glm-4.6", "glm-4-flash", "glm-z1-flash"]
 model_prefixes = ["glm-", "charglm-", "codegeex-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_tokens"
@@ -233,7 +276,7 @@ max_tokens_field = "max_completion_tokens"
 
 [aliases]
 "mimo-v2.5-pro" = "mimo"
-"gpt-5.5" = "mimo"
+gpt = "openai:gpt-5.5"
 deepseek-v4-pro = "deepseek"
 deepseek-v4-flash = "deepseek"
 sonnet-router = "openrouter:anthropic/claude-sonnet-4"
