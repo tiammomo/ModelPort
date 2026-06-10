@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLogs, useLatencyStats } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
+import { TableToolbar } from '@/components/shared/TableToolbar'
 import { MetricCard } from '@/components/shared/MetricCard'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -46,7 +47,11 @@ export function LogsPage() {
       {/* Filters */}
       <Card>
         <CardContent className="p-4">
-          <div className="flex flex-wrap gap-3">
+          <TableToolbar
+            actions={(
+              <Button variant="outline" onClick={() => { setFilters({}); setPage(1) }}>重置</Button>
+            )}
+          >
             <div className="flex-1 min-w-[200px]">
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -79,8 +84,7 @@ export function LogsPage() {
                 <SelectItem value="timeout">超时</SelectItem>
               </SelectContent>
             </Select>
-            <Button variant="outline" onClick={() => { setFilters({}); setPage(1) }}>重置</Button>
-          </div>
+          </TableToolbar>
         </CardContent>
       </Card>
 
@@ -120,7 +124,7 @@ export function LogsPage() {
                   <TableCell><StatusBadge status={log.status} /></TableCell>
                   <TableCell className="text-right text-sm">{formatLatency(log.latencyMs)}</TableCell>
                   <TableCell className="text-right text-sm text-muted-foreground">
-                    {formatNumber(log.inputTokens)} / {formatNumber(log.outputTokens)}
+                    {formatNumber(log.inputTokens + (log.cacheReadTokens || 0) + (log.cacheWriteTokens || 0))} / {formatNumber(log.outputTokens)}
                   </TableCell>
                   <TableCell>
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedLog(log)}>
@@ -200,6 +204,18 @@ export function LogsPage() {
                 <div>
                   <p className="text-xs text-muted-foreground">输出 Token</p>
                   <p className="text-sm">{formatNumber(selectedLog.outputTokens)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Cache Write</p>
+                  <p className="text-sm">{formatNumber(selectedLog.cacheWriteTokens || 0)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Cache Read</p>
+                  <p className="text-sm">{formatNumber(selectedLog.cacheReadTokens || 0)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">估算成本</p>
+                  <p className="text-sm">${(selectedLog.costEstimate || 0).toFixed(6)}</p>
                 </div>
               </div>
               {selectedLog.errorMessage && (

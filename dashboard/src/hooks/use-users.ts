@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { usersService } from '@/services/users.service'
+import { usersService, type CreateApiKeyInput } from '@/services/users.service'
 import { queryKeys } from './use-dashboard'
 import type { User, CreateUserInput } from '@/types'
 
@@ -23,6 +23,13 @@ export function useUserApiKeys(userId: string) {
     queryKey: queryKeys.userApiKeys(userId),
     queryFn: () => usersService.getUserApiKeys(userId),
     enabled: !!userId,
+  })
+}
+
+export function useApiKeys() {
+  return useQuery({
+    queryKey: queryKeys.apiKeys,
+    queryFn: () => usersService.getApiKeys(),
   })
 }
 
@@ -53,8 +60,12 @@ export function useDeleteUser() {
 export function useCreateApiKey() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ userId, name }: { userId: string; name: string }) => usersService.createApiKey(userId, name),
-    onSuccess: (_data, vars) => qc.invalidateQueries({ queryKey: queryKeys.userApiKeys(vars.userId) }),
+    mutationFn: (data: CreateApiKeyInput) => usersService.createApiKey(data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.apiKeys })
+      qc.invalidateQueries({ queryKey: queryKeys.userApiKeys(vars.userId) })
+      qc.invalidateQueries({ queryKey: queryKeys.users })
+    },
   })
 }
 
@@ -62,6 +73,20 @@ export function useRevokeApiKey() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (keyId: string) => usersService.revokeApiKey(keyId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.apiKeys })
+      qc.invalidateQueries({ queryKey: queryKeys.users })
+    },
+  })
+}
+
+export function useDeleteApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (keyId: string) => usersService.deleteApiKey(keyId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.apiKeys })
+      qc.invalidateQueries({ queryKey: queryKeys.users })
+    },
   })
 }

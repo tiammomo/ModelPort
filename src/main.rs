@@ -1,8 +1,10 @@
 mod auth;
 mod config;
+mod control;
 mod error;
 mod http;
 mod metrics;
+mod pricing;
 mod providers;
 mod routes;
 mod types;
@@ -11,6 +13,7 @@ use std::sync::Arc;
 
 use auth::AuthStore;
 use config::{AppConfig, ConfigIssueSeverity};
+use control::ControlStore;
 use error::AppError;
 use http::HttpTransport;
 use metrics::Metrics;
@@ -35,9 +38,11 @@ async fn main() -> Result<(), AppError> {
     let config = AppConfig::load()?;
     let bind_addr = config.bind_addr;
     let auth = Arc::new(AuthStore::load_or_bootstrap(&config)?);
+    let control = Arc::new(ControlStore::load()?);
     let state = AppState {
         config: Arc::new(config),
         auth,
+        control,
         transport: HttpTransport::new()?,
         metrics: Arc::new(Metrics::new()),
     };

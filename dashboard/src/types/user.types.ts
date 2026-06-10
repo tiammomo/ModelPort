@@ -23,10 +23,16 @@ export interface CreateUserInput {
 export interface ApiKey {
   id: string
   userId: string
+  username?: string
   name: string
   keyPrefix: string
+  keyPreview?: string
+  key?: string
+  group?: string | null
   createdAt: string
   lastUsedAt: string | null
   expiresAt: string | null
   status: 'active' | 'revoked'
+  requestsToday?: number
+  tokensToday?: number
 }

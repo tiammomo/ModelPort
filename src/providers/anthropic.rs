@@ -11,6 +11,7 @@ use crate::{
     config::ResolvedProvider,
     error::AppError,
     http::{Header, SseFrame},
+    pricing::{self, USAGE_HEADER},
     routes::AppState,
     types::{AnthropicRequest, anthropic_error_event, anthropic_request_value},
 };
@@ -35,7 +36,13 @@ pub async fn messages(
             .into_response())
     } else {
         let response = state.transport.post_json(&url, &headers, &body).await?;
-        Ok(Json(response).into_response())
+        let usage = pricing::anthropic_usage(&response);
+        let mut response = Json(response).into_response();
+        response.headers_mut().insert(
+            USAGE_HEADER,
+            pricing::usage_header_value(&resolved.model, usage)?,
+        );
+        Ok(response)
     }
 }
 

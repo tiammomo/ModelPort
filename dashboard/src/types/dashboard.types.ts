@@ -9,6 +9,14 @@ export interface DashboardStats {
   activeUsers: number
   totalModels: number
   avgLatencyMs: number
+  apiKeysTotal?: number
+  apiKeysActive?: number
+  todayRequests?: number
+  todayInputTokens?: number
+  todayOutputTokens?: number
+  todayCacheWriteTokens?: number
+  todayCacheReadTokens?: number
+  todayCostEstimate?: number
   requestTimeSeries: TimeSeriesPoint[]
   errorTimeSeries: TimeSeriesPoint[]
   topModels: Array<{ model: string; provider: string; requests: number }>

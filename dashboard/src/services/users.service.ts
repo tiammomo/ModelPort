@@ -1,6 +1,13 @@
 import type { User, CreateUserInput, ApiKey } from '@/types'
 import { api } from '@/lib/api-client'
 
+export interface CreateApiKeyInput {
+  userId: string
+  username?: string
+  name: string
+  group?: string
+}
+
 export const usersService = {
   getUsers: (): Promise<User[]> => api.get('/admin/users'),
 
@@ -24,9 +31,14 @@ export const usersService = {
   getUserApiKeys: (userId: string): Promise<ApiKey[]> =>
     api.get(`/admin/users/${encodeURIComponent(userId)}/api-keys`),
 
-  createApiKey: (userId: string, name: string): Promise<ApiKey> =>
-    api.post(`/admin/users/${encodeURIComponent(userId)}/api-keys`, { userId, name }),
+  getApiKeys: (): Promise<ApiKey[]> => api.get('/admin/api-keys'),
+
+  createApiKey: (data: CreateApiKeyInput): Promise<ApiKey> =>
+    api.post('/admin/api-keys', data),
 
   revokeApiKey: (keyId: string): Promise<void> =>
+    api.post(`/admin/api-keys/${encodeURIComponent(keyId)}/disable`),
+
+  deleteApiKey: (keyId: string): Promise<void> =>
     api.delete(`/admin/api-keys/${encodeURIComponent(keyId)}`),
 }

@@ -6,6 +6,7 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { ApiKeysPage } from '@/pages/ApiKeysPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { QuotasPage } from '@/pages/QuotasPage'
 import { ModelsPage } from '@/pages/ModelsPage'
@@ -37,6 +38,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
+      { path: 'api-keys', element: <ApiKeysPage /> },
       { path: 'users', element: <UsersPage /> },
       { path: 'quotas', element: <QuotasPage /> },
       { path: 'models', element: <ModelsPage /> },

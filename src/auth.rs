@@ -380,7 +380,7 @@ impl AuthStore {
                         .to_owned(),
                 )
             })?;
-        validate_password_strength(&password)?;
+        validate_bootstrap_password(&password)?;
 
         let username = normalize_username(
             &env::var("MODELPORT_ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_owned()),
@@ -491,6 +491,13 @@ fn validate_password_strength(password: &str) -> Result<(), AppError> {
         ));
     }
     Ok(())
+}
+
+fn validate_bootstrap_password(password: &str) -> Result<(), AppError> {
+    if password == "admin" {
+        return Ok(());
+    }
+    validate_password_strength(password)
 }
 
 fn hash_password(password: &str) -> Result<String, AppError> {
@@ -618,5 +625,15 @@ mod tests {
 
         let current = store.require_session(&headers).unwrap();
         assert_eq!(current.username, "admin");
+    }
+
+    #[test]
+    fn bootstrap_accepts_local_admin_password() {
+        validate_bootstrap_password("admin").unwrap();
+    }
+
+    #[test]
+    fn normal_user_passwords_still_require_minimum_length() {
+        assert!(validate_password_strength("admin").is_err());
     }
 }

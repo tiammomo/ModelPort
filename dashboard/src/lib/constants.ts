@@ -1,6 +1,7 @@
 export const ROUTES = {
   LOGIN: "/login",
   DASHBOARD: "/dashboard",
+  API_KEYS: "/api-keys",
   USERS: "/users",
   QUOTAS: "/quotas",
   MODELS: "/models",
@@ -10,6 +11,7 @@ export const ROUTES = {
 
 export const NAV_ITEMS = [
   { path: ROUTES.DASHBOARD, label: "仪表盘", icon: "LayoutDashboard" },
+  { path: ROUTES.API_KEYS, label: "API Keys", icon: "KeyRound" },
   { path: ROUTES.USERS, label: "用户管理", icon: "Users" },
   { path: ROUTES.QUOTAS, label: "配额管理", icon: "Gauge" },
   { path: ROUTES.MODELS, label: "模型管理", icon: "Boxes" },

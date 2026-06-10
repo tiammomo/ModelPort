@@ -4,6 +4,7 @@ import { NAV_ITEMS } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
+  KeyRound,
   Users,
   Gauge,
   Boxes,
@@ -20,6 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 
 const iconMap: Record<string, React.ElementType> = {
   LayoutDashboard,
+  KeyRound,
   Users,
   Gauge,
   Boxes,

@@ -17,6 +17,7 @@ use crate::{
     config::ResolvedProvider,
     error::AppError,
     http::{Header, HttpTransport, SseFrameStream},
+    pricing::{self, USAGE_HEADER},
     routes::AppState,
     types::{
         AnthropicRequest, anthropic_error_event, anthropic_event, anthropic_to_openai_request,
@@ -74,7 +75,14 @@ pub async fn messages(
             resolved.provider.max_tokens_field,
         )?;
         let response = state.transport.post_json(&url, &headers, &body).await?;
-        Ok(Json(openai_response_to_anthropic(&response, &request.model)?).into_response())
+        let usage = pricing::openai_usage(&response);
+        let mut response =
+            Json(openai_response_to_anthropic(&response, &request.model)?).into_response();
+        response.headers_mut().insert(
+            USAGE_HEADER,
+            pricing::usage_header_value(&resolved.model, usage)?,
+        );
+        Ok(response)
     }
 }
 

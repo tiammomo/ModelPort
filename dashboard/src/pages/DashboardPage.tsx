@@ -3,7 +3,7 @@ import { MetricCard } from '@/components/shared/MetricCard'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatNumber, formatLatency, formatRelativeTime } from '@/lib/utils'
+import { formatNumber, formatRelativeTime } from '@/lib/utils'
 import { Activity, Users, Server, Clock, TrendingUp, AlertCircle, Info } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 
@@ -31,16 +31,16 @@ export function DashboardPage() {
       {/* Metric Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <MetricCard
-          title="24h 请求量"
-          value={formatNumber(stats.totalRequests)}
+          title="今日请求量"
+          value={formatNumber(stats.todayRequests ?? stats.totalRequests)}
           icon={Activity}
           trend={{ value: 12.5, label: '较昨日' }}
         />
         <MetricCard
-          title="活跃用户"
-          value={stats.activeUsers}
+          title="API Keys"
+          value={stats.apiKeysActive ?? 0}
           icon={Users}
-          description="当前在线用户数"
+          description={`${stats.apiKeysTotal ?? 0} total`}
         />
         <MetricCard
           title="活跃提供商"
@@ -49,10 +49,10 @@ export function DashboardPage() {
           description="已配置 API Key"
         />
         <MetricCard
-          title="平均延迟"
-          value={formatLatency(stats.avgLatencyMs)}
+          title="今日 Tokens"
+          value={formatNumber((stats.todayInputTokens ?? 0) + (stats.todayOutputTokens ?? 0) + (stats.todayCacheWriteTokens ?? 0) + (stats.todayCacheReadTokens ?? 0))}
           icon={Clock}
-          description="全提供商平均"
+          description={`In ${formatNumber(stats.todayInputTokens ?? 0)} / Out ${formatNumber(stats.todayOutputTokens ?? 0)} / Cache ${formatNumber((stats.todayCacheWriteTokens ?? 0) + (stats.todayCacheReadTokens ?? 0))}`}
         />
       </div>
 

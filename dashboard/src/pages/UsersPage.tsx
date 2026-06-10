@@ -49,9 +49,10 @@ export function UsersPage() {
 
   const handleCreateKey = () => {
     if (!showDetailUser) return
-    createApiKey.mutate({ userId: showDetailUser, name: keyName || '默认密钥' }, {
+    const user = users.find((item) => item.id === showDetailUser)
+    createApiKey.mutate({ userId: showDetailUser, username: user?.username, name: keyName || '默认密钥' }, {
       onSuccess: (key) => {
-        setNewKeyResult(`${key.keyPrefix}${Math.random().toString(36).slice(2, 18)}`)
+        setNewKeyResult(key.key || key.keyPreview || key.keyPrefix)
         setKeyName('')
       },
     })
@@ -230,7 +231,7 @@ export function UsersPage() {
                   {userApiKeys.map((key) => (
                     <TableRow key={key.id}>
                       <TableCell className="font-medium">{key.name}</TableCell>
-                      <TableCell className="font-mono text-xs">{key.keyPrefix}</TableCell>
+                      <TableCell className="font-mono text-xs">{key.keyPreview || key.keyPrefix}</TableCell>
                       <TableCell><StatusBadge status={key.status} /></TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {key.lastUsedAt ? formatDate(key.lastUsedAt) : '从未使用'}

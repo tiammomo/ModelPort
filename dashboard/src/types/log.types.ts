@@ -17,6 +17,9 @@ export interface RequestLog {
   statusCode: number
   inputTokens: number
   outputTokens: number
+  cacheWriteTokens?: number
+  cacheReadTokens?: number
+  costEstimate?: number
   latencyMs: number
   errorMessage: string | null
 }

@@ -25,9 +25,14 @@ use tracing::info;
 use crate::{
     auth::{AuthStore, CreateUserInput, LoginInput, PublicUser},
     config::{AppConfig, ProviderProtocol},
+    control::{
+        ClientIdentity, ControlStore, CreateApiKeyInput, UpsertQuotaInput, UsageEstimate,
+        UsageEventInput,
+    },
     error::AppError,
     http::HttpTransport,
     metrics::Metrics,
+    pricing::{self, TokenUsageBreakdown},
     providers,
     types::AnthropicRequest,
 };
@@ -39,6 +44,7 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub auth: Arc<AuthStore>,
+    pub control: Arc<ControlStore>,
     pub transport: HttpTransport,
     pub metrics: Arc<Metrics>,
 }
@@ -72,10 +78,18 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/users", get(admin_users).post(admin_create_user))
         .route("/admin/users/{user_id}", delete(admin_delete_user))
         .route(
+            "/admin/api-keys",
+            get(admin_api_keys).post(admin_create_api_key),
+        )
+        .route(
+            "/admin/api-keys/{key_id}/disable",
+            post(admin_revoke_api_key),
+        )
+        .route(
             "/admin/users/{user_id}/api-keys",
             get(admin_user_api_keys).post(admin_create_api_key),
         )
-        .route("/admin/api-keys/{key_id}", delete(admin_revoke_api_key))
+        .route("/admin/api-keys/{key_id}", delete(admin_delete_api_key))
         .route("/admin/quotas", get(admin_quotas).post(admin_create_quota))
         .route(
             "/admin/quotas/{quota_id}",
@@ -136,7 +150,7 @@ async fn models(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let started = Instant::now();
     let result = (|| {
-        state.config.validate_client_auth(&headers)?;
+        authenticate_client(&state, &headers)?;
         let data = state
             .config
             .model_list()
@@ -170,13 +184,24 @@ async fn messages(
     Json(request): Json<AnthropicRequest>,
 ) -> Result<Response, AppError> {
     let started = Instant::now();
-    if let Err(err) = state.config.validate_client_auth(&headers) {
+    let identity = match authenticate_client(&state, &headers) {
+        Ok(identity) => identity,
+        Err(err) => {
+            state
+                .metrics
+                .record_route("messages", false, started.elapsed());
+            return Err(err);
+        }
+    };
+    let estimate = estimate_usage(&request);
+    if let Err(err) = state.control.check_quotas(&identity, estimate) {
         state
             .metrics
             .record_route("messages", false, started.elapsed());
         return Err(err);
     }
 
+    let requested_model = request.model.clone();
     let resolved = match state.config.resolve(&request.model) {
         Ok(resolved) => resolved,
         Err(err) => {
@@ -215,11 +240,40 @@ async fn messages(
     };
     let success = result.is_ok();
     let duration = started.elapsed();
+    let status_code = result
+        .as_ref()
+        .map(|response| response.status().as_u16())
+        .unwrap_or(500);
+    let error_message = result.as_ref().err().map(ToString::to_string);
+    let actual_estimate = result
+        .as_ref()
+        .ok()
+        .and_then(|response| pricing::usage_from_headers(response.headers()))
+        .map(|charge| UsageEstimate {
+            input_tokens: charge.input_tokens,
+            output_tokens: charge.output_tokens,
+            cache_write_tokens: charge.cache_write_tokens,
+            cache_read_tokens: charge.cache_read_tokens,
+            cost_estimate: charge.cost_estimate,
+        })
+        .unwrap_or(estimate);
 
     state.metrics.record_route("messages", success, duration);
     state
         .metrics
         .record_message(&provider_id, &upstream_model, stream, success, duration);
+    state.control.record_usage(UsageEventInput {
+        identity,
+        model: requested_model,
+        resolved_model: upstream_model,
+        provider: provider_id,
+        stream,
+        success,
+        status_code,
+        estimate: actual_estimate,
+        latency: duration,
+        error_message,
+    })?;
     result
 }
 
@@ -271,6 +325,43 @@ fn require_admin_user(state: &AppState, headers: &HeaderMap) -> Result<PublicUse
         Ok(user)
     } else {
         Err(AppError::Forbidden("admin role required".to_owned()))
+    }
+}
+
+fn authenticate_client(state: &AppState, headers: &HeaderMap) -> Result<ClientIdentity, AppError> {
+    if let Some(identity) = state.control.authenticate_headers(headers)? {
+        return Ok(identity);
+    }
+    state.config.validate_client_auth(headers)?;
+    Ok(ControlStore::legacy_identity())
+}
+
+fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
+    let input_chars = serde_json::to_string(&request.messages)
+        .map(|value| value.chars().count())
+        .unwrap_or(0)
+        + request
+            .system
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok())
+            .map(|value| value.chars().count())
+            .unwrap_or(0);
+    let input_tokens = u64::try_from(input_chars.div_ceil(4)).unwrap_or(u64::MAX);
+    let output_tokens = request.max_tokens.unwrap_or(0);
+    UsageEstimate {
+        input_tokens,
+        output_tokens,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_estimate: pricing::cost_for_model(
+            &request.model,
+            TokenUsageBreakdown {
+                input_tokens,
+                output_tokens,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+            },
+        ),
     }
 }
 
@@ -335,6 +426,7 @@ async fn admin_dashboard(
         .filter(|provider| provider.get("status").and_then(Value::as_str) == Some("active"))
         .count();
     let active_users = state.auth.active_user_count();
+    let usage_summary = state.control.usage_summary_today();
     let now = now_millis_string();
 
     Ok(Json(json!({
@@ -346,6 +438,14 @@ async fn admin_dashboard(
         "activeUsers": active_users,
         "totalModels": state.config.model_list().len(),
         "avgLatencyMs": avg_latency_ms,
+        "apiKeysTotal": usage_summary.api_keys_total,
+        "apiKeysActive": usage_summary.api_keys_active,
+        "todayRequests": usage_summary.total_requests,
+        "todayInputTokens": usage_summary.total_input_tokens,
+        "todayOutputTokens": usage_summary.total_output_tokens,
+        "todayCacheWriteTokens": usage_summary.total_cache_write_tokens,
+        "todayCacheReadTokens": usage_summary.total_cache_read_tokens,
+        "todayCostEstimate": usage_summary.total_cost_estimate,
         "requestTimeSeries": time_series(total_requests),
         "errorTimeSeries": time_series(total_failures),
         "topModels": snapshot.messages.iter().map(|message| json!({
@@ -482,7 +582,10 @@ async fn admin_logs(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
-    let logs = log_rows(&state);
+    let mut logs = state.control.usage_rows();
+    if logs.is_empty() {
+        logs = log_rows(&state);
+    }
     Ok(Json(json!({
         "logs": logs,
         "total": logs.len(),
@@ -531,7 +634,11 @@ async fn admin_users(
         .iter()
         .map(|message| message.requests_total)
         .sum::<u64>();
-    Ok(Json(json!(state.auth.list_users(requests))))
+    let mut users = state.auth.list_users(requests);
+    for user in &mut users {
+        user.api_key_count = state.control.active_api_key_count(&user.id);
+    }
+    Ok(Json(json!(users)))
 }
 
 async fn admin_create_user(
@@ -550,49 +657,62 @@ async fn admin_delete_user(
 ) -> Result<Json<Value>, AppError> {
     let current_user = require_admin_user(&state, &headers)?;
     state.auth.delete_user(&user_id, &current_user.id)?;
+    state.control.delete_user_resources(&user_id)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn admin_api_keys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_admin_user(&state, &headers)?;
+    Ok(Json(json!(state.control.list_api_keys())))
 }
 
 async fn admin_user_api_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Path(user_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
-    Ok(Json(json!([{
-        "id": "key_modelport_local",
-        "userId": "usr_local_admin",
-        "name": "MODELPORT_AUTH_TOKEN",
-        "keyPrefix": "local-token",
-        "createdAt": now_millis_string(),
-        "lastUsedAt": null,
-        "expiresAt": null,
-        "status": "active",
-    }])))
+    Ok(Json(json!(state.control.list_user_api_keys(&user_id))))
 }
 
 async fn admin_create_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<CreateApiKeyInput>,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
-    Ok(Json(json!({
-        "id": format!("key_{}", now_millis_string()),
-        "userId": body.get("userId").and_then(Value::as_str).unwrap_or("usr_local_admin"),
-        "name": body.get("name").and_then(Value::as_str).unwrap_or("local key"),
-        "keyPrefix": "mp-local-",
-        "createdAt": now_millis_string(),
-        "lastUsedAt": null,
-        "expiresAt": null,
-        "status": "active",
-    })))
+    if body.username.is_none()
+        && let Some(user) = state
+            .auth
+            .list_users(0)
+            .into_iter()
+            .find(|user| user.id == body.user_id)
+    {
+        body.username = Some(user.username);
+    }
+    Ok(Json(json!(state.control.create_api_key(body)?)))
 }
 
 async fn admin_revoke_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Path(key_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
+    state.control.revoke_api_key(&key_id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn admin_delete_api_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin_user(&state, &headers)?;
+    state.control.delete_api_key(&key_id)?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -601,32 +721,36 @@ async fn admin_quotas(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
-    Ok(Json(json!([])))
+    Ok(Json(json!(state.control.list_quotas()?)))
 }
 
 async fn admin_create_quota(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
-    Ok(Json(body))
+    Ok(Json(json!(state.control.upsert_quota(body)?)))
 }
 
 async fn admin_update_quota(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Path(quota_id): Path<String>,
+    Json(mut body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
-    Ok(Json(body))
+    body.id = Some(quota_id);
+    Ok(Json(json!(state.control.upsert_quota(body)?)))
 }
 
 async fn admin_delete_quota(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Path(quota_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin_user(&state, &headers)?;
+    state.control.delete_quota(&quota_id)?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -776,7 +900,7 @@ fn percent(successes: u64, total: u64) -> f64 {
 }
 
 fn average(total: u64, count: u64) -> u64 {
-    if count == 0 { 0 } else { total / count }
+    total.checked_div(count).unwrap_or(0)
 }
 
 fn now_millis() -> u64 {
@@ -1211,6 +1335,7 @@ data: [DONE]
                 aliases: HashMap::new(),
             }),
             auth: Arc::new(AuthStore::for_tests()),
+            control: Arc::new(ControlStore::for_tests()),
             transport: HttpTransport::new().unwrap(),
             metrics: Arc::new(Metrics::new()),
         }

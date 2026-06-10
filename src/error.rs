@@ -14,6 +14,8 @@ pub enum AppError {
     Config(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("quota exceeded: {0}")]
+    QuotaExceeded(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("missing secret environment variable: {0}")]
@@ -50,6 +52,7 @@ impl IntoResponse for AppError {
             AppError::Auth => StatusCode::UNAUTHORIZED,
             AppError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             AppError::MissingSecret(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::ProviderNotFound(_) => StatusCode::BAD_REQUEST,
@@ -63,6 +66,7 @@ impl IntoResponse for AppError {
         let kind = match status {
             StatusCode::UNAUTHORIZED => "authentication_error",
             StatusCode::FORBIDDEN => "forbidden_error",
+            StatusCode::TOO_MANY_REQUESTS => "quota_exceeded",
             StatusCode::BAD_REQUEST => "invalid_request_error",
             StatusCode::BAD_GATEWAY => "upstream_error",
             _ => "server_error",

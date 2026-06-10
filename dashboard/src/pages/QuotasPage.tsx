@@ -32,7 +32,10 @@ export function QuotasPage() {
   const totalUsed = quotas.reduce((s, q) => s + q.used, 0)
   const overQuota = quotas.filter((q) => q.used / q.limit > 0.9).length
 
-  const getUsagePercent = (used: number, limit: number) => Math.min(100, Math.round((used / limit) * 100))
+  const getUsagePercent = (used: number, limit: number) => {
+    if (limit <= 0) return 0
+    return Math.min(100, Math.round((used / limit) * 100))
+  }
 
   const getUsageColor = (percent: number) => {
     if (percent >= 90) return 'text-red-600'
