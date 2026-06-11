@@ -390,6 +390,37 @@ export ANTHROPIC_MODEL=sonnet
 
 `openrouter`、`custom`、`ollama` 最适合未知模型透传和任意模型热切换。
 
+## 本地 OpenAI-compatible 运行时
+
+基于 SGLang、vLLM、llama.cpp、Ollama 或其他 OpenAI-compatible server 部署的本地模型，都可以接入 ModelPort。把 provider 指向本地运行时的 `/v1` base URL 即可；如果本地服务没有鉴权，保持 `api_key_required = false`：
+
+```toml
+[providers.local_vllm]
+display_name = "Local vLLM"
+protocol = "openai-compat"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_required = false
+default_model = "local-model"
+models = ["local-model"]
+passthrough_unknown_models = true
+max_tokens_field = "max_tokens"
+fidelity_mode = "best_effort"
+
+[aliases]
+local = "local_vllm:local-model"
+```
+
+常见 base URL：SGLang 通常是 `http://127.0.0.1:30000/v1`，vLLM 通常是 `http://127.0.0.1:8000/v1`，llama.cpp 的 OpenAI-compatible server 通常是 `http://127.0.0.1:8080/v1`。如果你希望遇到无法表达的 Anthropic 特性时直接报错，再把该 provider 设为 `fidelity_mode = "strict"`。
+
+这些本地运行时也已经作为可选内置 provider 注册。例如：
+
+```bash
+export MODELPORT_ENABLE_LOCAL_VLLM=1
+export VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export VLLM_MODEL=qwen2.5-coder
+export ANTHROPIC_MODEL=local_vllm:qwen2.5-coder
+```
+
 ## Provider
 
 | Provider | 协议 | 关键环境变量 |
@@ -409,6 +440,9 @@ export ANTHROPIC_MODEL=sonnet
 | `ark` | OpenAI-compatible | `ARK_API_KEY`, `ARK_MODEL` |
 | `ollama` | OpenAI-compatible | `MODELPORT_ENABLE_OLLAMA`, `OLLAMA_MODEL` |
 | `custom` | OpenAI-compatible | `CUSTOM_OPENAI_BASE_URL`, `CUSTOM_OPENAI_MODEL` |
+| `local_sglang` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_SGLANG`, `SGLANG_BASE_URL`, `SGLANG_MODEL` |
+| `local_vllm` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_VLLM`, `VLLM_BASE_URL`, `VLLM_MODEL` |
+| `local_llamacpp` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_LLAMACPP`, `LLAMACPP_BASE_URL`, `LLAMACPP_MODEL` |
 
 Mimo 已完成真实 baseline 验证。其他 provider 配置已内置，但需要真实 key 跑过 `scripts/provider-matrix.sh` 后再标记为 verified，详见 [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md)。
 
@@ -438,6 +472,7 @@ MODELPORT_CONFIG=/path/to/config.toml model-port config validate
 - `max_tokens_field`：OpenAI-compatible token 字段策略。
 - `deduplicate_stream_text`：处理会重放文本片段的流式上游，Mimo 默认开启。
 - `buffer_stream_text`：把不稳定上游流转换为稳定下游 SSE，Mimo 默认开启。
+- `fidelity_mode`：`strict` 拒绝有损的 Anthropic-to-OpenAI-compatible 转换，`best_effort` 保持兼容优先，`stability` 允许为不稳定上游改写流式文本。
 - `[aliases]`：模型别名，可指向 provider、模型名或 `provider:model`。
 
 服务级变量：

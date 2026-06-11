@@ -16,6 +16,9 @@ provider_order = [
   "ark",
   "ollama",
   "custom",
+  # "local_sglang",
+  # "local_vllm",
+  # "local_llamacpp",
 ]
 
 [server]
@@ -60,6 +63,7 @@ passthrough_unknown_models = false
 max_tokens_field = "max_completion_tokens"
 deduplicate_stream_text = true
 buffer_stream_text = true
+fidelity_mode = "stability"
 
 [providers.deepseek_openai]
 display_name = "DeepSeek Official OpenAI-Compatible"
@@ -261,6 +265,7 @@ default_model = "llama3.1"
 models = ["llama3.1", "qwen2.5-coder"]
 passthrough_unknown_models = true
 max_tokens_field = "max_tokens"
+fidelity_mode = "best_effort"
 
 [providers.custom]
 display_name = "Custom OpenAI-Compatible"
@@ -273,6 +278,43 @@ default_model = "default"
 models = ["default"]
 passthrough_unknown_models = true
 max_tokens_field = "max_completion_tokens"
+fidelity_mode = "best_effort"
+
+# Local OpenAI-compatible runtimes can be added by uncommenting one of these
+# provider blocks and adding the provider id to provider_order if desired.
+#
+# [providers.local_sglang]
+# display_name = "Local SGLang"
+# protocol = "openai-compat"
+# base_url = "http://127.0.0.1:30000/v1"
+# api_key_required = false
+# default_model = "qwen2.5-coder"
+# models = ["qwen2.5-coder"]
+# passthrough_unknown_models = true
+# max_tokens_field = "max_tokens"
+# fidelity_mode = "best_effort"
+#
+# [providers.local_vllm]
+# display_name = "Local vLLM"
+# protocol = "openai-compat"
+# base_url = "http://127.0.0.1:8000/v1"
+# api_key_required = false
+# default_model = "local-model"
+# models = ["local-model"]
+# passthrough_unknown_models = true
+# max_tokens_field = "max_tokens"
+# fidelity_mode = "best_effort"
+#
+# [providers.local_llamacpp]
+# display_name = "Local llama.cpp"
+# protocol = "openai-compat"
+# base_url = "http://127.0.0.1:8080/v1"
+# api_key_required = false
+# default_model = "local-model"
+# models = ["local-model"]
+# passthrough_unknown_models = true
+# max_tokens_field = "max_tokens"
+# fidelity_mode = "best_effort"
 
 [aliases]
 "mimo-v2.5-pro" = "mimo"

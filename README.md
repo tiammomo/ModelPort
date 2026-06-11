@@ -389,6 +389,37 @@ export ANTHROPIC_MODEL=sonnet
 
 `openrouter`, `custom`, and `ollama` are best suited for unknown-model passthrough and arbitrary model switching.
 
+## Local OpenAI-Compatible Runtimes
+
+Local models served by SGLang, vLLM, llama.cpp, Ollama, or another OpenAI-compatible server can be routed through ModelPort. Point a provider at the runtime's `/v1` base URL and keep `api_key_required = false` unless your local server enforces a key:
+
+```toml
+[providers.local_vllm]
+display_name = "Local vLLM"
+protocol = "openai-compat"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_required = false
+default_model = "local-model"
+models = ["local-model"]
+passthrough_unknown_models = true
+max_tokens_field = "max_tokens"
+fidelity_mode = "best_effort"
+
+[aliases]
+local = "local_vllm:local-model"
+```
+
+Common base URLs are `http://127.0.0.1:30000/v1` for SGLang, `http://127.0.0.1:8000/v1` for vLLM, and `http://127.0.0.1:8080/v1` for llama.cpp's OpenAI-compatible server. Use `fidelity_mode = "strict"` only when you prefer ModelPort to reject Anthropic features that cannot be represented by the OpenAI-compatible runtime.
+
+These local runtimes are also built in as optional providers. For example:
+
+```bash
+export MODELPORT_ENABLE_LOCAL_VLLM=1
+export VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export VLLM_MODEL=qwen2.5-coder
+export ANTHROPIC_MODEL=local_vllm:qwen2.5-coder
+```
+
 ## Providers
 
 | Provider | Protocol | Key Environment Variables |
@@ -409,6 +440,9 @@ export ANTHROPIC_MODEL=sonnet
 | `ark` | OpenAI-compatible | `ARK_API_KEY`, `ARK_MODEL` |
 | `ollama` | OpenAI-compatible | `MODELPORT_ENABLE_OLLAMA`, `OLLAMA_MODEL` |
 | `custom` | OpenAI-compatible | `CUSTOM_OPENAI_BASE_URL`, `CUSTOM_OPENAI_MODEL` |
+| `local_sglang` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_SGLANG`, `SGLANG_BASE_URL`, `SGLANG_MODEL` |
+| `local_vllm` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_VLLM`, `VLLM_BASE_URL`, `VLLM_MODEL` |
+| `local_llamacpp` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_LLAMACPP`, `LLAMACPP_BASE_URL`, `LLAMACPP_MODEL` |
 
 Mimo has completed real baseline verification. Other provider configurations are built in, but should be marked verified only after running `scripts/provider-matrix.sh` with real keys. See [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md).
 
@@ -438,6 +472,7 @@ Important provider fields:
 - `max_tokens_field`: OpenAI-compatible token field strategy.
 - `deduplicate_stream_text`: handles streaming upstreams that replay text fragments; enabled for Mimo by default.
 - `buffer_stream_text`: converts unstable upstream streaming into stable downstream SSE; enabled for Mimo by default.
+- `fidelity_mode`: `strict` rejects lossy Anthropic-to-OpenAI-compatible conversions, `best_effort` preserves current compatibility, and `stability` allows stream text rewriting for unstable upstreams.
 - `[aliases]`: model aliases that can target a provider, a model name, or `provider:model`.
 
 Service-level variables:
