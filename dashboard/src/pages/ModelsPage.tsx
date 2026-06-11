@@ -365,6 +365,7 @@ export function ModelsPage() {
                     <Badge variant={provider.hasApiKey || !provider.apiKeyRequired ? 'success' : 'secondary'}>
                       {provider.hasApiKey || !provider.apiKeyRequired ? '可路由' : '缺少密钥'}
                     </Badge>
+                    {provider.fidelityMode && <Badge variant="outline">{fidelityModeLabel(provider.fidelityMode)}</Badge>}
                     {provider.passthroughUnknownModels && <Badge variant="warning">透传未知模型</Badge>}
                   </div>
                   <Button
@@ -559,4 +560,10 @@ export function ModelsPage() {
       </Dialog>
     </div>
   )
+}
+
+function fidelityModeLabel(value: NonNullable<Provider['fidelityMode']>) {
+  if (value === 'strict') return '严格无损'
+  if (value === 'stability') return '稳定优先'
+  return '尽量无损'
 }

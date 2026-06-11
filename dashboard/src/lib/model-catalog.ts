@@ -1,4 +1,4 @@
-import type { MaxTokensField, ProviderProtocol } from '@/types'
+import type { FidelityMode, MaxTokensField, ProviderProtocol } from '@/types'
 
 export interface ProviderTemplate {
   id: string
@@ -16,6 +16,7 @@ export interface ProviderTemplate {
   maxTokensField: MaxTokensField
   deduplicateStreamText?: boolean
   bufferStreamText?: boolean
+  fidelityMode?: FidelityMode
   notes: string
 }
 
@@ -32,6 +33,7 @@ export const MODEL_FAMILIES = [
   'Mistral',
   'Doubao',
   'Mimo',
+  'Local',
   'Custom',
 ] as const
 
@@ -52,6 +54,7 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
     maxTokensField: 'max_completion_tokens',
     deduplicateStreamText: true,
     bufferStreamText: true,
+    fidelityMode: 'stability',
     notes: '小米 Mimo 官方模型渠道；GPT 系列应配置到 OpenAI 或自定义 OpenAI-compatible 渠道。',
   },
   {
@@ -212,7 +215,59 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
     modelPrefixes: [],
     passthroughUnknownModels: true,
     maxTokensField: 'max_completion_tokens',
+    fidelityMode: 'best_effort',
     notes: '自定义 OpenAI 兼容渠道，适合代理、私有部署或聚合网关。',
+  },
+  {
+    id: 'local_sglang',
+    displayName: 'Local SGLang',
+    family: 'Local',
+    protocol: 'openai-compat',
+    baseUrl: 'http://127.0.0.1:30000/v1',
+    baseUrlEnv: 'SGLANG_BASE_URL',
+    apiKeyEnv: 'SGLANG_API_KEY',
+    apiKeyRequired: false,
+    defaultModel: 'local-model',
+    models: ['local-model'],
+    modelPrefixes: [],
+    passthroughUnknownModels: true,
+    maxTokensField: 'max_tokens',
+    fidelityMode: 'best_effort',
+    notes: '本地 SGLang OpenAI-compatible server；模型名按启动参数或 /v1/models 返回值填写。',
+  },
+  {
+    id: 'local_vllm',
+    displayName: 'Local vLLM',
+    family: 'Local',
+    protocol: 'openai-compat',
+    baseUrl: 'http://127.0.0.1:8000/v1',
+    baseUrlEnv: 'VLLM_BASE_URL',
+    apiKeyEnv: 'VLLM_API_KEY',
+    apiKeyRequired: false,
+    defaultModel: 'local-model',
+    models: ['local-model'],
+    modelPrefixes: [],
+    passthroughUnknownModels: true,
+    maxTokensField: 'max_tokens',
+    fidelityMode: 'best_effort',
+    notes: '本地 vLLM OpenAI-compatible server；如果启动时指定 served-model-name，这里填同一个名字。',
+  },
+  {
+    id: 'local_llamacpp',
+    displayName: 'Local llama.cpp',
+    family: 'Local',
+    protocol: 'openai-compat',
+    baseUrl: 'http://127.0.0.1:8080/v1',
+    baseUrlEnv: 'LLAMACPP_BASE_URL',
+    apiKeyEnv: 'LLAMACPP_API_KEY',
+    apiKeyRequired: false,
+    defaultModel: 'local-model',
+    models: ['local-model'],
+    modelPrefixes: [],
+    passthroughUnknownModels: true,
+    maxTokensField: 'max_tokens',
+    fidelityMode: 'best_effort',
+    notes: '本地 llama.cpp OpenAI-compatible server；适合 GGUF 模型。',
   },
 ]
 
@@ -267,6 +322,10 @@ export function providerToml(template: ProviderTemplate): string {
 
   if (template.bufferStreamText) {
     lines.push('buffer_stream_text = true')
+  }
+
+  if (template.fidelityMode) {
+    lines.push(`fidelity_mode = "${template.fidelityMode}"`)
   }
 
   return lines.join('\n')
