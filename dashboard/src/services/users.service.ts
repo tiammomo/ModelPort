@@ -1,4 +1,4 @@
-import type { User, CreateUserInput, ApiKey } from '@/types'
+import type { User, CreateUserInput, UpdateUserInput, ApiKey } from '@/types'
 import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay, nextMockId } from '@/lib/mock-mode'
 import { mockApiKeys, mockUsers } from '@/mock'
@@ -8,6 +8,20 @@ export interface CreateApiKeyInput {
   username?: string
   name: string
   group?: string
+}
+
+export interface UpdateApiKeyInput {
+  name?: string
+  group?: string
+  expiresAt?: string
+  status?: ApiKey['status']
+  ipRestricted?: boolean
+  spendLimitUsd?: number
+  rateLimited?: boolean
+  fiveHourLimitUsd?: number
+  dailyLimitUsd?: number
+  weeklyLimitUsd?: number
+  monthlyLimitUsd?: number
 }
 
 let mockUserStore = [...mockUsers]
@@ -48,7 +62,7 @@ export const usersService = {
     return mockDelay(user)
   },
 
-  updateUser: async (id: string, data: Partial<User>): Promise<User> => {
+  updateUser: async (id: string, data: UpdateUserInput): Promise<User> => {
     if (isMockMode) {
       const user = mockUserStore.find((item) => item.id === id)
       if (!user) throw new Error('用户不存在')
@@ -56,9 +70,7 @@ export const usersService = {
       mockUserStore = mockUserStore.map((item) => item.id === id ? next : item)
       return mockDelay(next)
     }
-    void id
-    const users = await api.get<User[]>('/admin/users')
-    return { ...users[0], ...data }
+    return api.put(`/admin/users/${encodeURIComponent(id)}`, data)
   },
 
   deleteUser: (id: string): Promise<void> => {
@@ -103,6 +115,28 @@ export const usersService = {
     if (!isMockMode) return api.post(`/admin/api-keys/${encodeURIComponent(keyId)}/disable`)
     mockApiKeyStore = mockApiKeyStore.map((key) => key.id === keyId ? { ...key, status: 'revoked' } : key)
     return mockDelay(undefined)
+  },
+
+  updateApiKey: (keyId: string, data: UpdateApiKeyInput): Promise<ApiKey> => {
+    if (!isMockMode) return api.put(`/admin/api-keys/${encodeURIComponent(keyId)}`, data)
+    const key = mockApiKeyStore.find((item) => item.id === keyId)
+    if (!key) throw new Error('API 密钥不存在')
+    const next: ApiKey = {
+      ...key,
+      ...(data.name !== undefined ? { name: data.name } : {}),
+      ...(data.group !== undefined ? { group: data.group.trim() || null } : {}),
+      ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt || null } : {}),
+      ...(data.status !== undefined ? { status: data.status } : {}),
+      ...(data.ipRestricted !== undefined ? { ipRestricted: data.ipRestricted } : {}),
+      ...(data.spendLimitUsd !== undefined ? { spendLimitUsd: data.spendLimitUsd } : {}),
+      ...(data.rateLimited !== undefined ? { rateLimited: data.rateLimited } : {}),
+      ...(data.fiveHourLimitUsd !== undefined ? { fiveHourLimitUsd: data.fiveHourLimitUsd } : {}),
+      ...(data.dailyLimitUsd !== undefined ? { dailyLimitUsd: data.dailyLimitUsd } : {}),
+      ...(data.weeklyLimitUsd !== undefined ? { weeklyLimitUsd: data.weeklyLimitUsd } : {}),
+      ...(data.monthlyLimitUsd !== undefined ? { monthlyLimitUsd: data.monthlyLimitUsd } : {}),
+    }
+    mockApiKeyStore = mockApiKeyStore.map((item) => item.id === keyId ? next : item)
+    return mockDelay(next)
   },
 
   deleteApiKey: (keyId: string): Promise<void> => {

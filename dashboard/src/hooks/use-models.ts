@@ -33,6 +33,17 @@ export function useToggleModel() {
   })
 }
 
+export function useDiscoverProviderModels() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (providerId: string) => modelsService.discoverProviderModels(providerId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.providers })
+      qc.invalidateQueries({ queryKey: queryKeys.dashboard })
+    },
+  })
+}
+
 export function useCreateAlias() {
   const qc = useQueryClient()
   return useMutation({

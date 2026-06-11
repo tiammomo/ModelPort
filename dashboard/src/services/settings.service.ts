@@ -15,14 +15,17 @@ export const settingsService = {
     return mockDelay(mockSettingsStore)
   },
 
-  testProviderConnection: (providerId: string): Promise<{ success: boolean; message: string; testedAt?: string }> => {
+  testProviderConnection: (providerId: string): Promise<{ success: boolean; message: string; testedAt?: string; models?: string[]; modelCount?: number }> => {
     if (!isMockMode) return api.post('/admin/settings/test-provider', { providerId })
     const provider = mockProviders.find((item) => item.id === providerId)
     if (!provider) return mockDelay({ success: false, message: 'provider not found' }, 220)
     const success = provider.status === 'active' && (provider.hasApiKey || !provider.apiKeyRequired)
+    const models = success ? provider.models : []
     return mockDelay({
       success,
       message: success ? 'mock connection ok' : 'mock missing API key or provider inactive',
+      models,
+      modelCount: models.length,
       testedAt: new Date().toISOString(),
     }, 220)
   },

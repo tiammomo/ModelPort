@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useUsers, useCreateUser, useDeleteUser, useUserApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks'
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useUserApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -12,19 +12,30 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { formatDate, formatNumber } from '@/lib/utils'
 import { ROLE_LABELS } from '@/lib/constants'
-import { UserPlus, Key, Trash2, Copy, MoreHorizontal } from 'lucide-react'
+import { UserPlus, Key, Trash2, Copy, MoreHorizontal, Pencil } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import type { UserRole } from '@/types'
+import type { User, UserRole } from '@/types'
+
+type UserStatus = User['status']
+
+const emptyEditForm = {
+  email: '',
+  password: '',
+  role: 'user' as UserRole,
+  status: 'active' as UserStatus,
+}
 
 export function UsersPage() {
   const { data: users = [], isLoading } = useUsers()
   const createUser = useCreateUser()
+  const updateUser = useUpdateUser()
   const deleteUser = useDeleteUser()
   const createApiKey = useCreateApiKey()
   const revokeApiKey = useRevokeApiKey()
 
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showDetailUser, setShowDetailUser] = useState<string | null>(null)
+  const [editingUser, setEditingUser] = useState<User | null>(null)
   const [newKeyResult, setNewKeyResult] = useState<string | null>(null)
 
   const [form, setForm] = useState({
@@ -34,6 +45,7 @@ export function UsersPage() {
     role: 'user' as UserRole,
     status: 'active' as 'active' | 'disabled' | 'suspended',
   })
+  const [editForm, setEditForm] = useState(emptyEditForm)
   const [keyName, setKeyName] = useState('')
 
   const { data: userApiKeys = [] } = useUserApiKeys(showDetailUser || '')
@@ -44,6 +56,36 @@ export function UsersPage() {
         setShowCreateDialog(false)
         setForm({ username: '', email: '', password: '', role: 'user', status: 'active' })
       },
+    })
+  }
+
+  const openEditUser = (user: User) => {
+    setEditingUser(user)
+    setEditForm({
+      email: user.email,
+      password: '',
+      role: user.role,
+      status: user.status,
+    })
+  }
+
+  const closeEditUser = () => {
+    setEditingUser(null)
+    setEditForm(emptyEditForm)
+  }
+
+  const handleUpdateUser = () => {
+    if (!editingUser || !editForm.email.trim()) return
+    updateUser.mutate({
+      id: editingUser.id,
+      data: {
+        email: editForm.email.trim(),
+        role: editForm.role,
+        status: editForm.status,
+        ...(editForm.password ? { password: editForm.password } : {}),
+      },
+    }, {
+      onSuccess: closeEditUser,
     })
   }
 
@@ -113,6 +155,10 @@ export function UsersPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openEditUser(user)}>
+                          <Pencil className="mr-2 h-4 w-4" />
+                          编辑用户
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setShowDetailUser(user.id)}>
                           <Key className="mr-2 h-4 w-4" />
                           管理 API Keys
@@ -175,6 +221,70 @@ export function UsersPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCreateDialog(false)}>取消</Button>
             <Button onClick={handleCreateUser} disabled={createUser.isPending}>创建</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit User Dialog */}
+      <Dialog open={!!editingUser} onOpenChange={(open) => { if (!open) closeEditUser() }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑用户</DialogTitle>
+            <DialogDescription>调整用户权限、邮箱和登录密码</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>用户名</Label>
+              <Input value={editingUser?.username || ''} disabled />
+            </div>
+            <div className="space-y-2">
+              <Label>邮箱</Label>
+              <Input
+                value={editForm.email}
+                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                placeholder="输入邮箱"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>新密码</Label>
+              <Input
+                type="password"
+                value={editForm.password}
+                onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                placeholder="留空不修改"
+                autoComplete="new-password"
+              />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>角色</Label>
+                <Select value={editForm.role} onValueChange={(value) => setEditForm({ ...editForm, role: value as UserRole })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="admin">管理员</SelectItem>
+                    <SelectItem value="user">普通用户</SelectItem>
+                    <SelectItem value="viewer">只读用户</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>状态</Label>
+                <Select value={editForm.status} onValueChange={(value) => setEditForm({ ...editForm, status: value as UserStatus })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">活跃</SelectItem>
+                    <SelectItem value="disabled">禁用</SelectItem>
+                    <SelectItem value="suspended">已暂停</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeEditUser}>取消</Button>
+            <Button onClick={handleUpdateUser} disabled={!editForm.email.trim() || updateUser.isPending}>
+              保存
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -81,6 +81,8 @@ struct ProviderTestRecord {
     tested_at_ms: u64,
     success: bool,
     message: String,
+    #[serde(default)]
+    discovered_models: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +109,20 @@ struct ApiKeyRecord {
     last_used_at_ms: Option<u64>,
     expires_at_ms: Option<u64>,
     status: String,
+    #[serde(default)]
+    ip_restricted: bool,
+    #[serde(default)]
+    spend_limit_usd: f64,
+    #[serde(default)]
+    rate_limited: bool,
+    #[serde(default)]
+    five_hour_limit_usd: f64,
+    #[serde(default)]
+    daily_limit_usd: f64,
+    #[serde(default)]
+    weekly_limit_usd: f64,
+    #[serde(default)]
+    monthly_limit_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +194,13 @@ pub struct PublicApiKey {
     pub status: String,
     pub requests_today: u64,
     pub tokens_today: u64,
+    pub ip_restricted: bool,
+    pub spend_limit_usd: f64,
+    pub rate_limited: bool,
+    pub five_hour_limit_usd: f64,
+    pub daily_limit_usd: f64,
+    pub weekly_limit_usd: f64,
+    pub monthly_limit_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,6 +219,22 @@ pub struct CreateApiKeyInput {
     pub name: String,
     pub group: Option<String>,
     pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateApiKeyInput {
+    pub name: Option<String>,
+    pub group: Option<String>,
+    pub expires_at: Option<String>,
+    pub status: Option<String>,
+    pub ip_restricted: Option<bool>,
+    pub spend_limit_usd: Option<f64>,
+    pub rate_limited: Option<bool>,
+    pub five_hour_limit_usd: Option<f64>,
+    pub daily_limit_usd: Option<f64>,
+    pub weekly_limit_usd: Option<f64>,
+    pub monthly_limit_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -465,6 +504,7 @@ impl ControlStore {
         provider_id: String,
         success: bool,
         message: String,
+        discovered_models: Vec<String>,
     ) -> Result<u64, AppError> {
         let tested_at_ms = now_millis();
         let mut inner = self.inner.lock().expect("control lock poisoned");
@@ -475,6 +515,7 @@ impl ControlStore {
                 tested_at_ms,
                 success,
                 message,
+                discovered_models,
             },
         );
         self.save_locked(&inner)?;
@@ -493,6 +534,8 @@ impl ControlStore {
                         "testedAt": record.tested_at_ms.to_string(),
                         "success": record.success,
                         "message": record.message,
+                        "models": record.discovered_models,
+                        "modelCount": record.discovered_models.len(),
                     }),
                 )
             })
@@ -607,6 +650,13 @@ impl ControlStore {
             last_used_at_ms: None,
             expires_at_ms: input.expires_at.and_then(|value| value.parse::<u64>().ok()),
             status: "active".to_owned(),
+            ip_restricted: false,
+            spend_limit_usd: 0.0,
+            rate_limited: false,
+            five_hour_limit_usd: 0.0,
+            daily_limit_usd: 0.0,
+            weekly_limit_usd: 0.0,
+            monthly_limit_usd: 0.0,
         };
 
         let mut inner = self.inner.lock().expect("control lock poisoned");
@@ -625,6 +675,91 @@ impl ControlStore {
         };
         record.status = "revoked".to_owned();
         self.save_locked(&inner)
+    }
+
+    pub fn update_api_key(
+        &self,
+        key_id: &str,
+        input: UpdateApiKeyInput,
+    ) -> Result<PublicApiKey, AppError> {
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        let Some(record) = inner.api_keys.get(key_id).cloned() else {
+            return Err(AppError::InvalidRequest("API key not found".to_owned()));
+        };
+
+        let mut updated = record;
+        if let Some(name) = input.name {
+            let name = name.trim();
+            if name.is_empty() || name.len() > 80 {
+                return Err(AppError::InvalidRequest(
+                    "API key name must be 1-80 characters".to_owned(),
+                ));
+            }
+            updated.name = name.to_owned();
+        }
+        if let Some(group) = input.group {
+            let group = group.trim();
+            updated.group = if group.is_empty() {
+                None
+            } else {
+                Some(group.to_owned())
+            };
+        }
+        if let Some(expires_at) = input.expires_at {
+            let expires_at = expires_at.trim();
+            updated.expires_at_ms = if expires_at.is_empty() {
+                None
+            } else {
+                Some(expires_at.parse::<u64>().map_err(|_| {
+                    AppError::InvalidRequest("expiresAt must be a millisecond timestamp".to_owned())
+                })?)
+            };
+        }
+        if let Some(status) = input.status {
+            let status = status.trim();
+            if !matches!(status, "active" | "revoked") {
+                return Err(AppError::InvalidRequest(
+                    "invalid API key status".to_owned(),
+                ));
+            }
+            updated.status = status.to_owned();
+        }
+        if let Some(ip_restricted) = input.ip_restricted {
+            updated.ip_restricted = ip_restricted;
+        }
+        if let Some(spend_limit_usd) = input.spend_limit_usd {
+            updated.spend_limit_usd = validate_usd_limit("spendLimitUsd", spend_limit_usd)?;
+        }
+        if let Some(rate_limited) = input.rate_limited {
+            updated.rate_limited = rate_limited;
+        }
+        if let Some(five_hour_limit_usd) = input.five_hour_limit_usd {
+            updated.five_hour_limit_usd =
+                validate_usd_limit("fiveHourLimitUsd", five_hour_limit_usd)?;
+        }
+        if let Some(daily_limit_usd) = input.daily_limit_usd {
+            updated.daily_limit_usd = validate_usd_limit("dailyLimitUsd", daily_limit_usd)?;
+        }
+        if let Some(weekly_limit_usd) = input.weekly_limit_usd {
+            updated.weekly_limit_usd = validate_usd_limit("weeklyLimitUsd", weekly_limit_usd)?;
+        }
+        if let Some(monthly_limit_usd) = input.monthly_limit_usd {
+            updated.monthly_limit_usd = validate_usd_limit("monthlyLimitUsd", monthly_limit_usd)?;
+        }
+
+        if updated.status == "active"
+            && updated
+                .expires_at_ms
+                .is_some_and(|expires_at| expires_at <= now_millis())
+        {
+            return Err(AppError::InvalidRequest(
+                "cannot activate an expired API key".to_owned(),
+            ));
+        }
+
+        inner.api_keys.insert(updated.id.clone(), updated.clone());
+        self.save_locked(&inner)?;
+        Ok(public_api_key(&updated, &inner.usage))
     }
 
     pub fn delete_api_key(&self, key_id: &str) -> Result<(), AppError> {
@@ -1075,7 +1210,23 @@ fn public_api_key(record: &ApiKeyRecord, usage: &[UsageRecord]) -> PublicApiKey 
         status: record.status.clone(),
         requests_today,
         tokens_today,
+        ip_restricted: record.ip_restricted,
+        spend_limit_usd: record.spend_limit_usd,
+        rate_limited: record.rate_limited,
+        five_hour_limit_usd: record.five_hour_limit_usd,
+        daily_limit_usd: record.daily_limit_usd,
+        weekly_limit_usd: record.weekly_limit_usd,
+        monthly_limit_usd: record.monthly_limit_usd,
     }
+}
+
+fn validate_usd_limit(field: &str, value: f64) -> Result<f64, AppError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(AppError::InvalidRequest(format!(
+            "{field} must be zero or greater"
+        )));
+    }
+    Ok(value)
 }
 
 fn effective_aliases_locked(
@@ -1233,6 +1384,49 @@ mod tests {
         headers.insert("x-api-key", HeaderValue::from_str(&created.key).unwrap());
         let identity = store.authenticate_headers(&headers).unwrap().unwrap();
         assert_eq!(identity.user_id, "usr_test");
+        assert_eq!(store.active_api_key_count("usr_test"), 1);
+    }
+
+    #[test]
+    fn updates_and_restores_api_key() {
+        let store = ControlStore::for_tests();
+        let created = store
+            .create_api_key(CreateApiKeyInput {
+                user_id: "usr_test".to_owned(),
+                username: Some("test-user".to_owned()),
+                name: "local".to_owned(),
+                group: Some("dev".to_owned()),
+                expires_at: None,
+            })
+            .unwrap();
+
+        store.revoke_api_key(&created.public.id).unwrap();
+        assert_eq!(store.active_api_key_count("usr_test"), 0);
+
+        let updated = store
+            .update_api_key(
+                &created.public.id,
+                UpdateApiKeyInput {
+                    name: Some("local restored".to_owned()),
+                    group: Some(String::new()),
+                    expires_at: None,
+                    status: Some("active".to_owned()),
+                    ip_restricted: Some(true),
+                    spend_limit_usd: Some(20.0),
+                    rate_limited: Some(true),
+                    five_hour_limit_usd: Some(0.0),
+                    daily_limit_usd: Some(5.0),
+                    weekly_limit_usd: Some(25.0),
+                    monthly_limit_usd: Some(100.0),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.name, "local restored");
+        assert_eq!(updated.group, None);
+        assert_eq!(updated.status, "active");
+        assert!(updated.ip_restricted);
+        assert_eq!(updated.daily_limit_usd, 5.0);
         assert_eq!(store.active_api_key_count("usr_test"), 1);
     }
 

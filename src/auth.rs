@@ -107,6 +107,15 @@ pub struct CreateUserInput {
     pub status: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateUserInput {
+    pub email: Option<String>,
+    pub password: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+}
+
 impl AuthStore {
     pub fn load_or_bootstrap(config: &AppConfig) -> Result<Self, AppError> {
         let path = auth_store_path();
@@ -300,6 +309,84 @@ impl AuthStore {
 
         let public = public_user(&user, 1, 0);
         inner.users.insert(user.id.clone(), user);
+        self.save_locked(&inner)?;
+        Ok(public)
+    }
+
+    pub fn update_user(
+        &self,
+        user_id: &str,
+        current_user_id: &str,
+        input: UpdateUserInput,
+    ) -> Result<PublicUser, AppError> {
+        let email = input.email.as_deref().map(validate_email).transpose()?;
+        let role = input.role.as_deref().map(validate_role).transpose()?;
+        let status = input.status.as_deref().map(validate_status).transpose()?;
+        let password_hash = input
+            .password
+            .as_deref()
+            .filter(|password| !password.is_empty())
+            .map(|password| {
+                validate_password_strength(password)?;
+                hash_password(password)
+            })
+            .transpose()?;
+
+        let mut inner = self.inner.lock().expect("auth lock poisoned");
+        let Some(existing) = inner.users.get(user_id).cloned() else {
+            return Err(AppError::InvalidRequest("user not found".to_owned()));
+        };
+
+        if user_id == current_user_id
+            && (role.as_deref().is_some_and(|next| next != "admin")
+                || status.as_deref().is_some_and(|next| next != "active"))
+        {
+            return Err(AppError::Forbidden(
+                "cannot remove admin access from the current signed-in user".to_owned(),
+            ));
+        }
+
+        let next_role = role.unwrap_or_else(|| existing.role.clone());
+        let next_status = status.unwrap_or_else(|| existing.status.clone());
+        let active_admins_after = inner
+            .users
+            .iter()
+            .filter(|(id, user)| {
+                if id.as_str() == user_id {
+                    next_role == "admin" && next_status == "active"
+                } else {
+                    user.role == "admin" && user.status == "active"
+                }
+            })
+            .count();
+        if active_admins_after == 0 {
+            return Err(AppError::Forbidden(
+                "cannot remove the last active admin".to_owned(),
+            ));
+        }
+
+        let should_clear_sessions =
+            (password_hash.is_some() && user_id != current_user_id) || next_status != "active";
+        let public = {
+            let Some(user) = inner.users.get_mut(user_id) else {
+                return Err(AppError::InvalidRequest("user not found".to_owned()));
+            };
+            if let Some(email) = email {
+                user.email = email;
+            }
+            user.role = next_role;
+            user.status = next_status;
+            if let Some(password_hash) = password_hash {
+                user.password_hash = password_hash;
+            }
+            user.updated_at_ms = now_millis();
+            public_user(user, 1, 0)
+        };
+        if should_clear_sessions {
+            inner
+                .sessions
+                .retain(|_, session| session.user_id.as_str() != user_id);
+        }
         self.save_locked(&inner)?;
         Ok(public)
     }
@@ -635,5 +722,96 @@ mod tests {
     #[test]
     fn normal_user_passwords_still_require_minimum_length() {
         assert!(validate_password_strength("admin").is_err());
+    }
+
+    #[test]
+    fn admin_updates_user_profile_role_and_password() {
+        let store = AuthStore::for_tests();
+        let now = now_millis();
+        let admin = AdminUserRecord {
+            id: "usr_admin".to_owned(),
+            username: "admin".to_owned(),
+            email: "admin@modelport.local".to_owned(),
+            role: "admin".to_owned(),
+            status: "active".to_owned(),
+            password_hash: hash_password("strong-password-123").unwrap(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+        };
+        let user = AdminUserRecord {
+            id: "usr_user".to_owned(),
+            username: "dev".to_owned(),
+            email: "dev@modelport.local".to_owned(),
+            role: "user".to_owned(),
+            status: "active".to_owned(),
+            password_hash: hash_password("old-password-123").unwrap(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+        };
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.users.insert(admin.id.clone(), admin);
+            inner.users.insert(user.id.clone(), user);
+        }
+
+        let updated = store
+            .update_user(
+                "usr_user",
+                "usr_admin",
+                UpdateUserInput {
+                    email: Some("devops@modelport.local".to_owned()),
+                    password: Some("new-password-123".to_owned()),
+                    role: Some("viewer".to_owned()),
+                    status: Some("disabled".to_owned()),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.email, "devops@modelport.local");
+        assert_eq!(updated.role, "viewer");
+        assert_eq!(updated.status, "disabled");
+        let inner = store.inner.lock().unwrap();
+        let user = inner.users.get("usr_user").unwrap();
+        assert!(verify_password("new-password-123", &user.password_hash));
+    }
+
+    #[test]
+    fn update_user_keeps_current_admin_access() {
+        let store = AuthStore::for_tests();
+        let now = now_millis();
+        let admin = AdminUserRecord {
+            id: "usr_admin".to_owned(),
+            username: "admin".to_owned(),
+            email: "admin@modelport.local".to_owned(),
+            role: "admin".to_owned(),
+            status: "active".to_owned(),
+            password_hash: hash_password("strong-password-123").unwrap(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+        };
+        store
+            .inner
+            .lock()
+            .unwrap()
+            .users
+            .insert(admin.id.clone(), admin);
+
+        let err = store
+            .update_user(
+                "usr_admin",
+                "usr_admin",
+                UpdateUserInput {
+                    email: None,
+                    password: None,
+                    role: Some("user".to_owned()),
+                    status: Some("active".to_owned()),
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::Forbidden(_)));
     }
 }

@@ -23,7 +23,18 @@ export interface Provider {
     testedAt: string
     success: boolean
     message: string
+    models?: string[]
+    modelCount?: number
   } | null
+}
+
+export interface ProviderModelDiscovery {
+  providerId: string
+  success: boolean
+  message: string
+  models: string[]
+  modelCount: number
+  discoveredAt: string
 }
 
 export interface ModelAlias {

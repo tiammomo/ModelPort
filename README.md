@@ -55,6 +55,7 @@ ModelPort is not a large all-in-one model aggregation platform. It is a lightwei
 
 - [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md): positioning, architecture boundaries, and roadmap.
 - [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md): provider compatibility matrix, verification status, and acceptance criteria.
+- [docs/LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md): SGLang, vLLM, llama.cpp, Ollama, and custom local runtime integration.
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md): efficiency, benchmarks, metrics, and production tuning.
 - [docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md): GitHub repository settings, branch protection, and release suggestions.
 - [docs/GPT_IMAGE_2_GUIDE.md](docs/GPT_IMAGE_2_GUIDE.md): future image capability guidance.
@@ -391,7 +392,7 @@ export ANTHROPIC_MODEL=sonnet
 
 ## Local OpenAI-Compatible Runtimes
 
-Local models served by SGLang, vLLM, llama.cpp, Ollama, or another OpenAI-compatible server can be routed through ModelPort. Point a provider at the runtime's `/v1` base URL and keep `api_key_required = false` unless your local server enforces a key:
+Local models served by SGLang, vLLM, llama.cpp, Ollama, or another OpenAI-compatible server can be routed through ModelPort. Point a provider at the runtime's `/v1` base URL and keep `api_key_required = false` unless your local server enforces a key. Use the exact served model ID exposed by `/v1/models`; for fine-tuned deployments, that is usually the fine-tuned served name rather than only the base model family name.
 
 ```toml
 [providers.local_vllm]
@@ -410,6 +411,8 @@ local = "local_vllm:local-model"
 ```
 
 Common base URLs are `http://127.0.0.1:30000/v1` for SGLang, `http://127.0.0.1:8000/v1` for vLLM, and `http://127.0.0.1:8080/v1` for llama.cpp's OpenAI-compatible server. Use `fidelity_mode = "strict"` only when you prefer ModelPort to reject Anthropic features that cannot be represented by the OpenAI-compatible runtime.
+
+See [docs/LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md) for model discovery, served-name guidance, and local runtime troubleshooting.
 
 These local runtimes are also built in as optional providers. For example:
 

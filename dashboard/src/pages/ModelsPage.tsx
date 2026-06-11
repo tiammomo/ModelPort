@@ -1,5 +1,12 @@
 import { Fragment, useMemo, useState } from 'react'
-import { useProviders, useAliases, useCreateAlias, useDeleteAlias, useUpdateDefaultProvider } from '@/hooks'
+import {
+  useProviders,
+  useAliases,
+  useCreateAlias,
+  useDeleteAlias,
+  useDiscoverProviderModels,
+  useUpdateDefaultProvider,
+} from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { TableToolbar } from '@/components/shared/TableToolbar'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -59,10 +66,12 @@ export function ModelsPage() {
   const { data: aliases = [] } = useAliases()
   const createAlias = useCreateAlias()
   const deleteAlias = useDeleteAlias()
+  const discoverModels = useDiscoverProviderModels()
   const updateDefault = useUpdateDefaultProvider()
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
   const [expandedModel, setExpandedModel] = useState<string | null>(null)
+  const [discoveringProvider, setDiscoveringProvider] = useState<string | null>(null)
   const [showAliasDialog, setShowAliasDialog] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null)
   const [aliasForm, setAliasForm] = useState({ alias: '', target: '' })
@@ -128,6 +137,13 @@ export function ModelsPage() {
   const openAliasDialog = (alias = '', target = '') => {
     setAliasForm({ alias, target })
     setShowAliasDialog(true)
+  }
+
+  const handleDiscoverModels = (providerId: string) => {
+    setDiscoveringProvider(providerId)
+    discoverModels.mutate(providerId, {
+      onSettled: () => setDiscoveringProvider(null),
+    })
   }
 
   if (isLoading) {
@@ -345,53 +361,78 @@ export function ModelsPage() {
 
         <TabsContent value="providers" className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {providers.map((provider) => (
-              <Card key={provider.id} className="overflow-hidden">
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <CardTitle className="truncate text-base">{provider.displayName}</CardTitle>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <Badge variant="outline">{PROVIDER_PROTOCOL_LABELS[provider.protocol]}</Badge>
-                        <span className="text-xs text-muted-foreground">{provider.models.length} 模型</span>
-                      </div>
-                    </div>
-                    <StatusBadge status={provider.status} />
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <p className="mb-2 truncate text-xs text-muted-foreground">{provider.baseUrl}</p>
-                  <div className="mb-3 flex flex-wrap gap-2">
-                    <Badge variant={provider.hasApiKey || !provider.apiKeyRequired ? 'success' : 'secondary'}>
-                      {provider.hasApiKey || !provider.apiKeyRequired ? '可路由' : '缺少密钥'}
-                    </Badge>
-                    {provider.fidelityMode && <Badge variant="outline">{fidelityModeLabel(provider.fidelityMode)}</Badge>}
-                    {provider.passthroughUnknownModels && <Badge variant="warning">透传未知模型</Badge>}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full justify-between"
-                    onClick={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
-                  >
-                    <span>模型列表</span>
-                    {expandedProvider === provider.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  </Button>
-                  {expandedProvider === provider.id && (
-                    <div className="mt-2 space-y-1">
-                      {provider.models.map((model) => (
-                        <div key={model} className="flex items-center justify-between gap-3 rounded-md border px-3 py-1.5">
-                          <span className="min-w-0 truncate font-mono text-sm">{model}</span>
-                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void copyText(`${provider.id}:${model}`)}>
-                            <Copy className="h-3.5 w-3.5" />
-                          </Button>
+            {providers.map((provider) => {
+              const isDiscovering = discoveringProvider === provider.id && discoverModels.isPending
+              const lastTest = provider.lastTest
+              const testTone = lastTest?.success
+                ? 'text-xs text-green-700 dark:text-green-300'
+                : 'text-xs text-red-700 dark:text-red-300'
+              const testSummary = lastTest?.success && typeof lastTest.modelCount === 'number'
+                ? `已发现 ${lastTest.modelCount} 个模型`
+                : lastTest?.message
+
+              return (
+                <Card key={provider.id} className="overflow-hidden">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <CardTitle className="truncate text-base">{provider.displayName}</CardTitle>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Badge variant="outline">{PROVIDER_PROTOCOL_LABELS[provider.protocol]}</Badge>
+                          <span className="text-xs text-muted-foreground">{provider.models.length} 模型</span>
                         </div>
-                      ))}
+                      </div>
+                      <StatusBadge status={provider.status} />
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <p className="mb-2 truncate text-xs text-muted-foreground">{provider.baseUrl}</p>
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      <Badge variant={provider.hasApiKey || !provider.apiKeyRequired ? 'success' : 'secondary'}>
+                        {provider.hasApiKey || !provider.apiKeyRequired ? '可路由' : '缺少密钥'}
+                      </Badge>
+                      {provider.fidelityMode && <Badge variant="outline">{fidelityModeLabel(provider.fidelityMode)}</Badge>}
+                      {provider.passthroughUnknownModels && <Badge variant="warning">透传未知模型</Badge>}
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDiscoverModels(provider.id)}
+                        disabled={isDiscovering}
+                      >
+                        <Search className="mr-2 h-4 w-4" />
+                        {isDiscovering ? '发现中' : '发现模型'}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="justify-between"
+                        onClick={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
+                      >
+                        <span>列表</span>
+                        {expandedProvider === provider.id ? <ChevronDown className="ml-2 h-4 w-4" /> : <ChevronRight className="ml-2 h-4 w-4" />}
+                      </Button>
+                    </div>
+                    {lastTest && testSummary && (
+                      <p className={`mt-2 truncate ${testTone}`}>{testSummary}</p>
+                    )}
+                    {expandedProvider === provider.id && (
+                      <div className="mt-3 space-y-1">
+                        {provider.models.map((model) => (
+                          <div key={model} className="flex items-center justify-between gap-3 rounded-md border px-3 py-1.5">
+                            <span className="min-w-0 truncate font-mono text-sm">{model}</span>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void copyText(`${provider.id}:${model}`)}>
+                              <Copy className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })}
           </div>
         </TabsContent>
 

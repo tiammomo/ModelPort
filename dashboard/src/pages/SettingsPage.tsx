@@ -14,7 +14,13 @@ import { formatBytes } from '@/lib/utils'
 import { Save, Plug, Loader2 } from 'lucide-react'
 import type { SystemSettings } from '@/types'
 
-type ProviderTestResult = { success: boolean; message: string; testedAt: string }
+type ProviderTestResult = {
+  success: boolean
+  message: string
+  testedAt: string
+  models?: string[]
+  modelCount?: number
+}
 
 export function SettingsPage() {
   const { data: settings, isLoading } = useSettings()

@@ -105,6 +105,42 @@ impl HttpTransport {
         })
     }
 
+    pub async fn get_json(
+        &self,
+        url: &str,
+        headers: &[Header],
+    ) -> Result<serde_json::Value, AppError> {
+        let started = Instant::now();
+        let response = self
+            .client
+            .get(url)
+            .headers(header_map(headers)?)
+            .timeout(self.request_timeout)
+            .send()
+            .await
+            .map_err(request_error)?;
+        let status = response.status();
+        let body = response_body(response, self.max_response_bytes).await?;
+
+        debug!(
+            upstream_url = url,
+            status = status.as_u16(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "upstream get response"
+        );
+
+        if status.is_client_error() || status.is_server_error() {
+            return Err(AppError::Upstream {
+                status: status.as_u16(),
+                body: truncate(String::from_utf8_lossy(&body).to_string()),
+            });
+        }
+
+        serde_json::from_slice(&body).map_err(|err| {
+            AppError::UpstreamProtocol(format!("upstream returned invalid JSON: {err}"))
+        })
+    }
+
     pub fn post_json_sse(
         &self,
         url: String,

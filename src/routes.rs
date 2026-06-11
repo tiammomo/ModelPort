@@ -24,14 +24,14 @@ use tower_http::{
 use tracing::{info, warn};
 
 use crate::{
-    auth::{AuthStore, CreateUserInput, LoginInput, PublicUser},
-    config::{AppConfig, ProviderProtocol},
+    auth::{AuthStore, CreateUserInput, LoginInput, PublicUser, UpdateUserInput},
+    config::{AppConfig, ProviderConfig, ProviderProtocol},
     control::{
-        ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput, UpsertQuotaInput,
-        UsageEstimate, UsageEventInput,
+        ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput, UpdateApiKeyInput,
+        UpsertQuotaInput, UsageEstimate, UsageEventInput,
     },
     error::AppError,
-    http::HttpTransport,
+    http::{Header, HttpTransport},
     metrics::Metrics,
     pricing::{self, TokenUsageBreakdown},
     providers,
@@ -65,6 +65,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/dashboard", get(admin_dashboard))
         .route("/admin/providers", get(admin_providers))
         .route(
+            "/admin/providers/{provider_id}/models",
+            get(admin_provider_models),
+        )
+        .route(
             "/admin/aliases",
             get(admin_aliases).post(admin_create_alias),
         )
@@ -77,7 +81,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/logs", get(admin_logs))
         .route("/admin/latency", get(admin_latency))
         .route("/admin/users", get(admin_users).post(admin_create_user))
-        .route("/admin/users/{user_id}", delete(admin_delete_user))
+        .route(
+            "/admin/users/{user_id}",
+            put(admin_update_user).delete(admin_delete_user),
+        )
         .route(
             "/admin/api-keys",
             get(admin_api_keys).post(admin_create_api_key),
@@ -90,7 +97,10 @@ pub fn router(state: AppState) -> Router {
             "/admin/users/{user_id}/api-keys",
             get(admin_user_api_keys).post(admin_create_api_key),
         )
-        .route("/admin/api-keys/{key_id}", delete(admin_delete_api_key))
+        .route(
+            "/admin/api-keys/{key_id}",
+            put(admin_update_api_key).delete(admin_delete_api_key),
+        )
         .route("/admin/quotas", get(admin_quotas).post(admin_create_quota))
         .route(
             "/admin/quotas/{quota_id}",
@@ -684,25 +694,31 @@ async fn admin_test_provider(
         .get("providerId")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let Some(provider) = state.config.providers.get(provider_id) else {
+    let config = effective_config(&state);
+    let Some(provider) = config.providers.get(provider_id).cloned() else {
         return Ok(Json(json!({
             "success": false,
             "message": "provider not found",
         })));
     };
 
-    let success = provider
-        .api_key()
-        .is_ok_and(|key| key.is_some() || !provider.api_key_required);
-    let message = if success {
-        "configured"
-    } else {
-        "missing API key"
+    let (success, message, models) = match discover_provider_models(&state, &provider).await {
+        Ok(models) => {
+            let message = if provider.protocol == ProviderProtocol::OpenaiCompat {
+                format!("connected; discovered {} model(s)", models.len())
+            } else {
+                "configured".to_owned()
+            };
+            (true, message, models)
+        }
+        Err(err) => (false, err.to_string(), Vec::new()),
     };
-    let tested_at =
-        state
-            .control
-            .record_provider_test(provider_id.to_owned(), success, message.to_owned())?;
+    let tested_at = state.control.record_provider_test(
+        provider_id.to_owned(),
+        success,
+        message.to_owned(),
+        models.clone(),
+    )?;
     record_admin_activity(
         &state,
         &actor,
@@ -715,8 +731,152 @@ async fn admin_test_provider(
     Ok(Json(json!({
         "success": success,
         "message": message,
+        "models": models,
+        "modelCount": models.len(),
         "testedAt": tested_at.to_string(),
     })))
+}
+
+async fn admin_provider_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_user(&state, &headers)?;
+    let config = effective_config(&state);
+    let Some(provider) = config.providers.get(&provider_id).cloned() else {
+        return Err(AppError::ProviderNotFound(provider_id));
+    };
+
+    let (success, message, models) = match discover_provider_models(&state, &provider).await {
+        Ok(models) => {
+            let message = if provider.protocol == ProviderProtocol::OpenaiCompat {
+                format!("discovered {} model(s)", models.len())
+            } else {
+                "model discovery is not available for this protocol; returned configured models"
+                    .to_owned()
+            };
+            (true, message, models)
+        }
+        Err(err) => (false, err.to_string(), Vec::new()),
+    };
+    let tested_at = state.control.record_provider_test(
+        provider_id.clone(),
+        success,
+        message.clone(),
+        models.clone(),
+    )?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{provider_id}"),
+        format!("发现供应商 {provider_id} 模型: {message}"),
+        if success { "info" } else { "warning" },
+    );
+
+    Ok(Json(json!({
+        "providerId": provider_id,
+        "success": success,
+        "message": message,
+        "models": models,
+        "modelCount": models.len(),
+        "discoveredAt": tested_at.to_string(),
+    })))
+}
+
+async fn discover_provider_models(
+    state: &AppState,
+    provider: &ProviderConfig,
+) -> Result<Vec<String>, AppError> {
+    if provider.protocol != ProviderProtocol::OpenaiCompat {
+        provider.api_key()?;
+        return Ok(configured_provider_models(provider));
+    }
+
+    let url = provider.endpoint("/models");
+    let body = state
+        .transport
+        .get_json(&url, &openai_compatible_headers(provider)?)
+        .await?;
+    let models = parse_model_ids(&body);
+
+    if models.is_empty() {
+        Ok(configured_provider_models(provider))
+    } else {
+        Ok(models)
+    }
+}
+
+fn openai_compatible_headers(provider: &ProviderConfig) -> Result<Vec<Header>, AppError> {
+    let mut headers = Vec::new();
+    if let Some(api_key) = provider.api_key()? {
+        headers.push(("Authorization".to_owned(), format!("Bearer {api_key}")));
+    }
+    Ok(headers)
+}
+
+fn configured_provider_models(provider: &ProviderConfig) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut models = Vec::new();
+
+    for model in provider
+        .models
+        .iter()
+        .chain(std::iter::once(&provider.default_model))
+    {
+        push_model_id(model, &mut models, &mut seen);
+    }
+
+    models
+}
+
+fn parse_model_ids(value: &Value) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut models = Vec::new();
+    let root = value
+        .get("data")
+        .or_else(|| value.get("models"))
+        .unwrap_or(value);
+
+    collect_model_ids(root, &mut models, &mut seen);
+    models
+}
+
+fn collect_model_ids(value: &Value, models: &mut Vec<String>, seen: &mut BTreeSet<String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_model_ids(item, models, seen);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(id) = map
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| map.get("name").and_then(Value::as_str))
+                .or_else(|| map.get("model").and_then(Value::as_str))
+            {
+                push_model_id(id, models, seen);
+                return;
+            }
+
+            for key in ["data", "models"] {
+                if let Some(nested) = map.get(key) {
+                    collect_model_ids(nested, models, seen);
+                }
+            }
+        }
+        Value::String(id) => push_model_id(id, models, seen),
+        _ => {}
+    }
+}
+
+fn push_model_id(id: &str, models: &mut Vec<String>, seen: &mut BTreeSet<String>) {
+    let id = id.trim();
+    if !id.is_empty() && seen.insert(id.to_owned()) {
+        models.push(id.to_owned());
+    }
 }
 
 async fn admin_logs(
@@ -796,6 +956,25 @@ async fn admin_create_user(
         "config_change",
         format!("user:{}", user.id),
         format!("创建用户 {}", user.username),
+        "info",
+    );
+    Ok(Json(json!(user)))
+}
+
+async fn admin_update_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+    Json(body): Json<UpdateUserInput>,
+) -> Result<Json<Value>, AppError> {
+    let current_user = require_admin_user(&state, &headers)?;
+    let user = state.auth.update_user(&user_id, &current_user.id, body)?;
+    record_admin_activity(
+        &state,
+        &current_user,
+        "config_change",
+        format!("user:{user_id}"),
+        format!("更新用户 {} ({})", user.username, user.role),
         "info",
     );
     Ok(Json(json!(user)))
@@ -883,6 +1062,25 @@ async fn admin_revoke_api_key(
         "warning",
     );
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn admin_update_api_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+    Json(body): Json<UpdateApiKeyInput>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_user(&state, &headers)?;
+    let updated = state.control.update_api_key(&key_id, body)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("api_key:{key_id}"),
+        format!("更新 API Key {} ({})", updated.name, updated.status),
+        "info",
+    );
+    Ok(Json(json!(updated)))
 }
 
 async fn admin_delete_api_key(
@@ -1665,6 +1863,57 @@ data: [DONE]
         assert!(body.contains(
             r#"modelport_message_requests_total{provider="mimo",model="mimo-v2.5-pro",stream="false"} 1"#
         ));
+    }
+
+    #[test]
+    fn parse_model_ids_accepts_common_local_runtime_shapes() {
+        assert_eq!(
+            parse_model_ids(&json!({
+                "data": [
+                    { "id": "qwen2.5-coder-ft" },
+                    { "id": "qwen2.5-coder-ft" },
+                    { "name": "deepseek-coder-lora" }
+                ]
+            })),
+            vec!["qwen2.5-coder-ft", "deepseek-coder-lora"]
+        );
+
+        assert_eq!(
+            parse_model_ids(&json!({
+                "models": [
+                    "local-model",
+                    { "model": "my-org/my-code-model" }
+                ]
+            })),
+            vec!["local-model", "my-org/my-code-model"]
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_anthropic_models_checks_required_api_key() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        let provider = ProviderConfig {
+            display_name: "Anthropic".to_owned(),
+            protocol: ProviderProtocol::Anthropic,
+            base_url: "https://api.anthropic.com".to_owned(),
+            api_key_env: Some("ANTHROPIC_API_KEY".to_owned()),
+            api_key: None,
+            api_key_required: true,
+            default_model: "claude-sonnet-4-6".to_owned(),
+            models: vec!["claude-sonnet-4-6".to_owned()],
+            model_prefixes: vec!["claude-".to_owned()],
+            passthrough_unknown_models: false,
+            max_tokens_field: MaxTokensField::MaxTokens,
+            deduplicate_stream_text: false,
+            buffer_stream_text: false,
+            fidelity_mode: FidelityMode::Strict,
+        };
+
+        let err = discover_provider_models(&state, &provider)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::MissingSecret(name) if name == "ANTHROPIC_API_KEY"));
     }
 
     async fn post_message(app: Router, body: Value) -> (StatusCode, String) {

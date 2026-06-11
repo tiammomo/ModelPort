@@ -1,4 +1,4 @@
-import type { Provider, ModelAlias } from '@/types'
+import type { Provider, ProviderModelDiscovery, ModelAlias } from '@/types'
 import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay } from '@/lib/mock-mode'
 import { mockAliases, mockProviders } from '@/mock'
@@ -14,6 +14,32 @@ export const modelsService = {
     const provider = providers.find((item) => item.id === id)
     if (!provider) throw new Error('提供商不存在')
     return isMockMode ? mockDelay(provider) : provider
+  },
+
+  discoverProviderModels: async (providerId: string): Promise<ProviderModelDiscovery> => {
+    if (!isMockMode) return api.get(`/admin/providers/${encodeURIComponent(providerId)}/models`)
+    const provider = mockProviders.find((item) => item.id === providerId)
+    if (!provider) throw new Error('提供商不存在')
+
+    const models = provider.models.length > 0 ? provider.models : [provider.defaultModel]
+    const discoveredAt = Date.now().toString()
+    const message = `discovered ${models.length} model(s)`
+    provider.lastTest = {
+      testedAt: discoveredAt,
+      success: true,
+      message,
+      models,
+      modelCount: models.length,
+    }
+
+    return mockDelay({
+      providerId,
+      success: true,
+      message,
+      models,
+      modelCount: models.length,
+      discoveredAt,
+    })
   },
 
   toggleModel: async (providerId: string, model: string, enabled: boolean): Promise<void> => {

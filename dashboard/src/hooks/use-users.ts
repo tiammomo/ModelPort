@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { usersService, type CreateApiKeyInput } from '@/services/users.service'
+import { usersService, type CreateApiKeyInput, type UpdateApiKeyInput } from '@/services/users.service'
 import { queryKeys } from './use-dashboard'
-import type { User, CreateUserInput } from '@/types'
+import type { CreateUserInput, UpdateUserInput } from '@/types'
 
 export function useUsers() {
   return useQuery({
@@ -44,7 +44,7 @@ export function useCreateUser() {
 export function useUpdateUser() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<User> }) => usersService.updateUser(id, data),
+    mutationFn: ({ id, data }: { id: string; data: UpdateUserInput }) => usersService.updateUser(id, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.users }),
   })
 }
@@ -75,6 +75,18 @@ export function useRevokeApiKey() {
     mutationFn: (keyId: string) => usersService.revokeApiKey(keyId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.apiKeys })
+      qc.invalidateQueries({ queryKey: queryKeys.users })
+    },
+  })
+}
+
+export function useUpdateApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ keyId, data }: { keyId: string; data: UpdateApiKeyInput }) => usersService.updateApiKey(keyId, data),
+    onSuccess: (apiKey) => {
+      qc.invalidateQueries({ queryKey: queryKeys.apiKeys })
+      qc.invalidateQueries({ queryKey: queryKeys.userApiKeys(apiKey.userId) })
       qc.invalidateQueries({ queryKey: queryKeys.users })
     },
   })

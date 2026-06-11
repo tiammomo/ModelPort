@@ -20,6 +20,13 @@ export interface CreateUserInput {
   status: 'active' | 'disabled' | 'suspended'
 }
 
+export interface UpdateUserInput {
+  email?: string
+  password?: string
+  role?: UserRole
+  status?: User['status']
+}
+
 export interface ApiKey {
   id: string
   userId: string
@@ -35,4 +42,11 @@ export interface ApiKey {
   status: 'active' | 'revoked'
   requestsToday?: number
   tokensToday?: number
+  ipRestricted?: boolean
+  spendLimitUsd?: number
+  rateLimited?: boolean
+  fiveHourLimitUsd?: number
+  dailyLimitUsd?: number
+  weeklyLimitUsd?: number
+  monthlyLimitUsd?: number
 }
