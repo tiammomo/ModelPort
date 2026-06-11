@@ -19,6 +19,15 @@ const users = [
   { id: 'usr_006', username: 'eve' },
   { id: 'usr_008', username: 'grace' },
 ]
+const groups = ['letacode-back-new', 'prod', 'cache-heavy', 'dev-test', 'ops']
+const tokenNames = ['xulei11', 'alice-prod-chat', 'bob-dev-test', 'ops-observer']
+
+function pricingForModel(model: string) {
+  if (model.includes('claude-opus')) return { inputPerMillion: 5, outputPerMillion: 25, cacheWritePerMillion: 6.25, cacheReadPerMillion: 0.5 }
+  if (model.includes('mimo')) return { inputPerMillion: 0.8, outputPerMillion: 3.2, cacheWritePerMillion: 1, cacheReadPerMillion: 0.08 }
+  if (model.includes('deepseek')) return { inputPerMillion: 0.14, outputPerMillion: 0.28, cacheWritePerMillion: 0.14, cacheReadPerMillion: 0.0028 }
+  return { inputPerMillion: 1.25, outputPerMillion: 7.5, cacheWritePerMillion: 1.25, cacheReadPerMillion: 0.125 }
+}
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
@@ -37,6 +46,15 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
   const outputTokens = randomInt(100, 8000)
   const cacheReadTokens = Math.random() > 0.55 ? randomInt(0, 2400) : 0
   const cacheWriteTokens = Math.random() > 0.8 ? randomInt(0, 1200) : 0
+  const pricing = pricingForModel(route.model)
+  const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion
+  const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion
+  const cacheWriteCost = (cacheWriteTokens / 1_000_000) * pricing.cacheWritePerMillion
+  const cacheReadCost = (cacheReadTokens / 1_000_000) * pricing.cacheReadPerMillion
+  const costEstimate = inputCost + outputCost + cacheWriteCost + cacheReadCost
+  const group = randomItem(groups)
+  const tokenName = randomItem(tokenNames)
+  const latencyMs = randomInt(200, 12000)
 
   const timestamp = new Date(Date.now() - hoursAgo * 3600000 - randomInt(0, 3599) * 1000)
 
@@ -45,10 +63,18 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
     timestamp: timestamp.toISOString(),
     userId: user.id,
     username: user.username,
+    apiKeyId: `key_${String(id % 12).padStart(3, '0')}`,
+    apiKeyName: tokenName,
+    apiKeyGroup: group,
+    tokenName,
+    group,
+    channelId: route.provider,
+    channelName: `${route.provider}-primary`,
     model: route.model,
     resolvedModel: route.model,
     provider: route.provider,
     protocol: route.provider === 'anthropic' || route.provider === 'deepseek' ? 'anthropic' : 'openai-compat',
+    requestType: isSuccess ? 'consume' : 'error',
     stream: isStream ? 'stream' : 'non-stream',
     status: isSuccess ? 'success' : Math.random() > 0.5 ? 'error' : 'timeout',
     statusCode: isSuccess ? 200 : randomItem([400, 401, 429, 500, 502, 503]),
@@ -56,8 +82,25 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
     outputTokens,
     cacheWriteTokens,
     cacheReadTokens,
-    costEstimate: ((inputTokens + cacheWriteTokens + cacheReadTokens * 0.1) * 0.000001 + outputTokens * 0.000004),
-    latencyMs: randomInt(200, 12000),
+    billedInputTokens: inputTokens + cacheWriteTokens + cacheReadTokens,
+    totalTokens: inputTokens + outputTokens + cacheWriteTokens + cacheReadTokens,
+    cacheHitRate: cacheReadTokens > 0 ? (cacheReadTokens / Math.max(inputTokens + cacheWriteTokens + cacheReadTokens, 1)) * 100 : 0,
+    costEstimate,
+    modelPricing: pricing,
+    costBreakdown: {
+      inputCost,
+      outputCost,
+      cacheWriteCost,
+      cacheReadCost,
+      totalCost: costEstimate,
+    },
+    latencyMs,
+    firstByteLatencyMs: Math.max(20, Math.round(latencyMs * randomInt(35, 85) / 100)),
+    retryCount: isSuccess ? randomInt(0, 1) : randomInt(0, 3),
+    clientIp: `10.0.${randomInt(0, 12)}.${randomInt(10, 240)}`,
+    requestPath: '/v1/messages',
+    billingMode: 'upstream-returned',
+    detail: `模型: ${route.model} · 缓存创建: ${pricing.cacheWritePerMillion}/1M · 缓存命中: ${pricing.cacheReadPerMillion}/1M · 分组: ${group}`,
     errorMessage: isSuccess ? null : randomItem([
       'Rate limit exceeded',
       'Invalid API key',
