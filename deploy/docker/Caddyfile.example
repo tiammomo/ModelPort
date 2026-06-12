@@ -1,0 +1,18 @@
+# Optional reverse proxy for LAN or HTTPS deployments.
+# Default docker compose usage does not need Caddy.
+#
+# Example:
+#   modelport.local {
+#     import modelport_proxy
+#   }
+#
+# For plain LAN HTTP while testing:
+#   :8080 {
+#     import modelport_proxy
+#   }
+
+(modelport_proxy) {
+  encode zstd gzip
+
+  reverse_proxy dashboard:80
+}

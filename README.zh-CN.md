@@ -491,6 +491,9 @@ MODELPORT_CONFIG=/path/to/config.toml model-port config validate
 | `MODELPORT_HTTP_MAX_RESPONSE_BYTES` | `33554432` | 非流式响应体和错误响应体上限。 |
 | `MODELPORT_INCLUDE_UNAVAILABLE_PROVIDERS` | unset | 设置为 `1` 时展示未配置 key 的 provider。 |
 | `MODELPORT_ALLOW_NO_AUTH` | unset | 仅隔离测试可设为 `1`，投产不要启用。 |
+| `MODELPORT_TRUSTED_PROXIES` | `127.0.0.1,::1` | 只有这些代理来源的 `X-Forwarded-For` / `X-Real-IP` 会被信任。Docker 模板默认额外包含 `172.16.0.0/12`。 |
+| `MODELPORT_ALLOWED_ORIGINS` | unset | 控制台写请求的额外允许 Origin，通常不需要设置。 |
+| `MODELPORT_DISABLE_CSRF` | unset | 仅本地紧急调试可设为 `1`，投产不要启用。 |
 
 ## 长期运行
 
@@ -505,11 +508,33 @@ tail -f .modelport/model-port.log
 ### Docker Compose
 
 ```bash
+cp deploy/docker/modelport.env.example .env
+# 编辑 .env，填好 MODELPORT_AUTH_TOKEN、MODELPORT_ADMIN_PASSWORD 和 provider key
 docker compose up -d --build
 docker compose logs -f modelport
 ```
 
-Compose 会让容器内监听 `0.0.0.0:17878`，但宿主机只暴露 `127.0.0.1:17878`。
+默认启动两个轻量容器：
+
+- `modelport`：后端 API、路由、鉴权、控制面数据。
+- `dashboard`：静态后台 UI，并反代 `/admin`、`/v1` 到后端。
+
+默认只暴露本机端口：
+
+- 后台：`http://127.0.0.1:5173`
+- API：`http://127.0.0.1:17878/v1/messages`
+
+控制面数据保存在 Docker named volume `modelport-data`。更多说明见 [docs/DOCKER.md](docs/DOCKER.md)。
+
+试生产验收：
+
+```bash
+scripts/acceptance.sh
+# 包含一次真实上游模型请求：
+scripts/acceptance.sh --upstream
+```
+
+验收脚本会创建临时用户和 API Key，验证 IP/额度拒绝、审计和备份校验，并在结束时清理临时资源。更多说明见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。
 
 停止：
 

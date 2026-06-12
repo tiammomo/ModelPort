@@ -114,7 +114,7 @@ check_env_is_ignored() {
 check_binary_and_scripts() {
   local script
 
-  for script in start stop restart status smoke-test provider-matrix config-validate build-release check doctor; do
+  for script in start stop restart status smoke-test acceptance provider-matrix config-validate build-release check doctor; do
     if [[ -x "$SCRIPT_DIR/$script.sh" ]]; then
       ok "scripts/$script.sh is executable"
     else

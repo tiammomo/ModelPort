@@ -1,12 +1,42 @@
+name: modelport
+
 services:
   modelport:
     build:
       context: .
+      dockerfile: Dockerfile
+    image: modelport:local
     env_file:
       - .env
     environment:
       MODELPORT_BIND: 0.0.0.0:17878
-      RUST_LOG: model_port=info,tower_http=info
+      MODELPORT_STATE_DIR: /data
+      MODELPORT_CONTROL_STORE: /data/control-plane.json
+      MODELPORT_CONFIG: /config/config.toml
+      MODELPORT_TRUSTED_PROXIES: ${MODELPORT_TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
+      MODELPORT_ALLOWED_ORIGINS: ${MODELPORT_ALLOWED_ORIGINS:-}
+      RUST_LOG: ${RUST_LOG:-model_port=info,tower_http=info}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:17878:17878"
+      - "${MODELPORT_API_PUBLISH:-127.0.0.1:17878}:17878"
+    volumes:
+      - modelport-data:/data
+      # Optional file-based provider config:
+      # - ./config.toml:/config/config.toml:ro
     restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: modelport-dashboard:local
+    depends_on:
+      modelport:
+        condition: service_healthy
+    ports:
+      - "${MODELPORT_DASHBOARD_PUBLISH:-127.0.0.1:5173}:80"
+    restart: unless-stopped
+
+volumes:
+  modelport-data:
