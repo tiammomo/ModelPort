@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useUserApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
@@ -25,6 +26,14 @@ const emptyEditForm = {
   status: 'active' as UserStatus,
 }
 
+interface ConfirmAction {
+  title: string
+  description: string
+  confirmLabel: string
+  destructive?: boolean
+  onConfirm: () => void
+}
+
 export function UsersPage() {
   const { data: users = [], isLoading } = useUsers()
   const createUser = useCreateUser()
@@ -36,6 +45,7 @@ export function UsersPage() {
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showDetailUser, setShowDetailUser] = useState<string | null>(null)
   const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [newKeyResult, setNewKeyResult] = useState<string | null>(null)
 
   const [form, setForm] = useState({
@@ -100,6 +110,8 @@ export function UsersPage() {
     })
   }
 
+  const mutationError = errorMessage(deleteUser.error || revokeApiKey.error)
+
   const roleBadgeVariant = (role: string) => {
     if (role === 'admin') return 'default'
     if (role === 'viewer') return 'secondary'
@@ -117,6 +129,8 @@ export function UsersPage() {
         description="管理系统用户和 API 密钥"
         action={{ label: '新建用户', onClick: () => setShowCreateDialog(true), icon: UserPlus }}
       />
+
+      {mutationError && <ErrorNotice message={mutationError} />}
 
       <Card>
         <CardContent className="p-0">
@@ -165,7 +179,13 @@ export function UsersPage() {
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           className="text-destructive"
-                          onClick={() => deleteUser.mutate(user.id)}
+                          onClick={() => setConfirmAction({
+                            title: '删除用户',
+                            description: `删除 ${user.username} 后，其相关 API 密钥会被回收，操作不可撤销。`,
+                            confirmLabel: '删除',
+                            destructive: true,
+                            onConfirm: () => deleteUser.mutate(user.id, { onSettled: () => setConfirmAction(null) }),
+                          })}
                         >
                           <Trash2 className="mr-2 h-4 w-4" />
                           删除用户
@@ -188,6 +208,7 @@ export function UsersPage() {
             <DialogDescription>创建一个新的系统用户</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {createUser.error && <ErrorNotice message={errorMessage(createUser.error)} />}
             <div className="space-y-2">
               <Label>用户名</Label>
               <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="输入用户名" />
@@ -233,6 +254,7 @@ export function UsersPage() {
             <DialogDescription>调整用户权限、邮箱和登录密码</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {updateUser.error && <ErrorNotice message={errorMessage(updateUser.error)} />}
             <div className="space-y-2">
               <Label>用户名</Label>
               <Input value={editingUser?.username || ''} disabled />
@@ -315,6 +337,7 @@ export function UsersPage() {
             </div>
           ) : (
             <div className="space-y-4">
+              {createApiKey.error && <ErrorNotice message={errorMessage(createApiKey.error)} />}
               <div className="flex gap-2">
                 <Input
                   placeholder="密钥名称"
@@ -352,7 +375,13 @@ export function UsersPage() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8 text-destructive"
-                            onClick={() => revokeApiKey.mutate(key.id)}
+                            onClick={() => setConfirmAction({
+                              title: '禁用 API 密钥',
+                              description: `禁用 ${key.name} 后，它将不能继续调用 API。`,
+                              confirmLabel: '禁用',
+                              destructive: true,
+                              onConfirm: () => revokeApiKey.mutate(key.id, { onSettled: () => setConfirmAction(null) }),
+                            })}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -366,6 +395,31 @@ export function UsersPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmAction}
+        title={confirmAction?.title || ''}
+        description={confirmAction?.description || ''}
+        confirmLabel={confirmAction?.confirmLabel}
+        destructive={confirmAction?.destructive}
+        pending={deleteUser.isPending || revokeApiKey.isPending}
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => confirmAction?.onConfirm()}
+      />
     </div>
   )
+}
+
+function ErrorNotice({ message }: { message: string }) {
+  if (!message) return null
+  return (
+    <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      {message}
+    </div>
+  )
+}
+
+function errorMessage(error: unknown): string {
+  if (!error) return ''
+  return error instanceof Error ? error.message : String(error)
 }

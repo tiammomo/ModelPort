@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env, fs,
+    net::IpAddr,
     path::PathBuf,
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -112,6 +113,8 @@ struct ApiKeyRecord {
     #[serde(default)]
     ip_restricted: bool,
     #[serde(default)]
+    allowed_ips: Vec<String>,
+    #[serde(default)]
     spend_limit_usd: f64,
     #[serde(default)]
     rate_limited: bool,
@@ -195,6 +198,7 @@ pub struct PublicApiKey {
     pub requests_today: u64,
     pub tokens_today: u64,
     pub ip_restricted: bool,
+    pub allowed_ips: Vec<String>,
     pub spend_limit_usd: f64,
     pub rate_limited: bool,
     pub five_hour_limit_usd: f64,
@@ -229,6 +233,7 @@ pub struct UpdateApiKeyInput {
     pub expires_at: Option<String>,
     pub status: Option<String>,
     pub ip_restricted: Option<bool>,
+    pub allowed_ips: Option<Vec<String>>,
     pub spend_limit_usd: Option<f64>,
     pub rate_limited: Option<bool>,
     pub five_hour_limit_usd: Option<f64>,
@@ -280,6 +285,19 @@ pub struct ClientIdentity {
     pub api_key_name: Option<String>,
     pub api_key_group: Option<String>,
     pub enforce_quotas: bool,
+    pub api_key_policy: ApiKeyPolicy,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApiKeyPolicy {
+    pub ip_restricted: bool,
+    pub allowed_ips: Vec<String>,
+    pub spend_limit_usd: f64,
+    pub rate_limited: bool,
+    pub five_hour_limit_usd: f64,
+    pub daily_limit_usd: f64,
+    pub weekly_limit_usd: f64,
+    pub monthly_limit_usd: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -499,6 +517,37 @@ impl ControlStore {
             .collect()
     }
 
+    pub fn activity_count(&self) -> usize {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        inner.activities.len()
+    }
+
+    pub fn data_path(&self) -> Option<String> {
+        self.path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    pub fn default_data_path() -> PathBuf {
+        control_store_path()
+    }
+
+    pub fn export_snapshot(&self) -> serde_json::Value {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        json!({
+            "apiKeys": inner
+                .api_keys
+                .values()
+                .map(|record| public_api_key(record, &inner.usage))
+                .collect::<Vec<_>>(),
+            "quotas": inner.quotas.values().map(public_quota).collect::<Vec<_>>(),
+            "usage": &inner.usage,
+            "routeConfig": &inner.route_config,
+            "activities": &inner.activities,
+            "providerTests": inner.provider_tests.values().collect::<Vec<_>>(),
+        })
+    }
+
     pub fn record_provider_test(
         &self,
         provider_id: String,
@@ -579,6 +628,16 @@ impl ControlStore {
             api_key_name: Some(record.name.clone()),
             api_key_group: record.group.clone(),
             enforce_quotas: true,
+            api_key_policy: ApiKeyPolicy {
+                ip_restricted: record.ip_restricted,
+                allowed_ips: record.allowed_ips.clone(),
+                spend_limit_usd: record.spend_limit_usd,
+                rate_limited: record.rate_limited,
+                five_hour_limit_usd: record.five_hour_limit_usd,
+                daily_limit_usd: record.daily_limit_usd,
+                weekly_limit_usd: record.weekly_limit_usd,
+                monthly_limit_usd: record.monthly_limit_usd,
+            },
         };
         self.save_locked(&inner)?;
         Ok(Some(identity))
@@ -592,6 +651,7 @@ impl ControlStore {
             api_key_name: Some("MODELPORT_AUTH_TOKEN".to_owned()),
             api_key_group: Some("legacy".to_owned()),
             enforce_quotas: false,
+            api_key_policy: ApiKeyPolicy::default(),
         }
     }
 
@@ -623,6 +683,15 @@ impl ControlStore {
             .unwrap_or(u32::MAX)
     }
 
+    pub fn api_key_user_id(&self, key_id: &str) -> Result<String, AppError> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        inner
+            .api_keys
+            .get(key_id)
+            .map(|record| record.user_id.clone())
+            .ok_or_else(|| AppError::InvalidRequest("API key not found".to_owned()))
+    }
+
     pub fn create_api_key(&self, input: CreateApiKeyInput) -> Result<CreatedApiKey, AppError> {
         let name = input.name.trim();
         if name.is_empty() || name.len() > 80 {
@@ -651,6 +720,7 @@ impl ControlStore {
             expires_at_ms: input.expires_at.and_then(|value| value.parse::<u64>().ok()),
             status: "active".to_owned(),
             ip_restricted: false,
+            allowed_ips: Vec::new(),
             spend_limit_usd: 0.0,
             rate_limited: false,
             five_hour_limit_usd: 0.0,
@@ -726,6 +796,9 @@ impl ControlStore {
         }
         if let Some(ip_restricted) = input.ip_restricted {
             updated.ip_restricted = ip_restricted;
+        }
+        if let Some(allowed_ips) = input.allowed_ips {
+            updated.allowed_ips = normalize_ip_rules(allowed_ips)?;
         }
         if let Some(spend_limit_usd) = input.spend_limit_usd {
             updated.spend_limit_usd = validate_usd_limit("spendLimitUsd", spend_limit_usd)?;
@@ -841,12 +914,24 @@ impl ControlStore {
         &self,
         identity: &ClientIdentity,
         estimate: UsageEstimate,
+        client_ip: Option<&str>,
     ) -> Result<(), AppError> {
         if !identity.enforce_quotas {
             return Ok(());
         }
         let mut inner = self.inner.lock().expect("control lock poisoned");
-        reset_expired_quotas_locked(&mut inner, now_millis());
+        let now = now_millis();
+        reset_expired_quotas_locked(&mut inner, now);
+        if let Some(api_key_id) = &identity.api_key_id {
+            enforce_api_key_policy(
+                &identity.api_key_policy,
+                &inner.usage,
+                api_key_id,
+                estimate,
+                client_ip,
+                now,
+            )?;
+        }
         for quota in inner
             .quotas
             .values()
@@ -1211,6 +1296,7 @@ fn public_api_key(record: &ApiKeyRecord, usage: &[UsageRecord]) -> PublicApiKey 
         requests_today,
         tokens_today,
         ip_restricted: record.ip_restricted,
+        allowed_ips: record.allowed_ips.clone(),
         spend_limit_usd: record.spend_limit_usd,
         rate_limited: record.rate_limited,
         five_hour_limit_usd: record.five_hour_limit_usd,
@@ -1227,6 +1313,190 @@ fn validate_usd_limit(field: &str, value: f64) -> Result<f64, AppError> {
         )));
     }
     Ok(value)
+}
+
+fn normalize_ip_rules(values: Vec<String>) -> Result<Vec<String>, AppError> {
+    let mut seen = BTreeSet::new();
+    let mut rules = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        validate_ip_rule(value)?;
+        if seen.insert(value.to_owned()) {
+            rules.push(value.to_owned());
+        }
+    }
+    Ok(rules)
+}
+
+fn validate_ip_rule(value: &str) -> Result<(), AppError> {
+    if value.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let Some((addr, prefix)) = value.split_once('/') else {
+        return Err(AppError::InvalidRequest(format!(
+            "invalid IP allowlist entry: {value}"
+        )));
+    };
+    let addr = addr
+        .parse::<IpAddr>()
+        .map_err(|_| AppError::InvalidRequest(format!("invalid IP allowlist entry: {value}")))?;
+    let prefix = prefix
+        .parse::<u8>()
+        .map_err(|_| AppError::InvalidRequest(format!("invalid IP allowlist entry: {value}")))?;
+    let max_prefix = match addr {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
+    if prefix > max_prefix {
+        return Err(AppError::InvalidRequest(format!(
+            "invalid IP allowlist entry: {value}"
+        )));
+    }
+    Ok(())
+}
+
+fn enforce_api_key_policy(
+    policy: &ApiKeyPolicy,
+    usage: &[UsageRecord],
+    api_key_id: &str,
+    estimate: UsageEstimate,
+    client_ip: Option<&str>,
+    now: u64,
+) -> Result<(), AppError> {
+    enforce_ip_policy(policy, client_ip)?;
+    enforce_spend_limit(
+        "total spend",
+        policy.spend_limit_usd,
+        usage_cost_for_api_key(usage, api_key_id, None),
+        estimate.cost_estimate,
+    )?;
+
+    if policy.rate_limited {
+        enforce_spend_limit(
+            "5 hour spend",
+            policy.five_hour_limit_usd,
+            usage_cost_for_api_key(
+                usage,
+                api_key_id,
+                Some(now.saturating_sub(5 * 60 * 60 * 1_000)),
+            ),
+            estimate.cost_estimate,
+        )?;
+        enforce_spend_limit(
+            "daily spend",
+            policy.daily_limit_usd,
+            usage_cost_for_api_key(usage, api_key_id, Some(now.saturating_sub(DAY_MS))),
+            estimate.cost_estimate,
+        )?;
+        enforce_spend_limit(
+            "7 day spend",
+            policy.weekly_limit_usd,
+            usage_cost_for_api_key(usage, api_key_id, Some(now.saturating_sub(7 * DAY_MS))),
+            estimate.cost_estimate,
+        )?;
+        enforce_spend_limit(
+            "monthly spend",
+            policy.monthly_limit_usd,
+            usage_cost_for_api_key(usage, api_key_id, Some(now.saturating_sub(30 * DAY_MS))),
+            estimate.cost_estimate,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn enforce_ip_policy(policy: &ApiKeyPolicy, client_ip: Option<&str>) -> Result<(), AppError> {
+    if !policy.ip_restricted {
+        return Ok(());
+    }
+    if policy.allowed_ips.is_empty() {
+        return Err(AppError::Forbidden(
+            "API key IP restriction has no allowed IPs configured".to_owned(),
+        ));
+    }
+    let Some(client_ip) = client_ip else {
+        return Err(AppError::Forbidden(
+            "client IP is required for this API key".to_owned(),
+        ));
+    };
+    let ip = parse_client_ip(client_ip)
+        .ok_or_else(|| AppError::Forbidden("client IP is invalid for this API key".to_owned()))?;
+    if policy
+        .allowed_ips
+        .iter()
+        .any(|rule| ip_rule_matches(rule, ip))
+    {
+        return Ok(());
+    }
+
+    Err(AppError::Forbidden(format!(
+        "client IP {ip} is not allowed for this API key"
+    )))
+}
+
+fn enforce_spend_limit(label: &str, limit: f64, used: f64, incoming: f64) -> Result<(), AppError> {
+    if limit > 0.0 && used + incoming > limit {
+        return Err(AppError::QuotaExceeded(format!(
+            "API key {label} limit exceeded ({:.4} / {:.4} USD)",
+            used + incoming,
+            limit
+        )));
+    }
+    Ok(())
+}
+
+fn usage_cost_for_api_key(usage: &[UsageRecord], api_key_id: &str, since: Option<u64>) -> f64 {
+    usage
+        .iter()
+        .filter(|record| record.api_key_id.as_deref() == Some(api_key_id))
+        .filter(|record| since.is_none_or(|since| record.timestamp_ms >= since))
+        .map(|record| record.cost_estimate.max(0.0))
+        .sum()
+}
+
+fn parse_client_ip(value: &str) -> Option<IpAddr> {
+    let value = value.trim();
+    if let Ok(ip) = value.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    value
+        .rsplit_once(':')
+        .and_then(|(host, _)| host.parse::<IpAddr>().ok())
+}
+
+fn ip_rule_matches(rule: &str, ip: IpAddr) -> bool {
+    if let Ok(exact) = rule.parse::<IpAddr>() {
+        return exact == ip;
+    }
+    let Some((base, prefix)) = rule.split_once('/') else {
+        return false;
+    };
+    let Ok(base) = base.parse::<IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
+    match (base, ip) {
+        (IpAddr::V4(base), IpAddr::V4(ip)) if prefix <= 32 => {
+            cidr_matches(u32::from(base).into(), u32::from(ip).into(), prefix, 32)
+        }
+        (IpAddr::V6(base), IpAddr::V6(ip)) if prefix <= 128 => {
+            cidr_matches(u128::from(base), u128::from(ip), prefix, 128)
+        }
+        _ => false,
+    }
+}
+
+fn cidr_matches(base: u128, ip: u128, prefix: u8, bits: u8) -> bool {
+    if prefix == 0 {
+        return true;
+    }
+    let shift = u32::from(bits - prefix);
+    (base >> shift) == (ip >> shift)
 }
 
 fn effective_aliases_locked(
@@ -1412,6 +1682,7 @@ mod tests {
                     expires_at: None,
                     status: Some("active".to_owned()),
                     ip_restricted: Some(true),
+                    allowed_ips: Some(vec!["127.0.0.1".to_owned(), "10.0.0.0/8".to_owned()]),
                     spend_limit_usd: Some(20.0),
                     rate_limited: Some(true),
                     five_hour_limit_usd: Some(0.0),
@@ -1426,6 +1697,7 @@ mod tests {
         assert_eq!(updated.group, None);
         assert_eq!(updated.status, "active");
         assert!(updated.ip_restricted);
+        assert_eq!(updated.allowed_ips, vec!["127.0.0.1", "10.0.0.0/8"]);
         assert_eq!(updated.daily_limit_usd, 5.0);
         assert_eq!(store.active_api_key_count("usr_test"), 1);
     }
@@ -1440,6 +1712,7 @@ mod tests {
             api_key_name: Some("local".to_owned()),
             api_key_group: Some("test".to_owned()),
             enforce_quotas: true,
+            api_key_policy: ApiKeyPolicy::default(),
         };
         store
             .upsert_quota(UpsertQuotaInput {
@@ -1453,7 +1726,7 @@ mod tests {
             .unwrap();
 
         store
-            .check_quotas(&identity, UsageEstimate::default())
+            .check_quotas(&identity, UsageEstimate::default(), None)
             .unwrap();
         store
             .record_usage(UsageEventInput {
@@ -1477,7 +1750,89 @@ mod tests {
 
         assert!(
             store
-                .check_quotas(&identity, UsageEstimate::default())
+                .check_quotas(&identity, UsageEstimate::default(), None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn api_key_ip_allowlist_is_enforced() {
+        let store = ControlStore::for_tests();
+        let identity = ClientIdentity {
+            user_id: "usr_test".to_owned(),
+            username: "test-user".to_owned(),
+            api_key_id: Some("key_test".to_owned()),
+            api_key_name: Some("local".to_owned()),
+            api_key_group: Some("test".to_owned()),
+            enforce_quotas: true,
+            api_key_policy: ApiKeyPolicy {
+                ip_restricted: true,
+                allowed_ips: vec!["10.0.0.0/8".to_owned(), "127.0.0.1".to_owned()],
+                ..ApiKeyPolicy::default()
+            },
+        };
+
+        store
+            .check_quotas(&identity, UsageEstimate::default(), Some("10.1.2.3"))
+            .unwrap();
+        assert!(
+            store
+                .check_quotas(&identity, UsageEstimate::default(), Some("192.168.1.10"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn api_key_spend_limit_is_enforced() {
+        let store = ControlStore::for_tests();
+        let identity = ClientIdentity {
+            user_id: "usr_test".to_owned(),
+            username: "test-user".to_owned(),
+            api_key_id: Some("key_test".to_owned()),
+            api_key_name: Some("local".to_owned()),
+            api_key_group: Some("test".to_owned()),
+            enforce_quotas: true,
+            api_key_policy: ApiKeyPolicy {
+                spend_limit_usd: 0.02,
+                rate_limited: true,
+                daily_limit_usd: 0.02,
+                ..ApiKeyPolicy::default()
+            },
+        };
+
+        store
+            .record_usage(UsageEventInput {
+                identity: identity.clone(),
+                model: "mimo-v2.5-pro".to_owned(),
+                resolved_model: "mimo-v2.5-pro".to_owned(),
+                provider: "mimo".to_owned(),
+                protocol: "openai-compat".to_owned(),
+                stream: false,
+                success: true,
+                status_code: 200,
+                estimate: UsageEstimate {
+                    cost_estimate: 0.015,
+                    ..UsageEstimate::default()
+                },
+                latency: Duration::from_millis(10),
+                first_byte_latency: Some(Duration::from_millis(10)),
+                retry_count: 0,
+                client_ip: Some("127.0.0.1".to_owned()),
+                request_path: "/v1/messages".to_owned(),
+                error_message: None,
+            })
+            .unwrap();
+
+        assert!(
+            store
+                .check_quotas(
+                    &identity,
+                    UsageEstimate {
+                        cost_estimate: 0.01,
+                        ..UsageEstimate::default()
+                    },
+                    None,
+                )
                 .is_err()
         );
     }

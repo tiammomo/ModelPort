@@ -1,4 +1,4 @@
-import type { SystemSettings } from '@/types'
+import type { AuditEventsResponse, BackupExport, SystemSettings } from '@/types'
 import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay } from '@/lib/mock-mode'
 import { mockProviders, mockSettings } from '@/mock'
@@ -28,5 +28,62 @@ export const settingsService = {
       modelCount: models.length,
       testedAt: new Date().toISOString(),
     }, 220)
+  },
+
+  getAuditEvents: (): Promise<AuditEventsResponse> => {
+    if (!isMockMode) return api.get('/admin/audit')
+    return mockDelay({
+      total: 3,
+      events: [
+        {
+          id: 'act_mock_login',
+          timestamp: Date.now().toString(),
+          type: 'config_change',
+          actor: 'admin',
+          target: 'user:admin',
+          message: '管理员 admin 登录控制台',
+          severity: 'info',
+        },
+        {
+          id: 'act_mock_provider',
+          timestamp: (Date.now() - 3600000).toString(),
+          type: 'config_change',
+          actor: 'admin',
+          target: 'provider:mimo',
+          message: '测试供应商 mimo: connected',
+          severity: 'info',
+        },
+        {
+          id: 'act_mock_key',
+          timestamp: (Date.now() - 7200000).toString(),
+          type: 'config_change',
+          actor: 'alice',
+          target: 'api_key:key_mock',
+          message: '更新 API Key alice-dev (active)',
+          severity: 'warning',
+        },
+      ],
+    }, 180)
+  },
+
+  exportBackup: (): Promise<BackupExport> => {
+    if (!isMockMode) return api.get('/admin/backup')
+    return mockDelay({
+      schemaVersion: 1,
+      service: 'model-port',
+      generatedAt: Date.now().toString(),
+      containsSecrets: false,
+      containsPersonalData: true,
+      settings: mockSettingsStore,
+      users: [],
+      control: {
+        apiKeys: [],
+        quotas: [],
+        usage: [],
+        routeConfig: mockSettingsStore.gateway,
+        activities: [],
+        providerTests: [],
+      },
+    }, 180)
   },
 }

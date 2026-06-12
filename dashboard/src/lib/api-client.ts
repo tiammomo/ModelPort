@@ -1,9 +1,13 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const method = options.method || 'GET'
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
+  }
+  if (!['GET', 'HEAD'].includes(method.toUpperCase())) {
+    headers['X-ModelPort-CSRF'] = headers['X-ModelPort-CSRF'] || '1'
   }
 
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -21,7 +25,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: response.statusText }))
-    throw new Error(error.error?.message || error.message || `HTTP ${response.status}`)
+    const message = error.error?.message || error.message || `HTTP ${response.status}`
+    const hint = error.error?.hint
+    throw new Error(hint ? `${message} · ${hint}` : message)
   }
 
   return response.json()

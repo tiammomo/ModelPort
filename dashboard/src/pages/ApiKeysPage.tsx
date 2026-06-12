@@ -1,6 +1,7 @@
 import { useMemo, useState, type ElementType } from 'react'
 import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRevokeApiKey, useUpdateApiKey, useUsers } from '@/hooks'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
@@ -18,12 +19,21 @@ import type { ApiKey } from '@/types'
 const ALL = '__all__'
 const NO_GROUP = '__none__'
 
+interface ConfirmAction {
+  title: string
+  description: string
+  confirmLabel: string
+  destructive?: boolean
+  onConfirm: () => void
+}
+
 interface EditApiKeyForm {
   name: string
   group: string
   status: ApiKey['status']
   expiresAt: string
   ipRestricted: boolean
+  allowedIps: string
   spendLimitUsd: string
   rateLimited: boolean
   fiveHourLimitUsd: string
@@ -38,6 +48,7 @@ const emptyEditForm: EditApiKeyForm = {
   status: 'active',
   expiresAt: '',
   ipRestricted: false,
+  allowedIps: '',
   spendLimitUsd: '',
   rateLimited: false,
   fiveHourLimitUsd: '',
@@ -59,6 +70,7 @@ export function ApiKeysPage() {
   const [group, setGroup] = useState(ALL)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null)
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [newKey, setNewKey] = useState<string | null>(null)
   const [form, setForm] = useState({
     userId: '',
@@ -123,7 +135,13 @@ export function ApiKeysPage() {
 
   const handleToggleStatus = (apiKey: ApiKey) => {
     if (apiKey.status === 'active') {
-      revokeApiKey.mutate(apiKey.id)
+      setConfirmAction({
+        title: '禁用 API 密钥',
+        description: `禁用后，${apiKey.name} 将无法继续调用 API。`,
+        confirmLabel: '禁用',
+        destructive: true,
+        onConfirm: () => revokeApiKey.mutate(apiKey.id, { onSettled: () => setConfirmAction(null) }),
+      })
       return
     }
 
@@ -144,6 +162,7 @@ export function ApiKeysPage() {
         status: editForm.status,
         expiresAt: localDateTimeToMillis(editForm.expiresAt),
         ipRestricted: editForm.ipRestricted,
+        allowedIps: parseAllowedIps(editForm.allowedIps),
         spendLimitUsd: parseUsdLimit(editForm.spendLimitUsd),
         rateLimited: editForm.rateLimited,
         fiveHourLimitUsd: parseUsdLimit(editForm.fiveHourLimitUsd),
@@ -159,6 +178,8 @@ export function ApiKeysPage() {
   const copyText = (text: string) => {
     void navigator.clipboard.writeText(text)
   }
+
+  const mutationError = errorMessage(deleteApiKey.error || revokeApiKey.error || updateApiKey.error)
 
   return (
     <div className="space-y-6">
@@ -221,6 +242,11 @@ export function ApiKeysPage() {
       </div>
 
       <Card className="overflow-hidden">
+        {mutationError && (
+          <div className="border-b px-5 py-3">
+            <ErrorNotice message={mutationError} />
+          </div>
+        )}
         <CardContent className="p-0">
           <Table className="min-w-[1360px]">
             <TableHeader className="bg-muted/40">
@@ -321,7 +347,13 @@ export function ApiKeysPage() {
                         variant="ghost"
                         size="sm"
                         className="h-12 w-11 flex-col gap-1 px-1 text-xs text-destructive"
-                        onClick={() => deleteApiKey.mutate(key.id)}
+                        onClick={() => setConfirmAction({
+                          title: '删除 API 密钥',
+                          description: `删除 ${key.name} 后无法恢复，相关调用记录仍会保留。`,
+                          confirmLabel: '删除',
+                          destructive: true,
+                          onConfirm: () => deleteApiKey.mutate(key.id, { onSettled: () => setConfirmAction(null) }),
+                        })}
                       >
                         <Trash2 className="h-4 w-4" />
                         删除
@@ -354,6 +386,7 @@ export function ApiKeysPage() {
             </div>
           ) : (
             <div className="space-y-4">
+              {createApiKey.error && <ErrorNotice message={errorMessage(createApiKey.error)} />}
               <div className="space-y-2">
                 <Label>用户</Label>
                 <Select value={form.userId} onValueChange={(value) => setForm({ ...form, userId: value })}>
@@ -400,6 +433,7 @@ export function ApiKeysPage() {
           </DialogHeader>
 
           <div className="max-h-[calc(90vh-146px)] space-y-5 overflow-y-auto px-7 py-5">
+            {updateApiKey.error && <ErrorNotice message={errorMessage(updateApiKey.error)} />}
             <div className="space-y-2">
               <Label>名称</Label>
               <Input
@@ -445,6 +479,19 @@ export function ApiKeysPage() {
               checked={editForm.ipRestricted}
               onCheckedChange={(checked) => updateEditForm({ ipRestricted: checked })}
             />
+
+            {editForm.ipRestricted && (
+              <div className="space-y-2">
+                <Label>允许 IP / CIDR</Label>
+                <Input
+                  className="h-12 rounded-xl"
+                  value={editForm.allowedIps}
+                  onChange={(event) => updateEditForm({ allowedIps: event.target.value })}
+                  placeholder="127.0.0.1, 10.0.0.0/8"
+                />
+                <p className="text-xs text-muted-foreground">开启后，只有匹配列表的客户端 IP 可以使用此密钥。</p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label>额度限制</Label>
@@ -505,6 +552,17 @@ export function ApiKeysPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!confirmAction}
+        title={confirmAction?.title || ''}
+        description={confirmAction?.description || ''}
+        confirmLabel={confirmAction?.confirmLabel}
+        destructive={confirmAction?.destructive}
+        pending={deleteApiKey.isPending || revokeApiKey.isPending}
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => confirmAction?.onConfirm()}
+      />
     </div>
   )
 }
@@ -657,6 +715,20 @@ function ActionButton({
   )
 }
 
+function ErrorNotice({ message }: { message: string }) {
+  if (!message) return null
+  return (
+    <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      {message}
+    </div>
+  )
+}
+
+function errorMessage(error: unknown): string {
+  if (!error) return ''
+  return error instanceof Error ? error.message : String(error)
+}
+
 function SettingSwitch({
   label,
   checked,
@@ -738,6 +810,7 @@ function apiKeyToEditForm(apiKey: ApiKey): EditApiKeyForm {
     status: apiKey.status,
     expiresAt: dateTimeLocalFromValue(apiKey.expiresAt),
     ipRestricted: apiKey.ipRestricted ?? false,
+    allowedIps: (apiKey.allowedIps || []).join(', '),
     spendLimitUsd: limitInput(apiKey.spendLimitUsd, ''),
     rateLimited: apiKey.rateLimited ?? false,
     fiveHourLimitUsd: limitInput(apiKey.fiveHourLimitUsd),
@@ -756,6 +829,10 @@ function parseUsdLimit(value: string): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 0
   return Math.max(parsed, 0)
+}
+
+function parseAllowedIps(value: string): string[] {
+  return Array.from(new Set(value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean)))
 }
 
 function formatUsd(value: number): string {

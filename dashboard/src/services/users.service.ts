@@ -16,6 +16,7 @@ export interface UpdateApiKeyInput {
   expiresAt?: string
   status?: ApiKey['status']
   ipRestricted?: boolean
+  allowedIps?: string[]
   spendLimitUsd?: number
   rateLimited?: boolean
   fiveHourLimitUsd?: number
@@ -128,6 +129,7 @@ export const usersService = {
       ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt || null } : {}),
       ...(data.status !== undefined ? { status: data.status } : {}),
       ...(data.ipRestricted !== undefined ? { ipRestricted: data.ipRestricted } : {}),
+      ...(data.allowedIps !== undefined ? { allowedIps: data.allowedIps } : {}),
       ...(data.spendLimitUsd !== undefined ? { spendLimitUsd: data.spendLimitUsd } : {}),
       ...(data.rateLimited !== undefined ? { rateLimited: data.rateLimited } : {}),
       ...(data.fiveHourLimitUsd !== undefined ? { fiveHourLimitUsd: data.fiveHourLimitUsd } : {}),

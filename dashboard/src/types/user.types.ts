@@ -43,6 +43,7 @@ export interface ApiKey {
   requestsToday?: number
   tokensToday?: number
   ipRestricted?: boolean
+  allowedIps?: string[]
   spendLimitUsd?: number
   rateLimited?: boolean
   fiveHourLimitUsd?: number

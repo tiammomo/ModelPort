@@ -275,6 +275,25 @@ impl AuthStore {
             .collect()
     }
 
+    pub fn active_admin_count(&self) -> usize {
+        let inner = self.inner.lock().expect("auth lock poisoned");
+        inner
+            .users
+            .values()
+            .filter(|user| user.role == "admin" && user.status == "active")
+            .count()
+    }
+
+    pub fn data_path(&self) -> Option<String> {
+        self.path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    pub fn default_data_path() -> PathBuf {
+        auth_store_path()
+    }
+
     pub fn create_user(&self, input: CreateUserInput) -> Result<PublicUser, AppError> {
         let username = normalize_username(&input.username)?;
         let email = validate_email(&input.email)?;

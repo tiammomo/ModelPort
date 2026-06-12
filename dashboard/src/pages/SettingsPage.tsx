@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useProviders, useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
+import { useAuditEvents, useExportBackup, useProviders, useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
+import { useAuthStore } from '@/stores'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -10,9 +11,21 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
-import { formatBytes } from '@/lib/utils'
-import { Save, Plug, Loader2 } from 'lucide-react'
-import type { SystemSettings } from '@/types'
+import { formatBytes, formatRelativeTime } from '@/lib/utils'
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  CircleAlert,
+  Copy,
+  Database,
+  Download,
+  Loader2,
+  Plug,
+  Save,
+  ShieldCheck,
+} from 'lucide-react'
+import type { AuditEvent, BackupExport, SetupCheck, SystemSettings } from '@/types'
 
 type ProviderTestResult = {
   success: boolean
@@ -35,19 +48,33 @@ export function SettingsPage() {
 function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) {
   const updateSettings = useUpdateSettings()
   const testConnection = useTestProviderConnection()
+  const exportBackup = useExportBackup()
   const { data: providers = [] } = useProviders()
+  const { data: auditEvents } = useAuditEvents()
+  const currentUser = useAuthStore((state) => state.currentUser)
 
   const [form, setForm] = useState<SystemSettings>(initialSettings)
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({})
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
   const providerById = new Map(providers.map((provider) => [provider.id, provider]))
 
   const handleSave = () => {
-    if (form) updateSettings.mutate(form)
+    setNotice(null)
+    updateSettings.mutate(form, {
+      onSuccess: (settings) => {
+        setForm(settings)
+        setNotice({ type: 'success', message: '系统设置已更新' })
+      },
+      onError: (error) => {
+        setNotice({ type: 'error', message: error instanceof Error ? error.message : '保存失败' })
+      },
+    })
   }
 
   const handleTestProvider = (providerId: string) => {
+    setNotice(null)
     setTestingProviderId(providerId)
     testConnection.mutate(providerId, {
       onSuccess: (result) => {
@@ -55,6 +82,10 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
           ...current,
           [providerId]: { ...result, testedAt: result.testedAt || new Date().toISOString() },
         }))
+        setNotice({
+          type: result.success ? 'success' : 'error',
+          message: `${providerId}: ${result.message}`,
+        })
       },
       onError: (error) => {
         setTestResults((current) => ({
@@ -65,8 +96,22 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
             testedAt: new Date().toISOString(),
           },
         }))
+        setNotice({ type: 'error', message: error instanceof Error ? error.message : '测试失败' })
       },
       onSettled: () => setTestingProviderId(null),
+    })
+  }
+
+  const handleExportBackup = () => {
+    setNotice(null)
+    exportBackup.mutate(undefined, {
+      onSuccess: (backup) => {
+        downloadBackup(backup)
+        setNotice({ type: 'success', message: '控制面备份已生成' })
+      },
+      onError: (error) => {
+        setNotice({ type: 'error', message: error instanceof Error ? error.message : '导出失败' })
+      },
     })
   }
 
@@ -78,12 +123,23 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
         action={{ label: '保存更改', onClick: handleSave, icon: Save }}
       />
 
+      {notice && <InlineNotice type={notice.type} message={notice.message} />}
+
+      <SetupChecklist
+        setup={form.setup}
+        activeProviderCount={providers.filter((provider) => provider.status === 'active').length}
+        defaultProvider={form.gateway.defaultProvider}
+        defaultProviderReady={providerById.get(form.gateway.defaultProvider)?.status === 'active'}
+        authEnabled={form.auth.enabled}
+      />
+
       <Tabs defaultValue="general">
         <TabsList>
           <TabsTrigger value="general">通用</TabsTrigger>
           <TabsTrigger value="auth">认证</TabsTrigger>
           <TabsTrigger value="ratelimits">限流</TabsTrigger>
           <TabsTrigger value="providers">提供商凭证</TabsTrigger>
+          <TabsTrigger value="operations">运维</TabsTrigger>
         </TabsList>
 
         {/* General Tab */}
@@ -231,6 +287,10 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
                     lastTest={testResults[providerId] || providerById.get(providerId)?.lastTest || null}
                     isTesting={testingProviderId === providerId}
                     isDisabled={testConnection.isPending}
+                    baseUrl={providerById.get(providerId)?.baseUrl || ''}
+                    hasApiKey={providerById.get(providerId)?.hasApiKey || false}
+                    apiKeyRequired={providerById.get(providerId)?.apiKeyRequired ?? true}
+                    modelCount={providerById.get(providerId)?.models.length || 0}
                     onTest={() => handleTestProvider(providerId)}
                   />
                 ))}
@@ -238,7 +298,184 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="operations">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <RuntimeCard runtime={form.runtime} />
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Database className="h-4 w-4" />
+                  数据备份
+                </CardTitle>
+                <CardDescription>导出控制面快照</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">敏感密钥</span>
+                    <Badge variant="outline">不包含明文</Badge>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">用户/用量数据</span>
+                    <Badge variant="secondary">包含</Badge>
+                  </div>
+                </div>
+                <Button
+                  onClick={handleExportBackup}
+                  disabled={exportBackup.isPending || currentUser?.role !== 'admin'}
+                  className="w-full"
+                >
+                  {exportBackup.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                  导出备份
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="mt-4">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-4 w-4" />
+                审计事件
+              </CardTitle>
+              <CardDescription>最近 {auditEvents?.events.length ?? 0} / {auditEvents?.total ?? 0} 条</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <AuditList events={auditEvents?.events ?? []} />
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+function SetupChecklist({
+  setup,
+  activeProviderCount,
+  defaultProvider,
+  defaultProviderReady,
+  authEnabled,
+}: {
+  setup: SystemSettings['setup']
+  activeProviderCount: number
+  defaultProvider: string
+  defaultProviderReady: boolean
+  authEnabled: boolean
+}) {
+  const checks = setup?.checks ?? fallbackSetupChecks({ activeProviderCount, defaultProvider, defaultProviderReady, authEnabled })
+  const errorCount = checks.filter((check) => check.status === 'error').length
+  const warningCount = checks.filter((check) => check.status === 'warning').length
+  const ready = setup?.ready ?? errorCount === 0
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between space-y-0">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4" />
+            上线检查
+          </CardTitle>
+          <CardDescription>{ready ? '核心链路已具备可用条件' : `${errorCount} 项需要处理`}</CardDescription>
+        </div>
+        <Badge variant={ready ? 'success' : 'destructive'}>
+          {ready ? '可用' : '需处理'}
+        </Badge>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {checks.map((check) => (
+            <div key={check.id} className="flex min-h-20 items-start gap-3 rounded-lg border p-3">
+              <div className="mt-0.5">{statusIcon(check.status)}</div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{check.label}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{check.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+        {warningCount > 0 && (
+          <p className="mt-3 text-xs text-yellow-700 dark:text-yellow-300">{warningCount} 项配置存在告警</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RuntimeCard({ runtime }: { runtime?: SystemSettings['runtime'] }) {
+  const rows = [
+    ['API', runtime?.apiEndpoint || 'http://127.0.0.1:17878/v1/messages'],
+    ['Models', runtime?.modelsEndpoint || 'http://127.0.0.1:17878/v1/models'],
+    ['Admin', runtime?.adminEndpoint || 'http://127.0.0.1:17878/admin'],
+    ['Control', runtime?.controlDataPath || '未配置'],
+    ['Auth', runtime?.authDataPath || '未配置'],
+  ] as const
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Database className="h-4 w-4" />
+          运行信息
+        </CardTitle>
+        <CardDescription>端点和本地数据文件</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-center gap-2 rounded-md border px-3 py-2">
+            <span className="w-16 shrink-0 text-xs font-medium text-muted-foreground">{label}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">{value}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => copyText(value)}
+              aria-label={`复制 ${label}`}
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function AuditList({ events }: { events: AuditEvent[] }) {
+  if (events.length === 0) {
+    return <div className="rounded-md border py-10 text-center text-sm text-muted-foreground">暂无审计事件</div>
+  }
+
+  return (
+    <div className="divide-y rounded-md border">
+      {events.map((event) => (
+        <div key={event.id} className="flex flex-wrap items-start justify-between gap-3 p-3">
+          <div className="flex min-w-0 flex-1 items-start gap-3">
+            <div className="mt-0.5">{statusIcon(event.severity)}</div>
+            <div className="min-w-0">
+              <p className="text-sm">{event.message}</p>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                {[event.actor, event.target].filter(Boolean).join(' · ') || event.type}
+              </p>
+            </div>
+          </div>
+          <span className="text-xs text-muted-foreground">{formatRelativeTime(event.timestamp)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function InlineNotice({ type, message }: { type: 'success' | 'error'; message: string }) {
+  const Icon = type === 'success' ? CheckCircle2 : CircleAlert
+  return (
+    <div className={type === 'success'
+      ? 'flex items-start gap-2 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200'
+      : 'flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200'}
+    >
+      <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>{message}</span>
     </div>
   )
 }
@@ -252,6 +489,10 @@ function ProviderCredentialRow({
   lastTest,
   isTesting,
   isDisabled,
+  baseUrl,
+  hasApiKey,
+  apiKeyRequired,
+  modelCount,
   onTest,
 }: {
   providerId: string
@@ -262,9 +503,15 @@ function ProviderCredentialRow({
   lastTest: ProviderTestResult | null
   isTesting: boolean
   isDisabled: boolean
+  baseUrl: string
+  hasApiKey: boolean
+  apiKeyRequired: boolean
+  modelCount: number
   onTest: () => void
 }) {
   const displayStatus = lastTest ? (lastTest.success ? 'success' : 'error') : status
+  const credentialLabel = !apiKeyRequired ? '无需凭证' : hasApiKey ? '凭证已配置' : '缺少凭证'
+  const credentialVariant = !apiKeyRequired || hasApiKey ? 'secondary' : 'destructive'
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
@@ -272,8 +519,10 @@ function ProviderCredentialRow({
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm font-medium">{displayName}</p>
           {isDefault && <Badge variant="outline">默认</Badge>}
+          <Badge variant={credentialVariant}>{credentialLabel}</Badge>
         </div>
         <p className="font-mono text-xs text-muted-foreground">{apiKeyEnv}</p>
+        <p className="max-w-[560px] truncate text-xs text-muted-foreground">{baseUrl}</p>
         {lastTest && (
           <p className={lastTest.success ? 'text-xs text-green-700 dark:text-green-300' : 'text-xs text-red-700 dark:text-red-300'}>
             {lastTest.message} · {formatTestTime(lastTest.testedAt)}
@@ -281,6 +530,7 @@ function ProviderCredentialRow({
         )}
       </div>
       <div className="flex items-center gap-3">
+        <span className="hidden text-xs text-muted-foreground sm:inline">{modelCount} models</span>
         <StatusBadge status={displayStatus} />
         <Button
           variant="outline"
@@ -306,4 +556,60 @@ function formatTestTime(value: string) {
   const date = Number.isFinite(timestamp) ? new Date(timestamp) : new Date(value)
   if (Number.isNaN(date.getTime())) return '刚刚'
   return date.toLocaleString()
+}
+
+function fallbackSetupChecks({
+  activeProviderCount,
+  defaultProvider,
+  defaultProviderReady,
+  authEnabled,
+}: {
+  activeProviderCount: number
+  defaultProvider: string
+  defaultProviderReady: boolean
+  authEnabled: boolean
+}): SetupCheck[] {
+  return [
+    {
+      id: 'auth',
+      label: 'API 认证',
+      status: authEnabled ? 'ok' : 'error',
+      detail: authEnabled ? '已启用请求认证' : '未配置认证令牌',
+    },
+    {
+      id: 'providers',
+      label: '供应商凭证',
+      status: activeProviderCount > 0 ? 'ok' : 'error',
+      detail: activeProviderCount > 0 ? `${activeProviderCount} 个供应商可用` : '没有可用供应商',
+    },
+    {
+      id: 'defaultProvider',
+      label: '默认供应商',
+      status: defaultProviderReady ? 'ok' : 'error',
+      detail: defaultProviderReady ? `${defaultProvider} 可用` : `${defaultProvider} 不可用`,
+    },
+  ]
+}
+
+function statusIcon(status: SetupCheck['status'] | AuditEvent['severity']) {
+  if (status === 'ok' || status === 'info') return <CheckCircle2 className="h-4 w-4 text-green-600" />
+  if (status === 'warning') return <AlertTriangle className="h-4 w-4 text-yellow-600" />
+  return <CircleAlert className="h-4 w-4 text-red-600" />
+}
+
+async function copyText(text: string) {
+  await navigator.clipboard.writeText(text)
+}
+
+function downloadBackup(backup: BackupExport) {
+  const generatedAt = Number(backup.generatedAt)
+  const date = Number.isFinite(generatedAt) ? new Date(generatedAt) : new Date()
+  const stamp = date.toISOString().replace(/[:.]/g, '-')
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `modelport-backup-${stamp}.json`
+  anchor.click()
+  URL.revokeObjectURL(url)
 }

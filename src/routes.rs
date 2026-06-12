@@ -1,13 +1,14 @@
 use std::{
     collections::BTreeSet,
     env,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, State, connect_info::ConnectInfo},
     http::{
         HeaderMap, HeaderValue,
         header::{CONTENT_TYPE, HeaderName, SET_COOKIE},
@@ -25,7 +26,7 @@ use tracing::{info, warn};
 
 use crate::{
     auth::{AuthStore, CreateUserInput, LoginInput, PublicUser, UpdateUserInput},
-    config::{AppConfig, ProviderConfig, ProviderProtocol},
+    config::{AppConfig, ConfigIssueSeverity, ProviderConfig, ProviderProtocol},
     control::{
         ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput, UpdateApiKeyInput,
         UpsertQuotaInput, UsageEstimate, UsageEventInput,
@@ -39,6 +40,7 @@ use crate::{
 };
 
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+const CSRF_HEADER: HeaderName = HeaderName::from_static("x-modelport-csrf");
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 #[derive(Clone)]
@@ -46,8 +48,57 @@ pub struct AppState {
     pub config: Arc<AppConfig>,
     pub auth: Arc<AuthStore>,
     pub control: Arc<ControlStore>,
+    pub trusted_proxies: Arc<TrustedProxyConfig>,
     pub transport: HttpTransport,
     pub metrics: Arc<Metrics>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedProxyConfig {
+    rules: Vec<IpRule>,
+}
+
+#[derive(Debug, Clone)]
+enum IpRule {
+    Exact(IpAddr),
+    Cidr { base: IpAddr, prefix: u8 },
+}
+
+impl TrustedProxyConfig {
+    pub fn from_env() -> Result<Self, AppError> {
+        let mut rules = vec![
+            IpRule::Exact(IpAddr::from([127, 0, 0, 1])),
+            IpRule::Exact(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1])),
+        ];
+
+        if let Ok(value) = env::var("MODELPORT_TRUSTED_PROXIES") {
+            for item in value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            {
+                rules.push(parse_ip_rule(item).map_err(|_| {
+                    AppError::Config(format!("invalid MODELPORT_TRUSTED_PROXIES entry: {item}"))
+                })?);
+            }
+        }
+
+        Ok(Self { rules })
+    }
+
+    #[cfg(test)]
+    fn for_tests() -> Self {
+        Self {
+            rules: vec![
+                IpRule::Exact(IpAddr::from([127, 0, 0, 1])),
+                IpRule::Exact(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1])),
+            ],
+        }
+    }
+
+    fn is_trusted(&self, ip: IpAddr) -> bool {
+        ip.is_loopback() || self.rules.iter().any(|rule| ip_rule_matches(rule, ip))
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -78,6 +129,8 @@ pub fn router(state: AppState) -> Router {
             get(admin_settings).put(admin_update_settings),
         )
         .route("/admin/settings/test-provider", post(admin_test_provider))
+        .route("/admin/audit", get(admin_audit))
+        .route("/admin/backup", get(admin_backup))
         .route("/admin/logs", get(admin_logs))
         .route("/admin/latency", get(admin_latency))
         .route("/admin/users", get(admin_users).post(admin_create_user))
@@ -191,6 +244,7 @@ async fn models(
 
 async fn messages(
     State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<AnthropicRequest>,
 ) -> Result<Response, AppError> {
@@ -205,7 +259,11 @@ async fn messages(
         }
     };
     let estimate = estimate_usage(&request);
-    if let Err(err) = state.control.check_quotas(&identity, estimate) {
+    let request_client_ip = client_ip(&headers, Some(peer_addr), &state.trusted_proxies);
+    if let Err(err) = state
+        .control
+        .check_quotas(&identity, estimate, request_client_ip.as_deref())
+    {
         state
             .metrics
             .record_route("messages", false, started.elapsed());
@@ -288,7 +346,7 @@ async fn messages(
         latency: duration,
         first_byte_latency: Some(duration),
         retry_count: 0,
-        client_ip: client_ip(&headers),
+        client_ip: request_client_ip,
         request_path: "/v1/messages".to_owned(),
         error_message,
     })?;
@@ -326,6 +384,7 @@ async fn admin_logout(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    require_console_write_protection(&headers)?;
     state.auth.logout(&headers);
     let mut response = Json(json!({ "ok": true })).into_response();
     let cookie = state.auth.clear_cookie();
@@ -351,6 +410,111 @@ fn require_admin_user(state: &AppState, headers: &HeaderMap) -> Result<PublicUse
         Ok(user)
     } else {
         Err(AppError::Forbidden("admin role required".to_owned()))
+    }
+}
+
+fn require_admin_write_user(state: &AppState, headers: &HeaderMap) -> Result<PublicUser, AppError> {
+    require_console_write_protection(headers)?;
+    require_admin_user(state, headers)
+}
+
+fn require_console_user(state: &AppState, headers: &HeaderMap) -> Result<PublicUser, AppError> {
+    state.auth.require_session(headers)
+}
+
+fn require_api_key_writer(state: &AppState, headers: &HeaderMap) -> Result<PublicUser, AppError> {
+    let user = state.auth.require_session(headers)?;
+    if matches!(user.role.as_str(), "admin" | "user") {
+        Ok(user)
+    } else {
+        Err(AppError::Forbidden(
+            "API key write access required".to_owned(),
+        ))
+    }
+}
+
+fn require_api_key_write_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<PublicUser, AppError> {
+    require_console_write_protection(headers)?;
+    require_api_key_writer(state, headers)
+}
+
+fn require_console_write_protection(headers: &HeaderMap) -> Result<(), AppError> {
+    if env_flag("MODELPORT_DISABLE_CSRF") {
+        return Ok(());
+    }
+    let csrf_ok = headers
+        .get(&CSRF_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| matches!(value, "1" | "true" | "TRUE"));
+    if !csrf_ok {
+        return Err(AppError::Forbidden(
+            "CSRF protection header is required for console write requests".to_owned(),
+        ));
+    }
+    validate_admin_request_origin(headers)
+}
+
+fn validate_admin_request_origin(headers: &HeaderMap) -> Result<(), AppError> {
+    let origin = headers
+        .get("origin")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| headers.get("referer").and_then(|value| value.to_str().ok()));
+    let Some(origin) = origin else {
+        return Ok(());
+    };
+    let Some(origin_host) = host_from_origin(origin) else {
+        return Err(AppError::Forbidden(
+            "invalid console request origin".to_owned(),
+        ));
+    };
+    let request_host = headers.get("host").and_then(|value| value.to_str().ok());
+    let same_origin = request_host.is_some_and(|host| host.eq_ignore_ascii_case(origin_host));
+    let allowed_origin = env::var("MODELPORT_ALLOWED_ORIGINS")
+        .ok()
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|allowed| allowed.eq_ignore_ascii_case(origin))
+        });
+    if same_origin || allowed_origin {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "console request origin is not allowed".to_owned(),
+        ))
+    }
+}
+
+fn host_from_origin(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let without_scheme = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))?;
+    without_scheme
+        .split('/')
+        .next()
+        .filter(|host| !host.is_empty())
+}
+
+fn ensure_api_key_access(
+    state: &AppState,
+    actor: &PublicUser,
+    key_id: &str,
+) -> Result<(), AppError> {
+    if actor.role == "admin" {
+        return Ok(());
+    }
+    let owner = state.control.api_key_user_id(key_id)?;
+    if owner == actor.id {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "API key belongs to another user".to_owned(),
+        ))
     }
 }
 
@@ -381,16 +545,41 @@ fn authenticate_client(state: &AppState, headers: &HeaderMap) -> Result<ClientId
     Ok(ControlStore::legacy_identity())
 }
 
-fn client_ip(headers: &HeaderMap) -> Option<String> {
+fn client_ip(
+    headers: &HeaderMap,
+    peer_addr: Option<SocketAddr>,
+    trusted_proxies: &TrustedProxyConfig,
+) -> Option<String> {
+    if peer_addr.is_some_and(|peer| trusted_proxies.is_trusted(peer.ip()))
+        && let Some(ip) = forwarded_client_ip(headers)
+    {
+        return Some(ip.to_string());
+    }
+
+    peer_addr.map(|peer| peer.ip().to_string())
+}
+
+fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
     for name in ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"] {
-        if let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) {
-            let ip = value.split(',').next().unwrap_or(value).trim();
-            if !ip.is_empty() {
-                return Some(ip.to_owned());
-            }
+        let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) else {
+            continue;
+        };
+        let candidate = value.split(',').next().unwrap_or(value).trim();
+        if let Some(ip) = parse_ip_with_optional_port(candidate) {
+            return Some(ip);
         }
     }
     None
+}
+
+fn parse_ip_with_optional_port(value: &str) -> Option<IpAddr> {
+    let value = value.trim();
+    if let Ok(ip) = value.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    value
+        .rsplit_once(':')
+        .and_then(|(host, _)| host.parse::<IpAddr>().ok())
 }
 
 fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
@@ -426,7 +615,7 @@ async fn admin_dashboard(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
 
     let snapshot = state.metrics.snapshot();
     let total_requests = snapshot
@@ -583,7 +772,7 @@ async fn admin_providers(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
     Ok(Json(Value::Array(provider_rows(&state))))
 }
 
@@ -591,7 +780,7 @@ async fn admin_aliases(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
     Ok(Json(Value::Array(alias_rows(&state))))
 }
 
@@ -600,7 +789,7 @@ async fn admin_create_alias(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     let alias = body.get("alias").and_then(Value::as_str).unwrap_or("");
     let target = body.get("target").and_then(Value::as_str).unwrap_or("");
     validate_alias_target(&state, alias, target)?;
@@ -624,7 +813,7 @@ async fn admin_delete_alias(
     headers: HeaderMap,
     Path(alias): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     let tombstone = state.config.aliases.contains_key(&alias);
     state.control.delete_alias(&alias, tombstone)?;
     record_admin_activity(
@@ -642,7 +831,7 @@ async fn admin_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
     Ok(Json(settings_row(&state)))
 }
 
@@ -651,7 +840,7 @@ async fn admin_update_settings(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     let mut changes = Vec::new();
     if let Some(gateway) = body.get("gateway") {
         if let Some(provider_id) = gateway.get("defaultProvider").and_then(Value::as_str) {
@@ -689,7 +878,7 @@ async fn admin_test_provider(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     let provider_id = body
         .get("providerId")
         .and_then(Value::as_str)
@@ -742,7 +931,7 @@ async fn admin_provider_models(
     headers: HeaderMap,
     Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     let config = effective_config(&state);
     let Some(provider) = config.providers.get(&provider_id).cloned() else {
         return Err(AppError::ProviderNotFound(provider_id));
@@ -782,6 +971,44 @@ async fn admin_provider_models(
         "models": models,
         "modelCount": models.len(),
         "discoveredAt": tested_at.to_string(),
+    })))
+}
+
+async fn admin_audit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_console_user(&state, &headers)?;
+    let events = state.control.activity_rows(100);
+    Ok(Json(json!({
+        "events": events,
+        "total": state.control.activity_count(),
+    })))
+}
+
+async fn admin_backup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_user(&state, &headers)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        "backup",
+        "导出控制面备份",
+        "info",
+    );
+
+    Ok(Json(json!({
+        "schemaVersion": 1,
+        "service": "model-port",
+        "generatedAt": now_millis_string(),
+        "containsSecrets": false,
+        "containsPersonalData": true,
+        "settings": settings_row(&state),
+        "users": state.auth.list_users(0),
+        "control": state.control.export_snapshot(),
     })))
 }
 
@@ -883,7 +1110,7 @@ async fn admin_logs(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
     let mut logs = state.control.usage_rows();
     if logs.is_empty() {
         logs = log_rows(&state);
@@ -898,7 +1125,7 @@ async fn admin_latency(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
     let snapshot = state.metrics.snapshot();
     let total_requests = snapshot
         .messages
@@ -928,7 +1155,7 @@ async fn admin_users(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_console_user(&state, &headers)?;
     let requests = state
         .metrics
         .snapshot()
@@ -937,6 +1164,9 @@ async fn admin_users(
         .map(|message| message.requests_total)
         .sum::<u64>();
     let mut users = state.auth.list_users(requests);
+    if actor.role == "user" {
+        users.retain(|user| user.id == actor.id);
+    }
     for user in &mut users {
         user.api_key_count = state.control.active_api_key_count(&user.id);
     }
@@ -967,7 +1197,7 @@ async fn admin_update_user(
     Path(user_id): Path<String>,
     Json(body): Json<UpdateUserInput>,
 ) -> Result<Json<Value>, AppError> {
-    let current_user = require_admin_user(&state, &headers)?;
+    let current_user = require_admin_write_user(&state, &headers)?;
     let user = state.auth.update_user(&user_id, &current_user.id, body)?;
     record_admin_activity(
         &state,
@@ -985,7 +1215,7 @@ async fn admin_delete_user(
     headers: HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let current_user = require_admin_user(&state, &headers)?;
+    let current_user = require_admin_write_user(&state, &headers)?;
     state.auth.delete_user(&user_id, &current_user.id)?;
     state.control.delete_user_resources(&user_id)?;
     record_admin_activity(
@@ -1003,8 +1233,12 @@ async fn admin_api_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
-    Ok(Json(json!(state.control.list_api_keys())))
+    let actor = require_console_user(&state, &headers)?;
+    if actor.role == "user" {
+        Ok(Json(json!(state.control.list_user_api_keys(&actor.id))))
+    } else {
+        Ok(Json(json!(state.control.list_api_keys())))
+    }
 }
 
 async fn admin_user_api_keys(
@@ -1012,7 +1246,12 @@ async fn admin_user_api_keys(
     headers: HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    let actor = require_console_user(&state, &headers)?;
+    if actor.role == "user" && actor.id != user_id {
+        return Err(AppError::Forbidden(
+            "cannot read another user's API keys".to_owned(),
+        ));
+    }
     Ok(Json(json!(state.control.list_user_api_keys(&user_id))))
 }
 
@@ -1021,7 +1260,15 @@ async fn admin_create_api_key(
     headers: HeaderMap,
     Json(mut body): Json<CreateApiKeyInput>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_api_key_write_user(&state, &headers)?;
+    if actor.role != "admin" {
+        if body.user_id != actor.id {
+            return Err(AppError::Forbidden(
+                "cannot create API keys for another user".to_owned(),
+            ));
+        }
+        body.username = Some(actor.username.clone());
+    }
     if body.username.is_none()
         && let Some(user) = state
             .auth
@@ -1051,7 +1298,8 @@ async fn admin_revoke_api_key(
     headers: HeaderMap,
     Path(key_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_api_key_write_user(&state, &headers)?;
+    ensure_api_key_access(&state, &actor, &key_id)?;
     state.control.revoke_api_key(&key_id)?;
     record_admin_activity(
         &state,
@@ -1070,7 +1318,8 @@ async fn admin_update_api_key(
     Path(key_id): Path<String>,
     Json(body): Json<UpdateApiKeyInput>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_api_key_write_user(&state, &headers)?;
+    ensure_api_key_access(&state, &actor, &key_id)?;
     let updated = state.control.update_api_key(&key_id, body)?;
     record_admin_activity(
         &state,
@@ -1088,7 +1337,8 @@ async fn admin_delete_api_key(
     headers: HeaderMap,
     Path(key_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_api_key_write_user(&state, &headers)?;
+    ensure_api_key_access(&state, &actor, &key_id)?;
     state.control.delete_api_key(&key_id)?;
     record_admin_activity(
         &state,
@@ -1105,7 +1355,7 @@ async fn admin_quotas(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    require_admin_user(&state, &headers)?;
+    require_console_user(&state, &headers)?;
     Ok(Json(json!(state.control.list_quotas()?)))
 }
 
@@ -1114,7 +1364,7 @@ async fn admin_create_quota(
     headers: HeaderMap,
     Json(body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     let quota = state.control.upsert_quota(body)?;
     record_admin_activity(
         &state,
@@ -1136,7 +1386,7 @@ async fn admin_update_quota(
     Path(quota_id): Path<String>,
     Json(mut body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     body.id = Some(quota_id);
     let quota = state.control.upsert_quota(body)?;
     record_admin_activity(
@@ -1158,7 +1408,7 @@ async fn admin_delete_quota(
     headers: HeaderMap,
     Path(quota_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     state.control.delete_quota(&quota_id)?;
     record_admin_activity(
         &state,
@@ -1245,7 +1495,192 @@ fn settings_row(state: &AppState) -> Value {
             "requestTimeoutSecs": env_u64("MODELPORT_HTTP_REQUEST_TIMEOUT_SECS", 600),
             "streamIdleTimeoutSecs": env_u64("MODELPORT_HTTP_STREAM_IDLE_TIMEOUT_SECS", 300),
         },
+        "runtime": runtime_row(state, &config),
+        "setup": setup_row(state, &config),
     })
+}
+
+fn runtime_row(state: &AppState, config: &AppConfig) -> Value {
+    let base_url = local_base_url(config);
+    json!({
+        "apiEndpoint": format!("{base_url}/v1/messages"),
+        "modelsEndpoint": format!("{base_url}/v1/models"),
+        "adminEndpoint": format!("{base_url}/admin"),
+        "controlDataPath": state.control.data_path(),
+        "authDataPath": state.auth.data_path(),
+    })
+}
+
+fn setup_row(state: &AppState, config: &AppConfig) -> Value {
+    let providers = provider_rows(state);
+    let active_provider_count = providers
+        .iter()
+        .filter(|provider| provider.get("status").and_then(Value::as_str) == Some("active"))
+        .count();
+    let default_provider = providers.iter().find(|provider| {
+        provider
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == config.default_provider)
+    });
+    let default_provider_active = default_provider
+        .and_then(|provider| provider.get("status").and_then(Value::as_str))
+        == Some("active");
+    let validation_issues = config
+        .validation_issues()
+        .into_iter()
+        .map(|issue| {
+            json!({
+                "severity": match issue.severity {
+                    ConfigIssueSeverity::Error => "error",
+                    ConfigIssueSeverity::Warning => "warning",
+                },
+                "message": issue.message,
+            })
+        })
+        .collect::<Vec<_>>();
+    let validation_errors = validation_issues
+        .iter()
+        .filter(|issue| issue.get("severity").and_then(Value::as_str) == Some("error"))
+        .count();
+    let validation_warnings = validation_issues
+        .iter()
+        .filter(|issue| issue.get("severity").and_then(Value::as_str) == Some("warning"))
+        .count();
+    let checks = vec![
+        setup_check(
+            "admin",
+            "管理员账号",
+            state.auth.active_admin_count() > 0,
+            "至少一个活跃管理员",
+            "没有活跃管理员",
+        ),
+        setup_check(
+            "auth",
+            "API 认证",
+            config.auth_token.is_some(),
+            "已启用请求认证",
+            "未配置 MODELPORT_AUTH_TOKEN",
+        ),
+        setup_check(
+            "providers",
+            "供应商凭证",
+            active_provider_count > 0,
+            format!("{active_provider_count} 个供应商可用"),
+            "没有可用供应商",
+        ),
+        setup_check(
+            "defaultProvider",
+            "默认供应商",
+            default_provider_active,
+            format!("{} 可用", config.default_provider),
+            format!("{} 不可用", config.default_provider),
+        ),
+        setup_check(
+            "persistence",
+            "控制面数据",
+            state.control.data_path().is_some() && state.auth.data_path().is_some(),
+            "已启用本地持久化",
+            "当前运行未配置数据文件",
+        ),
+        setup_check(
+            "config",
+            "配置校验",
+            validation_errors == 0,
+            if validation_warnings == 0 {
+                "无配置告警".to_owned()
+            } else {
+                format!("{validation_warnings} 条配置告警")
+            },
+            format!("{validation_errors} 条配置错误"),
+        ),
+    ];
+    let ready = checks
+        .iter()
+        .all(|check| check.get("status").and_then(Value::as_str) != Some("error"));
+
+    json!({
+        "ready": ready,
+        "activeProviderCount": active_provider_count,
+        "defaultProviderReady": default_provider_active,
+        "checks": checks,
+        "issues": validation_issues,
+    })
+}
+
+fn setup_check(
+    id: &str,
+    label: &str,
+    ok: bool,
+    ok_detail: impl Into<String>,
+    error_detail: impl Into<String>,
+) -> Value {
+    json!({
+        "id": id,
+        "label": label,
+        "status": if ok { "ok" } else { "error" },
+        "detail": if ok { ok_detail.into() } else { error_detail.into() },
+    })
+}
+
+fn local_base_url(config: &AppConfig) -> String {
+    let ip = if config.bind_addr.ip().is_unspecified() {
+        match config.bind_addr.ip() {
+            IpAddr::V4(_) => "127.0.0.1".to_owned(),
+            IpAddr::V6(_) => "[::1]".to_owned(),
+        }
+    } else {
+        match config.bind_addr.ip() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        }
+    };
+    format!("http://{ip}:{}", config.bind_addr.port())
+}
+
+fn parse_ip_rule(value: &str) -> Result<IpRule, ()> {
+    if let Ok(ip) = value.parse::<IpAddr>() {
+        return Ok(IpRule::Exact(ip));
+    }
+    let Some((base, prefix)) = value.split_once('/') else {
+        return Err(());
+    };
+    let base = base.parse::<IpAddr>().map_err(|_| ())?;
+    let prefix = prefix.parse::<u8>().map_err(|_| ())?;
+    let max_prefix = match base {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
+    if prefix > max_prefix {
+        return Err(());
+    }
+    Ok(IpRule::Cidr { base, prefix })
+}
+
+fn ip_rule_matches(rule: &IpRule, ip: IpAddr) -> bool {
+    match (rule, ip) {
+        (IpRule::Exact(exact), ip) => *exact == ip,
+        (IpRule::Cidr { base, prefix }, IpAddr::V4(ip)) => match base {
+            IpAddr::V4(base) if *prefix <= 32 => {
+                cidr_matches(u32::from(*base).into(), u32::from(ip).into(), *prefix, 32)
+            }
+            _ => false,
+        },
+        (IpRule::Cidr { base, prefix }, IpAddr::V6(ip)) => match base {
+            IpAddr::V6(base) if *prefix <= 128 => {
+                cidr_matches(u128::from(*base), u128::from(ip), *prefix, 128)
+            }
+            _ => false,
+        },
+    }
+}
+
+fn cidr_matches(base: u128, ip: u128, prefix: u8, bits: u8) -> bool {
+    if prefix == 0 {
+        return true;
+    }
+    let shift = u32::from(bits - prefix);
+    (base >> shift) == (ip >> shift)
 }
 
 fn effective_config(state: &AppState) -> AppConfig {
@@ -1449,6 +1884,12 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1776,6 +2217,86 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn viewer_can_read_dashboard_but_not_create_users() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let state = test_state(upstream, 1024 * 1024);
+        state
+            .auth
+            .create_user(CreateUserInput {
+                username: "viewer".to_owned(),
+                email: "viewer@modelport.local".to_owned(),
+                password: "strong-password-123".to_owned(),
+                role: Some("viewer".to_owned()),
+                status: Some("active".to_owned()),
+            })
+            .unwrap();
+        let app = router(state);
+
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .body(Body::from(
+                        json!({
+                            "username": "viewer",
+                            "password": "strong-password-123",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let session_cookie = login_response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("login should set a session cookie")
+            .clone();
+
+        let dashboard_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/dashboard")
+                    .header(COOKIE, session_cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dashboard_response.status(), StatusCode::OK);
+
+        let create_user_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/users")
+                    .header(COOKIE, session_cookie)
+                    .header("x-modelport-csrf", "1")
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .body(Body::from(
+                        json!({
+                            "username": "blocked",
+                            "email": "blocked@modelport.local",
+                            "password": "strong-password-123",
+                            "role": "user",
+                            "status": "active",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_user_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn admin_alias_updates_runtime_message_routing() {
         let upstream = spawn_openai_upstream(
             StatusCode::OK,
@@ -1817,6 +2338,7 @@ data: [DONE]
                     .method("POST")
                     .uri("/admin/aliases")
                     .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .header("x-modelport-csrf", "1")
                     .header(COOKIE, session_cookie)
                     .body(Body::from(
                         json!({
@@ -1889,6 +2411,34 @@ data: [DONE]
         );
     }
 
+    #[test]
+    fn client_ip_uses_peer_when_forwarded_header_is_untrusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        let trusted = TrustedProxyConfig::for_tests();
+
+        assert_eq!(
+            client_ip(
+                &headers,
+                Some("203.0.113.10:48178".parse().unwrap()),
+                &trusted,
+            ),
+            Some("203.0.113.10".to_owned())
+        );
+    }
+
+    #[test]
+    fn client_ip_uses_forwarded_header_from_trusted_proxy() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.9"));
+        let trusted = TrustedProxyConfig::for_tests();
+
+        assert_eq!(
+            client_ip(&headers, Some("127.0.0.1:48178".parse().unwrap()), &trusted,),
+            Some("198.51.100.9".to_owned())
+        );
+    }
+
     #[tokio::test]
     async fn discover_anthropic_models_checks_required_api_key() {
         let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
@@ -1922,6 +2472,9 @@ data: [DONE]
                 Request::builder()
                     .method("POST")
                     .uri("/v1/messages")
+                    .extension(ConnectInfo(
+                        "127.0.0.1:48178".parse::<SocketAddr>().unwrap(),
+                    ))
                     .header("x-api-key", CLIENT_TOKEN)
                     .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
                     .body(Body::from(body.to_string()))
@@ -2012,6 +2565,7 @@ data: [DONE]
             }),
             auth: Arc::new(AuthStore::for_tests()),
             control: Arc::new(ControlStore::for_tests()),
+            trusted_proxies: Arc::new(TrustedProxyConfig::for_tests()),
             transport: HttpTransport::new().unwrap(),
             metrics: Arc::new(Metrics::new()),
         }

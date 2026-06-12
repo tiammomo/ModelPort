@@ -23,3 +23,16 @@ export function useTestProviderConnection() {
     mutationFn: (providerId: string) => settingsService.testProviderConnection(providerId),
   })
 }
+
+export function useAuditEvents() {
+  return useQuery({
+    queryKey: ['audit-events'] as const,
+    queryFn: () => settingsService.getAuditEvents(),
+  })
+}
+
+export function useExportBackup() {
+  return useMutation({
+    mutationFn: () => settingsService.exportBackup(),
+  })
+}

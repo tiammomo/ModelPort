@@ -37,4 +37,25 @@ export const mockSettings: SystemSettings = {
     requestTimeoutSecs: 300,
     streamIdleTimeoutSecs: 120,
   },
+  runtime: {
+    apiEndpoint: 'http://127.0.0.1:17878/v1/messages',
+    modelsEndpoint: 'http://127.0.0.1:17878/v1/models',
+    adminEndpoint: 'http://127.0.0.1:17878/admin',
+    controlDataPath: '/home/user/.modelport/control-plane.json',
+    authDataPath: '/home/user/.modelport/auth.json',
+  },
+  setup: {
+    ready: true,
+    activeProviderCount: 2,
+    defaultProviderReady: true,
+    checks: [
+      { id: 'admin', label: '管理员账号', status: 'ok', detail: '至少一个活跃管理员' },
+      { id: 'auth', label: 'API 认证', status: 'ok', detail: '已启用请求认证' },
+      { id: 'providers', label: '供应商凭证', status: 'ok', detail: '2 个供应商可用' },
+      { id: 'defaultProvider', label: '默认供应商', status: 'ok', detail: 'mimo 可用' },
+      { id: 'persistence', label: '控制面数据', status: 'ok', detail: '已启用本地持久化' },
+      { id: 'config', label: '配置校验', status: 'ok', detail: '无配置告警' },
+    ],
+    issues: [],
+  },
 }
