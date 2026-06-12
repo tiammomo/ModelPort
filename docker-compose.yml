@@ -1,6 +1,21 @@
 name: modelport
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${MODELPORT_POSTGRES_DB:-modelport}
+      POSTGRES_USER: ${MODELPORT_POSTGRES_USER:-modelport}
+      POSTGRES_PASSWORD: ${MODELPORT_POSTGRES_PASSWORD:?set MODELPORT_POSTGRES_PASSWORD in .env}
+    volumes:
+      - modelport-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   modelport:
     build:
       context: .
@@ -13,6 +28,7 @@ services:
       MODELPORT_STATE_DIR: /data
       MODELPORT_CONTROL_STORE: /data/control-plane.json
       MODELPORT_CONFIG: /config/config.toml
+      MODELPORT_DATABASE_URL: postgres://${MODELPORT_POSTGRES_USER:-modelport}:${MODELPORT_POSTGRES_PASSWORD:?set MODELPORT_POSTGRES_PASSWORD in .env}@postgres:5432/${MODELPORT_POSTGRES_DB:-modelport}
       MODELPORT_TRUSTED_PROXIES: ${MODELPORT_TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
       MODELPORT_ALLOWED_ORIGINS: ${MODELPORT_ALLOWED_ORIGINS:-}
       RUST_LOG: ${RUST_LOG:-model_port=info,tower_http=info}
@@ -24,6 +40,9 @@ services:
       - modelport-data:/data
       # Optional file-based provider config:
       # - ./config.toml:/config/config.toml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   dashboard:
@@ -40,3 +59,4 @@ services:
 
 volumes:
   modelport-data:
+  modelport-postgres:

@@ -514,8 +514,9 @@ docker compose up -d --build
 docker compose logs -f modelport
 ```
 
-默认启动两个轻量容器：
+默认启动三个轻量容器：
 
+- `postgres`：内部 PostgreSQL，保存控制面持久化数据；默认不发布宿主机端口。
 - `modelport`：后端 API、路由、鉴权、控制面数据。
 - `dashboard`：静态后台 UI，并反代 `/admin`、`/v1` 到后端。
 
@@ -524,7 +525,7 @@ docker compose logs -f modelport
 - 后台：`http://127.0.0.1:5173`
 - API：`http://127.0.0.1:17878/v1/messages`
 
-控制面数据保存在 Docker named volume `modelport-data`。更多说明见 [docs/DOCKER.md](docs/DOCKER.md)。
+控制面数据默认保存在 Docker named volume `modelport-postgres`。PostgreSQL 只在 Docker 内网可达，不占用宿主机 5432，因此不会和你机器上已有的 PostgreSQL 冲突。更多说明见 [docs/DOCKER.md](docs/DOCKER.md)。
 
 试生产验收：
 

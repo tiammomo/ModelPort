@@ -521,8 +521,9 @@ docker compose up -d --build
 docker compose logs -f modelport
 ```
 
-The default stack starts two lightweight containers:
+The default stack starts three lightweight containers:
 
+- `postgres`: internal PostgreSQL for control-plane persistence; no host port is published by default.
 - `modelport`: backend API, routing, auth, and control-plane data.
 - `dashboard`: static dashboard UI with `/admin` and `/v1` proxied to the backend.
 
@@ -531,7 +532,7 @@ Default host endpoints:
 - Dashboard: `http://127.0.0.1:5173`
 - API: `http://127.0.0.1:17878/v1/messages`
 
-Control-plane data is stored in the Docker named volume `modelport-data`. See [docs/DOCKER.md](docs/DOCKER.md) for deployment details.
+Control-plane data is stored in the Docker named volume `modelport-postgres` by default. PostgreSQL is only reachable on the Docker network, so it does not conflict with a host PostgreSQL on port 5432. See [docs/DOCKER.md](docs/DOCKER.md) for deployment details.
 
 Production acceptance:
 

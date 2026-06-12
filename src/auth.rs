@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    env, fs,
+    env,
     path::PathBuf,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{config::AppConfig, error::AppError};
+use crate::{config::AppConfig, error::AppError, storage::JsonStore};
 
 pub const ADMIN_SESSION_COOKIE: &str = "modelport_admin_session";
 
@@ -26,7 +26,7 @@ const LOCKOUT_SECONDS: u64 = 15 * 60;
 
 #[derive(Debug)]
 pub struct AuthStore {
-    path: Option<PathBuf>,
+    store: Option<JsonStore>,
     inner: Mutex<AuthInner>,
     session_ttl_seconds: u64,
     cookie_secure: bool,
@@ -119,24 +119,21 @@ pub struct UpdateUserInput {
 impl AuthStore {
     pub fn load_or_bootstrap(config: &AppConfig) -> Result<Self, AppError> {
         let path = auth_store_path();
+        let store = JsonStore::open("auth", path)?;
         let session_ttl_seconds = env_u64(
             "MODELPORT_ADMIN_SESSION_TTL_SECONDS",
             DEFAULT_SESSION_TTL_SECONDS,
         );
         let cookie_secure = env_flag("MODELPORT_ADMIN_COOKIE_SECURE");
-        let users = if path.exists() {
-            let raw = fs::read_to_string(&path)?;
-            let file: AuthFile = serde_json::from_str(&raw)?;
-            file.users
-                .into_iter()
-                .map(|user| (user.id.clone(), user))
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
+        let file: AuthFile = store.read_or_default(serde_json::json!({ "users": [] }))?;
+        let users = file
+            .users
+            .into_iter()
+            .map(|user| (user.id.clone(), user))
+            .collect();
 
         let store = Self {
-            path: Some(path),
+            store: Some(store),
             inner: Mutex::new(AuthInner {
                 users,
                 sessions: HashMap::new(),
@@ -153,7 +150,7 @@ impl AuthStore {
     #[cfg(test)]
     pub fn for_tests() -> Self {
         Self {
-            path: None,
+            store: None,
             inner: Mutex::new(AuthInner::default()),
             session_ttl_seconds: DEFAULT_SESSION_TTL_SECONDS,
             cookie_secure: false,
@@ -285,9 +282,7 @@ impl AuthStore {
     }
 
     pub fn data_path(&self) -> Option<String> {
-        self.path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned())
+        self.store.as_ref().map(JsonStore::location)
     }
 
     pub fn default_data_path() -> PathBuf {
@@ -513,20 +508,13 @@ impl AuthStore {
     }
 
     fn save_locked(&self, inner: &AuthInner) -> Result<(), AppError> {
-        let Some(path) = &self.path else {
+        let Some(store) = &self.store else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let tmp_path = path.with_extension("json.tmp");
         let file = AuthFile {
             users: inner.users.values().cloned().collect(),
         };
-        fs::write(&tmp_path, serde_json::to_string_pretty(&file)?)?;
-        fs::rename(tmp_path, path)?;
-        Ok(())
+        store.write_json(&file)
     }
 
     fn prune_expired_sessions_locked(&self, inner: &mut AuthInner, now_ms: u64) {

@@ -12,6 +12,8 @@ pub enum AppError {
     Auth,
     #[error("configuration error: {0}")]
     Config(String),
+    #[error("database error: {0}")]
+    Database(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
     #[error("quota exceeded: {0}")]
@@ -32,6 +34,12 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+}
+
+impl From<postgres::Error> for AppError {
+    fn from(error: postgres::Error) -> Self {
+        Self::Database(error.to_string())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -82,7 +90,7 @@ impl IntoResponse for AppError {
 fn status_code(error: &AppError) -> StatusCode {
     match error {
         AppError::Auth => StatusCode::UNAUTHORIZED,
-        AppError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        AppError::Config(_) | AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         AppError::Forbidden(_) => StatusCode::FORBIDDEN,
         AppError::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
         AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
@@ -100,6 +108,7 @@ fn error_code(error: &AppError) -> &'static str {
     match error {
         AppError::Auth => "auth_failed",
         AppError::Config(_) => "config_error",
+        AppError::Database(_) => "database_error",
         AppError::Forbidden(_) => "forbidden",
         AppError::QuotaExceeded(_) => "quota_exceeded",
         AppError::InvalidRequest(_) => "invalid_request",
@@ -118,6 +127,9 @@ fn error_hint(error: &AppError) -> &'static str {
         AppError::Auth => "请重新登录控制台，或确认请求携带有效的 API Key。",
         AppError::Config(_) | AppError::MissingSecret(_) => {
             "检查环境变量、配置文件和供应商 API Key 后重启 ModelPort。"
+        }
+        AppError::Database(_) => {
+            "检查 MODELPORT_DATABASE_URL、PostgreSQL 容器健康状态和数据库权限。"
         }
         AppError::Forbidden(_) => "当前账号权限不足，或 API Key 的归属/IP 策略拒绝了本次操作。",
         AppError::QuotaExceeded(_) => {

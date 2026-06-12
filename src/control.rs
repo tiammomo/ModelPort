@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    env, fs,
+    env,
     net::IpAddr,
     path::PathBuf,
     sync::Mutex,
@@ -13,14 +13,14 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{error::AppError, pricing};
+use crate::{error::AppError, pricing, storage::JsonStore};
 
 const DEFAULT_USAGE_LIMIT: usize = 5_000;
 const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
 
 #[derive(Debug)]
 pub struct ControlStore {
-    path: Option<PathBuf>,
+    store: Option<JsonStore>,
     inner: Mutex<ControlInner>,
     usage_limit: usize,
 }
@@ -349,19 +349,22 @@ pub struct RoutingConfigSnapshot {
 impl ControlStore {
     pub fn load() -> Result<Self, AppError> {
         let path = control_store_path();
+        let store = JsonStore::open("control", path)?;
         let usage_limit = env::var("MODELPORT_USAGE_LOG_LIMIT")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(DEFAULT_USAGE_LIMIT);
-        let file = if path.exists() {
-            let raw = fs::read_to_string(&path)?;
-            serde_json::from_str::<ControlFile>(&raw)?
-        } else {
-            ControlFile::default()
-        };
+        let file: ControlFile = store.read_or_default(json!({
+            "apiKeys": [],
+            "quotas": [],
+            "usage": [],
+            "routeConfig": {},
+            "activities": [],
+            "providerTests": [],
+        }))?;
 
         Ok(Self {
-            path: Some(path),
+            store: Some(store),
             inner: Mutex::new(ControlInner {
                 api_keys: file
                     .api_keys
@@ -389,7 +392,7 @@ impl ControlStore {
     #[cfg(test)]
     pub fn for_tests() -> Self {
         Self {
-            path: None,
+            store: None,
             inner: Mutex::new(ControlInner::default()),
             usage_limit: DEFAULT_USAGE_LIMIT,
         }
@@ -523,9 +526,7 @@ impl ControlStore {
     }
 
     pub fn data_path(&self) -> Option<String> {
-        self.path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned())
+        self.store.as_ref().map(JsonStore::location)
     }
 
     pub fn default_data_path() -> PathBuf {
@@ -1245,13 +1246,9 @@ impl ControlStore {
     }
 
     fn save_locked(&self, inner: &ControlInner) -> Result<(), AppError> {
-        let Some(path) = &self.path else {
+        let Some(store) = &self.store else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp_path = path.with_extension("json.tmp");
         let file = ControlFile {
             api_keys: inner.api_keys.values().cloned().collect(),
             quotas: inner.quotas.values().cloned().collect(),
@@ -1260,9 +1257,7 @@ impl ControlStore {
             activities: inner.activities.clone(),
             provider_tests: inner.provider_tests.values().cloned().collect(),
         };
-        fs::write(&tmp_path, serde_json::to_string_pretty(&file)?)?;
-        fs::rename(tmp_path, path)?;
-        Ok(())
+        store.write_json(&file)
     }
 }
 

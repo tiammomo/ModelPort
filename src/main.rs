@@ -7,6 +7,7 @@ mod metrics;
 mod pricing;
 mod providers;
 mod routes;
+mod storage;
 mod types;
 
 use std::{fs, path::Path, sync::Arc};
@@ -20,6 +21,7 @@ use metrics::Metrics;
 use routes::{AppState, TrustedProxyConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use storage::JsonStore;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -154,27 +156,21 @@ struct LocalBackupFile {
 }
 
 fn export_backup(path: &str) -> Result<(), AppError> {
-    let auth_path = AuthStore::default_data_path();
-    let control_path = ControlStore::default_data_path();
+    let auth_store = JsonStore::open("auth", AuthStore::default_data_path())?;
+    let control_store = JsonStore::open("control", ControlStore::default_data_path())?;
     let backup = LocalBackupFile {
         schema_version: 1,
         service: "model-port".to_owned(),
         generated_at: now_millis().to_string(),
         contains_secrets: true,
-        auth_store_path: auth_path.to_string_lossy().into_owned(),
-        control_store_path: control_path.to_string_lossy().into_owned(),
-        auth: read_json_or_default(&auth_path, json!({ "users": [] }))?,
-        control: read_json_or_default(
-            &control_path,
-            json!({
-                "apiKeys": [],
-                "quotas": [],
-                "usage": [],
-                "routeConfig": {},
-                "activities": [],
-                "providerTests": [],
-            }),
-        )?,
+        auth_store_path: auth_store.location(),
+        control_store_path: control_store.location(),
+        auth: auth_store
+            .read_value()?
+            .unwrap_or_else(|| json!({ "users": [] })),
+        control: control_store
+            .read_value()?
+            .unwrap_or_else(default_control_json),
     };
     write_json_file(Path::new(path), &serde_json::to_value(backup)?)?;
     println!("ModelPort backup written to {path}");
@@ -204,16 +200,16 @@ fn validate_backup(path: &str) -> Result<(), AppError> {
 
 fn restore_backup(path: &str) -> Result<(), AppError> {
     let backup = load_backup(path)?;
-    let auth_path = AuthStore::default_data_path();
-    let control_path = ControlStore::default_data_path();
-    backup_existing_file(&auth_path)?;
-    backup_existing_file(&control_path)?;
-    write_json_file(&auth_path, &backup.auth)?;
-    write_json_file(&control_path, &backup.control)?;
+    let auth_store = JsonStore::open("auth", AuthStore::default_data_path())?;
+    let control_store = JsonStore::open("control", ControlStore::default_data_path())?;
+    backup_existing_state(path, "auth", auth_store.read_value()?)?;
+    backup_existing_state(path, "control", control_store.read_value()?)?;
+    auth_store.write_value(&backup.auth)?;
+    control_store.write_value(&backup.control)?;
     println!(
         "ModelPort backup restored to {} and {}",
-        auth_path.display(),
-        control_path.display()
+        auth_store.location(),
+        control_store.location()
     );
     Ok(())
 }
@@ -239,13 +235,6 @@ fn load_backup(path: &str) -> Result<LocalBackupFile, AppError> {
     Ok(backup)
 }
 
-fn read_json_or_default(path: &Path, default: Value) -> Result<Value, AppError> {
-    if !path.exists() {
-        return Ok(default);
-    }
-    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
-}
-
 fn write_json_file(path: &Path, value: &Value) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -254,13 +243,23 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), AppError> {
     Ok(())
 }
 
-fn backup_existing_file(path: &Path) -> Result<(), AppError> {
-    if !path.exists() {
+fn backup_existing_state(path: &str, label: &str, value: Option<Value>) -> Result<(), AppError> {
+    let Some(value) = value else {
         return Ok(());
-    }
-    let backup_path = path.with_extension(format!("json.bak.{}", now_millis()));
-    fs::copy(path, backup_path)?;
-    Ok(())
+    };
+    let backup_path = format!("{path}.{label}.bak.{}.json", now_millis());
+    write_json_file(Path::new(&backup_path), &value)
+}
+
+fn default_control_json() -> Value {
+    json!({
+        "apiKeys": [],
+        "quotas": [],
+        "usage": [],
+        "routeConfig": {},
+        "activities": [],
+        "providerTests": [],
+    })
 }
 
 fn now_millis() -> u64 {
