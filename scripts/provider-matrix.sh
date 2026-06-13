@@ -21,7 +21,7 @@ Secrets are read from .env but never printed.
 Options:
   --model MODEL          Test one model. Can be repeated.
   --models A,B,C         Test a comma-separated model list.
-  --all                  Test every model returned by /v1/models. Requires jq.
+  --all                  Test every model returned by /v1/models.
   --non-stream-only      Only test non-streaming /v1/messages.
   --stream-only          Only test streaming /v1/messages.
   --timeout SECONDS      Per-request timeout. Default: 120.
@@ -95,9 +95,11 @@ fi
 
 load_env
 
-if ! command -v curl >/dev/null 2>&1; then
-  die "curl is required"
-fi
+for command_name in curl node; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    die "$command_name is required"
+  fi
+done
 
 tmp_files=()
 cleanup() {
@@ -107,28 +109,83 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fetch_all_models() {
-  local body_file
+declare -A model_providers=()
 
-  if ! command -v jq >/dev/null 2>&1; then
-    die "--all requires jq. Install jq or pass explicit --model values."
-  fi
+fetch_model_catalog() {
+  local body_file
 
   body_file="$(mktemp)"
   tmp_files+=("$body_file")
-
   curl_local -fsS -m 10 \
     -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
     "$(base_url)/v1/models" > "$body_file"
 
-  mapfile -t models < <(jq -r '.data[].id' "$body_file" | awk 'NF && !seen[$0]++')
+  while IFS=$'\t' read -r model provider; do
+    [[ -z "$model" ]] && continue
+    model_providers["$model"]="$provider"
+    if [[ "$all_models" == "1" ]]; then
+      models+=("$model")
+    fi
+  done < <(
+    node -e '
+      const fs = require("fs");
+      const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const seen = new Set();
+      for (const item of body.data || []) {
+        if (!item?.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        process.stdout.write(`${item.id}\t${item.display_name || ""}\n`);
+      }
+    ' "$body_file"
+  )
 }
 
 request_payload() {
   local model="$1"
   local stream="$2"
 
-  printf '{"model":"%s","max_tokens":64,"stream":%s,"messages":[{"role":"user","content":"只回复 OK。"}]}' "$model" "$stream"
+  printf '{"model":"%s","max_tokens":256,"stream":%s,"messages":[{"role":"user","content":"只回复 OK。不要解释。"}]}' "$model" "$stream"
+}
+
+non_stream_has_text() {
+  local body_file="$1"
+
+  node -e '
+    const fs = require("fs");
+    const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const blocks = Array.isArray(body.content) ? body.content : [];
+    const text = blocks
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text.trim())
+      .join("");
+    process.exit(text.length > 0 ? 0 : 1);
+  ' "$body_file"
+}
+
+stream_has_text() {
+  local body_file="$1"
+
+  node -e '
+    const fs = require("fs");
+    const raw = fs.readFileSync(process.argv[1], "utf8");
+    let event = "";
+    for (const line of raw.split(/\r?\n/)) {
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+        continue;
+      }
+      if (!line.startsWith("data:")) continue;
+      if (event !== "content_block_delta") continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(data);
+        const text = parsed?.delta?.text;
+        if (typeof text === "string" && text.trim().length > 0) process.exit(0);
+      } catch {}
+    }
+    process.exit(1);
+  ' "$body_file"
 }
 
 check_non_stream() {
@@ -159,12 +216,12 @@ check_non_stream() {
     return 1
   fi
 
-  if grep -Eq '"type"[[:space:]]*:[[:space:]]*"message"' "$body_file"; then
+  if non_stream_has_text "$body_file"; then
     printf 'PASS'
     return 0
   fi
 
-  printf 'FAIL: no message body'
+  printf 'FAIL: empty text'
   return 1
 }
 
@@ -201,17 +258,19 @@ check_stream() {
     return 1
   fi
 
-  if grep -q 'message_stop' "$body_file"; then
+  if stream_has_text "$body_file"; then
     printf 'PASS'
     return 0
   fi
 
-  printf 'FAIL: no message_stop'
+  printf 'FAIL: empty stream text'
   return 1
 }
 
+fetch_model_catalog
+
 if [[ "$all_models" == "1" ]]; then
-  fetch_all_models
+  mapfile -t models < <(printf '%s\n' "${models[@]}" | awk 'NF && !seen[$0]++')
 fi
 
 if [[ "${#models[@]}" -eq 0 ]]; then
@@ -223,13 +282,14 @@ if ! health_ok; then
 fi
 
 log "checking provider compatibility through $(base_url)"
-printf '| Model | Non-stream | Stream |\n'
-printf '| --- | --- | --- |\n'
+printf '| Model | Provider | Non-stream | Stream |\n'
+printf '| --- | --- | --- | --- |\n'
 
 failures=0
 for model in "${models[@]}"; do
   non_stream_result='SKIP'
   stream_result='SKIP'
+  provider="${model_providers[$model]:-unknown}"
 
   if [[ "$run_non_stream" == "1" ]]; then
     if non_stream_result="$(check_non_stream "$model")"; then
@@ -247,7 +307,7 @@ for model in "${models[@]}"; do
     fi
   fi
 
-  printf '| `%s` | %s | %s |\n' "$model" "$non_stream_result" "$stream_result"
+  printf '| `%s` | %s | %s | %s |\n' "$model" "$provider" "$non_stream_result" "$stream_result"
 done
 
 if [[ "$failures" -gt 0 ]]; then

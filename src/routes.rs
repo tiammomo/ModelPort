@@ -247,17 +247,7 @@ async fn models(
     let result = (|| {
         authenticate_client(&state, &headers)?;
         let config = effective_config(&state);
-        let data = config
-            .model_list()
-            .into_iter()
-            .map(|(id, display_name)| {
-                json!({
-                    "id": id,
-                    "type": "model",
-                    "display_name": display_name,
-                })
-            })
-            .collect::<Vec<_>>();
+        let data = public_model_rows(&config);
 
         Ok(Json(json!({
             "data": data,
@@ -271,6 +261,55 @@ async fn models(
         .metrics
         .record_route("models", result.is_ok(), started.elapsed());
     result
+}
+
+fn public_model_rows(config: &AppConfig) -> Vec<Value> {
+    let mut seen = BTreeSet::new();
+    let mut models = Vec::new();
+
+    for id in &config.provider_order {
+        let Some(provider) = config.providers.get(id) else {
+            continue;
+        };
+        if !provider_is_configured(provider) {
+            continue;
+        }
+
+        for model in &provider.models {
+            if seen.insert(model.clone()) {
+                models.push(json!({
+                    "id": model,
+                    "type": "model",
+                    "display_name": provider.display_name,
+                }));
+            }
+        }
+    }
+
+    for alias in config.aliases.keys() {
+        if seen.contains(alias) {
+            continue;
+        }
+        let Ok(resolved) = config.resolve(alias) else {
+            continue;
+        };
+        if !provider_is_configured(&resolved.provider) {
+            continue;
+        }
+        if seen.insert(alias.clone()) {
+            models.push(json!({
+                "id": alias,
+                "type": "model",
+                "display_name": resolved.provider.display_name,
+            }));
+        }
+    }
+
+    models
+}
+
+fn provider_is_configured(provider: &ProviderConfig) -> bool {
+    !provider.api_key_required || provider.api_key().ok().flatten().is_some()
 }
 
 async fn messages(
@@ -2244,6 +2283,72 @@ mod tests {
     };
 
     const CLIENT_TOKEN: &str = "client-token";
+
+    #[test]
+    fn public_model_rows_hide_unconfigured_providers() {
+        let active = ProviderConfig {
+            display_name: "Mimo".to_owned(),
+            protocol: ProviderProtocol::OpenaiCompat,
+            base_url: "http://mimo.local/v1".to_owned(),
+            api_key_env: None,
+            api_key: Some("upstream-key".to_owned()),
+            api_key_required: true,
+            default_model: "mimo-v2.5-pro".to_owned(),
+            models: vec!["mimo-v2.5-pro".to_owned()],
+            model_prefixes: vec!["mimo-".to_owned()],
+            passthrough_unknown_models: false,
+            max_tokens_field: MaxTokensField::MaxCompletionTokens,
+            deduplicate_stream_text: true,
+            buffer_stream_text: true,
+            fidelity_mode: FidelityMode::Stability,
+        };
+        let inactive = ProviderConfig {
+            display_name: "DeepSeek".to_owned(),
+            protocol: ProviderProtocol::Anthropic,
+            base_url: "http://deepseek.local/v1".to_owned(),
+            api_key_env: Some("DEEPSEEK_ANTHROPIC_AUTH_TOKEN".to_owned()),
+            api_key: None,
+            api_key_required: true,
+            default_model: "deepseek-v4-pro".to_owned(),
+            models: vec!["deepseek-v4-pro".to_owned()],
+            model_prefixes: vec!["deepseek-".to_owned()],
+            passthrough_unknown_models: false,
+            max_tokens_field: MaxTokensField::MaxTokens,
+            deduplicate_stream_text: false,
+            buffer_stream_text: false,
+            fidelity_mode: FidelityMode::BestEffort,
+        };
+        let config = AppConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            max_request_body_bytes: 1024 * 1024,
+            max_concurrent_requests: 16,
+            auth_token: Some(CLIENT_TOKEN.to_owned()),
+            default_provider: "mimo".to_owned(),
+            provider_order: vec!["deepseek".to_owned(), "mimo".to_owned()],
+            providers: HashMap::from([
+                ("deepseek".to_owned(), inactive),
+                ("mimo".to_owned(), active),
+            ]),
+            aliases: HashMap::from([
+                ("fast-chat".to_owned(), "mimo:mimo-v2.5-pro".to_owned()),
+                (
+                    "deepseek-route".to_owned(),
+                    "deepseek:deepseek-v4-pro".to_owned(),
+                ),
+            ]),
+        };
+
+        let rows = public_model_rows(&config);
+        let ids = rows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"mimo-v2.5-pro"));
+        assert!(ids.contains(&"fast-chat"));
+        assert!(!ids.contains(&"deepseek-v4-pro"));
+        assert!(!ids.contains(&"deepseek-route"));
+    }
 
     #[tokio::test]
     async fn routes_non_stream_openai_compatible_response() {
