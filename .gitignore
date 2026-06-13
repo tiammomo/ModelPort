@@ -1,3 +1,5 @@
 /target
 .env
 .modelport/
+dashboard/playwright-report/
+dashboard/test-results/

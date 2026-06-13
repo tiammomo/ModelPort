@@ -654,7 +654,7 @@ fn validate_admin_request_origin(headers: &HeaderMap) -> Result<(), AppError> {
         ));
     };
     let request_host = headers.get("host").and_then(|value| value.to_str().ok());
-    let same_origin = request_host.is_some_and(|host| host.eq_ignore_ascii_case(origin_host));
+    let same_origin = request_host.is_some_and(|host| console_host_matches(host, origin_host));
     let allowed_origin = env::var("MODELPORT_ALLOWED_ORIGINS")
         .ok()
         .is_some_and(|value| {
@@ -681,6 +681,42 @@ fn host_from_origin(value: &str) -> Option<&str> {
         .split('/')
         .next()
         .filter(|host| !host.is_empty())
+}
+
+fn console_host_matches(request_host: &str, origin_host: &str) -> bool {
+    if request_host.eq_ignore_ascii_case(origin_host) {
+        return true;
+    }
+
+    let Some(request_hostname) = hostname_from_authority(request_host) else {
+        return false;
+    };
+    let Some(origin_hostname) = hostname_from_authority(origin_host) else {
+        return false;
+    };
+
+    is_loopback_hostname(request_hostname) && is_loopback_hostname(origin_hostname)
+}
+
+fn hostname_from_authority(authority: &str) -> Option<&str> {
+    let authority = authority.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().filter(|host| !host.is_empty());
+    }
+    authority.split(':').next().filter(|host| !host.is_empty())
+}
+
+fn is_loopback_hostname(hostname: &str) -> bool {
+    let hostname = hostname.trim_matches(['[', ']']).trim_end_matches('.');
+    if hostname.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    hostname
+        .parse::<IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback())
 }
 
 fn ensure_api_key_access(
@@ -2268,7 +2304,7 @@ mod tests {
         body::{Body, to_bytes},
         http::{
             Request, StatusCode,
-            header::{CONTENT_TYPE, COOKIE, HeaderValue, SET_COOKIE},
+            header::{CONTENT_TYPE, COOKIE, HOST, HeaderValue, ORIGIN, SET_COOKIE},
         },
     };
     use serde_json::{Value, json};
@@ -2283,6 +2319,33 @@ mod tests {
     };
 
     const CLIENT_TOKEN: &str = "client-token";
+
+    #[test]
+    fn console_origin_allows_loopback_dev_ports() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:17878"));
+        headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:5173"));
+
+        assert!(validate_admin_request_origin(&headers).is_ok());
+    }
+
+    #[test]
+    fn console_origin_allows_localhost_to_loopback_dev_ports() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:17878"));
+        headers.insert(ORIGIN, HeaderValue::from_static("http://localhost:5173"));
+
+        assert!(validate_admin_request_origin(&headers).is_ok());
+    }
+
+    #[test]
+    fn console_origin_rejects_non_loopback_cross_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("modelport.internal"));
+        headers.insert(ORIGIN, HeaderValue::from_static("https://evil.example"));
+
+        assert!(validate_admin_request_origin(&headers).is_err());
+    }
 
     #[test]
     fn public_model_rows_hide_unconfigured_providers() {
