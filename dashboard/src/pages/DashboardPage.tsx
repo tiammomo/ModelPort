@@ -3,7 +3,7 @@ import { MetricCard } from '@/components/shared/MetricCard'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatNumber, formatRelativeTime } from '@/lib/utils'
+import { formatNumber, formatRelativeTime, parseDate } from '@/lib/utils'
 import { Activity, Users, Server, Clock, TrendingUp, AlertCircle, Info } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 
@@ -15,7 +15,7 @@ export function DashboardPage() {
   }
 
   const chartData = stats.requestTimeSeries.map((p, i) => ({
-    time: new Date(p.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+    time: formatChartTime(p.timestamp),
     requests: p.value,
     errors: stats.errorTimeSeries[i]?.value || 0,
   }))
@@ -192,4 +192,10 @@ export function DashboardPage() {
       </Card>
     </div>
   )
+}
+
+function formatChartTime(timestamp: string): string {
+  const date = parseDate(timestamp)
+  if (Number.isNaN(date.getTime())) return '--:--'
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }

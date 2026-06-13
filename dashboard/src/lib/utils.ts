@@ -56,7 +56,7 @@ export function formatRelativeTime(dateStr: string): string {
   return `${days} 天前`
 }
 
-function parseDate(dateStr: string): Date {
+export function parseDate(dateStr: string): Date {
   if (/^\d+$/.test(dateStr)) {
     return new Date(Number(dateStr))
   }
