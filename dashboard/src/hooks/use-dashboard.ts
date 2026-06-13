@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { dashboardService } from '@/services/dashboard.service'
+import { dashboardService, type DashboardStatsParams } from '@/services/dashboard.service'
 
 export const queryKeys = {
   dashboard: ['dashboard'] as const,
+  dashboardStats: (params: DashboardStatsParams) => ['dashboard', params] as const,
   users: ['users'] as const,
   user: (id: string) => ['users', id] as const,
   apiKeys: ['api-keys'] as const,
@@ -18,10 +19,10 @@ export const queryKeys = {
   settings: ['settings'] as const,
 } as const
 
-export function useDashboard() {
+export function useDashboard(params: DashboardStatsParams = {}) {
   return useQuery({
-    queryKey: queryKeys.dashboard,
-    queryFn: () => dashboardService.getStats(),
+    queryKey: queryKeys.dashboardStats(params),
+    queryFn: () => dashboardService.getStats(params),
     refetchInterval: 30000,
   })
 }

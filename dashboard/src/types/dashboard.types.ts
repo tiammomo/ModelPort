@@ -17,6 +17,12 @@ export interface DashboardStats {
   todayCacheWriteTokens?: number
   todayCacheReadTokens?: number
   todayCostEstimate?: number
+  trendRange?: {
+    range: '1d' | '3d' | '7d' | 'custom'
+    from: string
+    to: string
+    bucketMs: number
+  }
   requestTimeSeries: TimeSeriesPoint[]
   errorTimeSeries: TimeSeriesPoint[]
   topModels: Array<{ model: string; provider: string; requests: number }>

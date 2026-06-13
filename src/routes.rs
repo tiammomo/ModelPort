@@ -8,7 +8,7 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State, connect_info::ConnectInfo},
+    extract::{DefaultBodyLimit, Path, Query, State, connect_info::ConnectInfo},
     http::{
         HeaderMap, HeaderValue,
         header::{CONTENT_TYPE, HeaderName, SET_COOKIE},
@@ -16,6 +16,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
 use tower_http::{
@@ -42,6 +43,9 @@ use crate::{
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 const CSRF_HEADER: HeaderName = HeaderName::from_static("x-modelport-csrf");
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+const HOUR_MS: u64 = 60 * 60 * 1_000;
+const DAY_MS: u64 = 24 * HOUR_MS;
+const MAX_DASHBOARD_TREND_MS: u64 = 90 * DAY_MS;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,6 +66,22 @@ pub struct TrustedProxyConfig {
 enum IpRule {
     Exact(IpAddr),
     Cidr { base: IpAddr, prefix: u8 },
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardQuery {
+    range: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DashboardTrendWindow {
+    range: String,
+    start_ms: u64,
+    end_ms: u64,
+    bucket_ms: u64,
 }
 
 impl TrustedProxyConfig {
@@ -737,9 +757,11 @@ fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
 
 async fn admin_dashboard(
     State(state): State<AppState>,
+    Query(query): Query<DashboardQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     require_console_user(&state, &headers)?;
+    let trend_window = dashboard_trend_window(&query)?;
 
     let snapshot = state.metrics.snapshot();
     let total_requests = snapshot
@@ -797,7 +819,11 @@ async fn admin_dashboard(
         .count();
     let active_users = state.auth.active_user_count();
     let usage_summary = state.control.usage_summary_today();
-    let (usage_request_series, usage_error_series) = state.control.usage_time_series_24h();
+    let (usage_request_series, usage_error_series) = state.control.usage_time_series(
+        trend_window.start_ms,
+        trend_window.end_ms,
+        trend_window.bucket_ms,
+    );
     let usage_series_has_data = usage_request_series
         .iter()
         .any(|point| point.get("value").and_then(Value::as_u64).unwrap_or(0) > 0);
@@ -857,8 +883,14 @@ async fn admin_dashboard(
         "todayCacheWriteTokens": usage_summary.total_cache_write_tokens,
         "todayCacheReadTokens": usage_summary.total_cache_read_tokens,
         "todayCostEstimate": usage_summary.total_cost_estimate,
-        "requestTimeSeries": if usage_series_has_data { usage_request_series } else { time_series(total_requests) },
-        "errorTimeSeries": if usage_series_has_data { usage_error_series } else { time_series(total_failures) },
+        "trendRange": {
+            "range": trend_window.range,
+            "from": trend_window.start_ms.to_string(),
+            "to": trend_window.end_ms.to_string(),
+            "bucketMs": trend_window.bucket_ms,
+        },
+        "requestTimeSeries": if usage_series_has_data { usage_request_series } else { time_series(total_requests, &trend_window) },
+        "errorTimeSeries": if usage_series_has_data { usage_error_series } else { time_series(total_failures, &trend_window) },
         "topModels": if metric_top_models.is_empty() { usage_top_models } else { metric_top_models },
         "providerHealth": providers.iter().map(|provider| {
             let id = provider.get("id").and_then(Value::as_str).unwrap_or("");
@@ -2068,16 +2100,89 @@ fn fidelity_mode_value(mode: crate::config::FidelityMode) -> &'static str {
     }
 }
 
-fn time_series(value: u64) -> Vec<Value> {
+fn dashboard_trend_window(query: &DashboardQuery) -> Result<DashboardTrendWindow, AppError> {
     let now = now_millis();
-    (0..24)
+    let range = query.range.as_deref().unwrap_or("1d");
+    let (range, start_ms, end_ms) = match range {
+        "custom" => {
+            let start_ms = query
+                .from
+                .as_deref()
+                .and_then(parse_dashboard_time)
+                .ok_or_else(|| {
+                    AppError::InvalidRequest("custom dashboard range requires from".to_owned())
+                })?;
+            let end_ms = query
+                .to
+                .as_deref()
+                .and_then(parse_dashboard_time)
+                .ok_or_else(|| {
+                    AppError::InvalidRequest("custom dashboard range requires to".to_owned())
+                })?;
+            if start_ms >= end_ms {
+                return Err(AppError::InvalidRequest(
+                    "custom dashboard range requires from before to".to_owned(),
+                ));
+            }
+            ("custom".to_owned(), start_ms, end_ms.min(now))
+        }
+        "3d" => ("3d".to_owned(), now.saturating_sub(3 * DAY_MS), now),
+        "7d" => ("7d".to_owned(), now.saturating_sub(7 * DAY_MS), now),
+        _ => ("1d".to_owned(), now.saturating_sub(DAY_MS), now),
+    };
+    let duration_ms = end_ms.saturating_sub(start_ms).max(HOUR_MS);
+    if duration_ms > MAX_DASHBOARD_TREND_MS {
+        return Err(AppError::InvalidRequest(
+            "dashboard range cannot exceed 90 days".to_owned(),
+        ));
+    }
+
+    Ok(DashboardTrendWindow {
+        range,
+        start_ms,
+        end_ms,
+        bucket_ms: dashboard_bucket_ms(duration_ms),
+    })
+}
+
+fn parse_dashboard_time(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
+}
+
+fn dashboard_bucket_ms(duration_ms: u64) -> u64 {
+    if duration_ms <= DAY_MS {
+        HOUR_MS
+    } else if duration_ms <= 3 * DAY_MS {
+        3 * HOUR_MS
+    } else if duration_ms <= 7 * DAY_MS {
+        6 * HOUR_MS
+    } else if duration_ms <= 31 * DAY_MS {
+        DAY_MS
+    } else {
+        7 * DAY_MS
+    }
+}
+
+fn time_series(value: u64, window: &DashboardTrendWindow) -> Vec<Value> {
+    let bucket_count = bucket_count(window.start_ms, window.end_ms, window.bucket_ms);
+    (0..bucket_count)
         .map(|offset| {
+            let timestamp = window
+                .start_ms
+                .saturating_add(offset.saturating_mul(window.bucket_ms));
             json!({
-                "timestamp": (now.saturating_sub((23 - offset) * 3_600_000)).to_string(),
-                "value": if offset == 23 { value } else { 0 },
+                "timestamp": timestamp.to_string(),
+                "value": if offset + 1 == bucket_count { value } else { 0 },
             })
         })
         .collect()
+}
+
+fn bucket_count(start_ms: u64, end_ms: u64, bucket_ms: u64) -> u64 {
+    if bucket_ms == 0 || end_ms <= start_ms {
+        return 1;
+    }
+    end_ms.saturating_sub(start_ms) / bucket_ms + 1
 }
 
 fn percent(successes: u64, total: u64) -> f64 {

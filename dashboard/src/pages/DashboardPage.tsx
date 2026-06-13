@@ -1,21 +1,40 @@
+import { useMemo, useState } from 'react'
 import { useDashboard } from '@/hooks'
 import { MetricCard } from '@/components/shared/MetricCard'
 import { StatusBadge } from '@/components/shared/StatusBadge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatNumber, formatRelativeTime, parseDate } from '@/lib/utils'
+import type { DashboardRange, DashboardStatsParams } from '@/services/dashboard.service'
 import { Activity, Users, Server, Clock, TrendingUp, AlertCircle, Info } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 
+const DAY_MS = 24 * 60 * 60 * 1000
+const TREND_RANGES: Array<{ value: DashboardRange; label: string }> = [
+  { value: '1d', label: '近1天' },
+  { value: '3d', label: '近3天' },
+  { value: '7d', label: '近7天' },
+  { value: 'custom', label: '自定义' },
+]
+
 export function DashboardPage() {
-  const { data: stats, isLoading } = useDashboard()
+  const [trendRange, setTrendRange] = useState<DashboardRange>('1d')
+  const [customFrom, setCustomFrom] = useState(() => toDateTimeLocal(Date.now() - DAY_MS))
+  const [customTo, setCustomTo] = useState(() => toDateTimeLocal(Date.now()))
+  const dashboardParams = useMemo(
+    () => dashboardTrendParams(trendRange, customFrom, customTo),
+    [customFrom, customTo, trendRange],
+  )
+  const { data: stats, isLoading } = useDashboard(dashboardParams)
 
   if (isLoading || !stats) {
     return <div className="flex items-center justify-center h-64 text-muted-foreground">加载中...</div>
   }
 
   const chartData = stats.requestTimeSeries.map((p, i) => ({
-    time: formatChartTime(p.timestamp),
+    time: formatChartTime(p.timestamp, stats.trendRange?.bucketMs),
     requests: p.value,
     errors: stats.errorTimeSeries[i]?.value || 0,
   }))
@@ -54,6 +73,38 @@ export function DashboardPage() {
           icon={Clock}
           description={`In ${formatNumber(stats.todayInputTokens ?? 0)} / Out ${formatNumber(stats.todayOutputTokens ?? 0)} / Cache ${formatNumber((stats.todayCacheWriteTokens ?? 0) + (stats.todayCacheReadTokens ?? 0))}`}
         />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {TREND_RANGES.map((option) => (
+          <Button
+            key={option.value}
+            type="button"
+            size="sm"
+            variant={trendRange === option.value ? 'default' : 'outline'}
+            onClick={() => setTrendRange(option.value)}
+          >
+            {option.label}
+          </Button>
+        ))}
+        {trendRange === 'custom' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              aria-label="开始时间"
+              type="datetime-local"
+              value={customFrom}
+              onChange={(event) => setCustomFrom(event.target.value)}
+              className="w-[170px]"
+            />
+            <Input
+              aria-label="结束时间"
+              type="datetime-local"
+              value={customTo}
+              onChange={(event) => setCustomTo(event.target.value)}
+              className="w-[170px]"
+            />
+          </div>
+        )}
       </div>
 
       {/* Charts */}
@@ -194,8 +245,35 @@ export function DashboardPage() {
   )
 }
 
-function formatChartTime(timestamp: string): string {
+function dashboardTrendParams(range: DashboardRange, from: string, to: string): DashboardStatsParams {
+  if (range !== 'custom') return { range }
+  const fromMs = dateTimeLocalToMillis(from)
+  const toMs = dateTimeLocalToMillis(to)
+  if (!fromMs || !toMs || Number(fromMs) >= Number(toMs)) return { range: '1d' }
+  return { range, from: fromMs, to: toMs }
+}
+
+function formatChartTime(timestamp: string, bucketMs?: number): string {
   const date = parseDate(timestamp)
   if (Number.isNaN(date.getTime())) return '--:--'
+  if (bucketMs && bucketMs > 60 * 60 * 1000) {
+    return date.toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function toDateTimeLocal(timestamp: number): string {
+  const date = new Date(timestamp)
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return localDate.toISOString().slice(0, 16)
+}
+
+function dateTimeLocalToMillis(value: string): string | undefined {
+  const timestamp = new Date(value).getTime()
+  return Number.isFinite(timestamp) ? String(timestamp) : undefined
 }

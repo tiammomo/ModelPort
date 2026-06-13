@@ -1433,21 +1433,31 @@ impl ControlStore {
             .collect()
     }
 
-    pub fn usage_time_series_24h(&self) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    pub fn usage_time_series(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        bucket_ms: u64,
+    ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
         let inner = self.inner.lock().expect("control lock poisoned");
-        let now = now_millis();
-        let hour_ms = 60 * 60 * 1_000;
-        let window_start = now.saturating_sub(23 * hour_ms);
-        let mut requests = [0u64; 24];
-        let mut errors = [0u64; 24];
+        let bucket_ms = bucket_ms.max(1);
+        let bucket_count = if end_ms <= start_ms {
+            1
+        } else {
+            usize::try_from(end_ms.saturating_sub(start_ms) / bucket_ms + 1).unwrap_or(usize::MAX)
+        };
+        let mut requests = vec![0u64; bucket_count];
+        let mut errors = vec![0u64; bucket_count];
 
         for record in inner
             .usage
             .iter()
-            .filter(|record| record.timestamp_ms >= window_start)
+            .filter(|record| record.timestamp_ms >= start_ms && record.timestamp_ms <= end_ms)
         {
-            let offset = record.timestamp_ms.saturating_sub(window_start) / hour_ms;
-            let index = usize::try_from(offset.min(23)).unwrap_or(23);
+            let offset = record.timestamp_ms.saturating_sub(start_ms) / bucket_ms;
+            let index = usize::try_from(offset)
+                .unwrap_or(bucket_count.saturating_sub(1))
+                .min(bucket_count.saturating_sub(1));
             requests[index] = requests[index].saturating_add(1);
             if record.status != "success" {
                 errors[index] = errors[index].saturating_add(1);
@@ -1459,7 +1469,7 @@ impl ControlStore {
             .enumerate()
             .map(|(index, value)| {
                 json!({
-                    "timestamp": window_start.saturating_add(u64::try_from(index).unwrap_or(0) * hour_ms).to_string(),
+                    "timestamp": start_ms.saturating_add(u64::try_from(index).unwrap_or(0) * bucket_ms).to_string(),
                     "value": value,
                 })
             })
@@ -1469,7 +1479,7 @@ impl ControlStore {
             .enumerate()
             .map(|(index, value)| {
                 json!({
-                    "timestamp": window_start.saturating_add(u64::try_from(index).unwrap_or(0) * hour_ms).to_string(),
+                    "timestamp": start_ms.saturating_add(u64::try_from(index).unwrap_or(0) * bucket_ms).to_string(),
                     "value": value,
                 })
             })
