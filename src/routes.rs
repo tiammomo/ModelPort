@@ -366,9 +366,14 @@ async fn messages(
         .unwrap_or(estimate);
 
     state.metrics.record_route("messages", success, duration);
-    state
-        .metrics
-        .record_message(&provider_id, &upstream_model, stream, success, duration);
+    state.metrics.record_message(
+        &provider_id,
+        &upstream_model,
+        stream,
+        success,
+        duration,
+        actual_estimate,
+    );
     state.control.record_usage(UsageEventInput {
         identity,
         model: requested_model,
@@ -861,6 +866,11 @@ async fn admin_dashboard(
             let metric_requests = provider_messages.iter().map(|message| message.requests_total).sum::<u64>();
             let metric_successes = provider_messages.iter().map(|message| message.successes_total).sum::<u64>();
             let metric_duration = provider_messages.iter().map(|message| message.duration_ms_total).sum::<u64>();
+            let input_tokens = provider_messages.iter().map(|message| message.input_tokens_total).sum::<u64>();
+            let output_tokens = provider_messages.iter().map(|message| message.output_tokens_total).sum::<u64>();
+            let cache_write_tokens = provider_messages.iter().map(|message| message.cache_write_tokens_total).sum::<u64>();
+            let cache_read_tokens = provider_messages.iter().map(|message| message.cache_read_tokens_total).sum::<u64>();
+            let cost_estimate = provider_messages.iter().map(|message| message.cost_estimate_usd_total).sum::<f64>();
             let persisted = persisted_provider_usage.get(id);
             let requests = if metric_requests > 0 { metric_requests } else { persisted.map(|stats| stats.requests_total).unwrap_or(0) };
             let successes = if metric_requests > 0 { metric_successes } else { persisted.map(|stats| stats.successes_total).unwrap_or(0) };
@@ -884,6 +894,11 @@ async fn admin_dashboard(
                 "requestsTotal": requests,
                 "successRate": success_rate,
                 "avgLatencyMs": average(duration, requests),
+                "inputTokensTotal": input_tokens,
+                "outputTokensTotal": output_tokens,
+                "cacheWriteTokensTotal": cache_write_tokens,
+                "cacheReadTokensTotal": cache_read_tokens,
+                "costEstimateUsdTotal": cost_estimate,
             })
         }).collect::<Vec<_>>(),
         "recentActivity": if recent_activity.is_empty() { fallback_activity } else { recent_activity },
