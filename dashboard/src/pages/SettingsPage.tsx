@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useAuditEvents, useExportBackup, useProviders, useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
+import { useAuditEvents, useExportBackup, useProviders, useReloadConfig, useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
 import { useAuthStore } from '@/stores'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
@@ -23,6 +23,7 @@ import {
   Download,
   Loader2,
   Plug,
+  RefreshCw,
   Save,
   ShieldCheck,
 } from 'lucide-react'
@@ -49,6 +50,7 @@ export function SettingsPage() {
 function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) {
   const updateSettings = useUpdateSettings()
   const testConnection = useTestProviderConnection()
+  const reloadConfig = useReloadConfig()
   const exportBackup = useExportBackup()
   const { data: providers = [] } = useProviders()
   const { data: auditEvents } = useAuditEvents()
@@ -119,6 +121,25 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
       },
       onError: (error) => {
         setNotice({ type: 'error', message: error instanceof Error ? error.message : '导出失败' })
+      },
+    })
+  }
+
+  const handleReloadConfig = () => {
+    setNotice(null)
+    reloadConfig.mutate(undefined, {
+      onSuccess: (result) => {
+        setForm(result.settings)
+        const warningCount = result.issues.filter((issue) => issue.severity === 'warning').length
+        setNotice({
+          type: 'success',
+          message: warningCount > 0
+            ? `配置已热加载，${result.providerCount} 个供应商，${warningCount} 条告警`
+            : `配置已热加载，${result.providerCount} 个供应商可路由`,
+        })
+      },
+      onError: (error) => {
+        setNotice({ type: 'error', message: error instanceof Error ? error.message : '热加载失败' })
       },
     })
   }
@@ -308,8 +329,16 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
         </TabsContent>
 
         <TabsContent value="operations">
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 lg:grid-cols-3">
             <RuntimeCard runtime={form.runtime} />
+            <ConfigReloadCard
+              isPending={reloadConfig.isPending}
+              isDisabled={currentUser?.role !== 'admin'}
+              warningCount={form.setup?.issues.filter((issue) => issue.severity === 'warning').length ?? 0}
+              providerCount={form.gateway.providerOrder.length}
+              defaultProvider={form.gateway.defaultProvider}
+              onReload={handleReloadConfig}
+            />
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -445,6 +474,62 @@ function RuntimeCard({ runtime }: { runtime?: SystemSettings['runtime'] }) {
             </Button>
           </div>
         ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ConfigReloadCard({
+  isPending,
+  isDisabled,
+  warningCount,
+  providerCount,
+  defaultProvider,
+  onReload,
+}: {
+  isPending: boolean
+  isDisabled: boolean
+  warningCount: number
+  providerCount: number
+  defaultProvider: string
+  onReload: () => void
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <RefreshCw className="h-4 w-4" />
+          配置热加载
+        </CardTitle>
+        <CardDescription>重新读取 provider、密钥、Base URL 与模型列表</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">供应商</span>
+            <Badge variant="secondary">{providerCount}</Badge>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">默认路由</span>
+            <span className="max-w-40 truncate font-mono text-xs">{defaultProvider}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">校验告警</span>
+            <Badge variant={warningCount > 0 ? 'outline' : 'success'}>{warningCount}</Badge>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          监听端口、并发层、请求体上限、HTTP 超时和可信代理仍需重启后端。
+        </p>
+        <Button
+          onClick={onReload}
+          disabled={isPending || isDisabled}
+          className="w-full"
+          variant="outline"
+        >
+          {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+          热重载配置
+        </Button>
       </CardContent>
     </Card>
   )

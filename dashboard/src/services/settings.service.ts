@@ -1,4 +1,4 @@
-import type { AuditEventsResponse, BackupExport, SystemSettings } from '@/types'
+import type { AuditEventsResponse, BackupExport, ConfigReloadResult, SystemSettings } from '@/types'
 import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay } from '@/lib/mock-mode'
 import { mockProviders, mockSettings } from '@/mock'
@@ -27,6 +27,22 @@ export const settingsService = {
       models,
       modelCount: models.length,
       testedAt: new Date().toISOString(),
+    }, 220)
+  },
+
+  reloadConfig: (): Promise<ConfigReloadResult> => {
+    if (!isMockMode) return api.post('/admin/settings/reload-config')
+    return mockDelay({
+      ok: true,
+      settings: mockSettingsStore,
+      providerCount: mockSettingsStore.gateway.providerOrder.length,
+      defaultProvider: mockSettingsStore.gateway.defaultProvider,
+      providerOrder: mockSettingsStore.gateway.providerOrder,
+      issues: mockSettingsStore.setup?.issues ?? [],
+      reloadScope: {
+        applied: ['providers', 'provider credentials', 'base urls', 'model lists', 'aliases', 'legacy client auth token'],
+        requiresRestart: ['bind address', 'request body limit', 'concurrency layer', 'HTTP client timeouts', 'trusted proxies', 'admin bootstrap account'],
+      },
     }, 220)
   },
 

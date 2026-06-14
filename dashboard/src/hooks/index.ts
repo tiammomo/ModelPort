@@ -3,4 +3,4 @@ export { useUsers, useUser, useApiKeys, useTeams, useUpsertTeam, useDeleteTeam, 
 export { useQuotas, useUpdateQuota, useCreateQuota, useDeleteQuota } from './use-quotas'
 export { useProviders, useProvider, useAliases, useToggleModel, useDiscoverProviderModels, useCreateAlias, useDeleteAlias, useUpdateDefaultProvider } from './use-models'
 export { useLogs, useLogById, useLatencyStats } from './use-logs'
-export { useSettings, useUpdateSettings, useTestProviderConnection, useAuditEvents, useExportBackup } from './use-settings'
+export { useSettings, useUpdateSettings, useTestProviderConnection, useReloadConfig, useAuditEvents, useExportBackup } from './use-settings'

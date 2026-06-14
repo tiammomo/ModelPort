@@ -24,6 +24,20 @@ export function useTestProviderConnection() {
   })
 }
 
+export function useReloadConfig() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => settingsService.reloadConfig(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.settings })
+      qc.invalidateQueries({ queryKey: queryKeys.providers })
+      qc.invalidateQueries({ queryKey: queryKeys.aliases })
+      qc.invalidateQueries({ queryKey: queryKeys.dashboard })
+      qc.invalidateQueries({ queryKey: ['audit-events'] })
+    },
+  })
+}
+
 export function useAuditEvents() {
   return useQuery({
     queryKey: ['audit-events'] as const,

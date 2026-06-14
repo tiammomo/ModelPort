@@ -57,6 +57,22 @@ export interface SetupCheck {
   detail: string
 }
 
+export interface ConfigReloadResult {
+  ok: boolean
+  settings: SystemSettings
+  providerCount: number
+  defaultProvider: string
+  providerOrder: string[]
+  issues: Array<{
+    severity: 'error' | 'warning'
+    message: string
+  }>
+  reloadScope?: {
+    applied: string[]
+    requiresRestart: string[]
+  }
+}
+
 export interface AuditEvent {
   id: string
   timestamp: string
