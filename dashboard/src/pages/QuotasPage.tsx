@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuotas, useCreateQuota, useDeleteQuota } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { MetricCard } from '@/components/shared/MetricCard'
 import { LoadingPage } from '@/components/shared/LoadingPage'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { PaginationBar } from '@/components/shared/PaginationBar'
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Gauge, Plus, Trash2, AlertTriangle } from 'lucide-react'
 import { cn, formatNumber, formatDate } from '@/lib/utils'
+import { paginateItems } from '@/lib/pagination'
 import type { QuotaType, QuotaPeriod } from '@/types'
 
 export function QuotasPage() {
@@ -24,6 +26,8 @@ export function QuotasPage() {
 
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [quotaPage, setQuotaPage] = useState(1)
+  const [quotaPageSize, setQuotaPageSize] = useState(20)
   const [form, setForm] = useState({
     userId: '',
     username: '',
@@ -35,6 +39,7 @@ export function QuotasPage() {
   const totalLimit = quotas.reduce((s, q) => s + q.limit, 0)
   const totalUsed = quotas.reduce((s, q) => s + q.used, 0)
   const overQuota = quotas.filter((q) => q.used / q.limit > 0.9).length
+  const quotaWindow = useMemo(() => paginateItems(quotas, quotaPage, quotaPageSize), [quotaPage, quotaPageSize, quotas])
 
   const getUsagePercent = (used: number, limit: number) => {
     if (limit <= 0) return 0
@@ -108,7 +113,7 @@ export function QuotasPage() {
                     />
                   </TableCell>
                 </TableRow>
-              ) : quotas.map((quota) => {
+              ) : quotaWindow.items.map((quota) => {
                 const percent = getUsagePercent(quota.used, quota.limit)
                 return (
                   <TableRow key={quota.id}>
@@ -142,6 +147,22 @@ export function QuotasPage() {
             </TableBody>
           </Table>
         </CardContent>
+        <CardFooter className="border-t px-4 py-3">
+          <PaginationBar
+            total={quotas.length}
+            page={quotaWindow.currentPage}
+            pageSize={quotaPageSize}
+            totalPages={quotaWindow.totalPages}
+            start={quotaWindow.start}
+            end={quotaWindow.end}
+            totalLabel="条配额"
+            onPageChange={(page) => setQuotaPage(Math.min(Math.max(page, 1), quotaWindow.totalPages))}
+            onPageSizeChange={(pageSize) => {
+              setQuotaPageSize(pageSize)
+              setQuotaPage(1)
+            }}
+          />
+        </CardFooter>
       </Card>
 
       {/* Create Dialog */}

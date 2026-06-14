@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useUserApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { LoadingPage } from '@/components/shared/LoadingPage'
 import { EmptyState } from '@/components/shared/EmptyState'
+import { PaginationBar } from '@/components/shared/PaginationBar'
 import { toast } from 'sonner'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardFooter } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { formatDate, formatNumber } from '@/lib/utils'
+import { paginateItems } from '@/lib/pagination'
 import { ROLE_LABELS } from '@/lib/constants'
 import { UserPlus, Key, Trash2, Copy, MoreHorizontal, Pencil } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -50,6 +52,10 @@ export function UsersPage() {
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [newKeyResult, setNewKeyResult] = useState<string | null>(null)
+  const [usersPage, setUsersPage] = useState(1)
+  const [usersPageSize, setUsersPageSize] = useState(20)
+  const [userKeysPage, setUserKeysPage] = useState(1)
+  const [userKeysPageSize, setUserKeysPageSize] = useState(10)
 
   const [form, setForm] = useState({
     username: '',
@@ -62,6 +68,11 @@ export function UsersPage() {
   const [keyName, setKeyName] = useState('')
 
   const { data: userApiKeys = [] } = useUserApiKeys(showDetailUser || '')
+  const usersWindow = useMemo(() => paginateItems(users, usersPage, usersPageSize), [users, usersPage, usersPageSize])
+  const userKeysWindow = useMemo(
+    () => paginateItems(userApiKeys, userKeysPage, userKeysPageSize),
+    [userApiKeys, userKeysPage, userKeysPageSize],
+  )
 
   const handleCreateUser = () => {
     createUser.mutate(form, {
@@ -118,6 +129,12 @@ export function UsersPage() {
 
   const mutationError = errorMessage(deleteUser.error || revokeApiKey.error)
 
+  const openUserKeys = (userId: string) => {
+    setShowDetailUser(userId)
+    setUserKeysPage(1)
+    setNewKeyResult(null)
+  }
+
   const roleBadgeVariant = (role: string) => {
     if (role === 'admin') return 'default'
     if (role === 'viewer') return 'secondary'
@@ -164,7 +181,7 @@ export function UsersPage() {
                     />
                   </TableCell>
                 </TableRow>
-              ) : users.map((user) => (
+              ) : usersWindow.items.map((user) => (
                 <TableRow key={user.id}>
                   <TableCell className="font-medium">{user.username}</TableCell>
                   <TableCell className="text-muted-foreground">{user.email}</TableCell>
@@ -189,7 +206,7 @@ export function UsersPage() {
                           <Pencil className="mr-2 h-4 w-4" />
                           编辑用户
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowDetailUser(user.id)}>
+                        <DropdownMenuItem onClick={() => openUserKeys(user.id)}>
                           <Key className="mr-2 h-4 w-4" />
                           管理 API Keys
                         </DropdownMenuItem>
@@ -217,6 +234,22 @@ export function UsersPage() {
             </TableBody>
           </Table>
         </CardContent>
+        <CardFooter className="border-t px-4 py-3">
+          <PaginationBar
+            total={users.length}
+            page={usersWindow.currentPage}
+            pageSize={usersPageSize}
+            totalPages={usersWindow.totalPages}
+            start={usersWindow.start}
+            end={usersWindow.end}
+            totalLabel="个用户"
+            onPageChange={(page) => setUsersPage(Math.min(Math.max(page, 1), usersWindow.totalPages))}
+            onPageSizeChange={(pageSize) => {
+              setUsersPageSize(pageSize)
+              setUsersPage(1)
+            }}
+          />
+        </CardFooter>
       </Card>
 
       {/* Create User Dialog */}
@@ -331,7 +364,7 @@ export function UsersPage() {
       </Dialog>
 
       {/* User Detail / API Keys Dialog */}
-      <Dialog open={!!showDetailUser} onOpenChange={() => { setShowDetailUser(null); setNewKeyResult(null) }}>
+      <Dialog open={!!showDetailUser} onOpenChange={() => { setShowDetailUser(null); setNewKeyResult(null); setUserKeysPage(1) }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>API 密钥管理</DialogTitle>
@@ -380,7 +413,7 @@ export function UsersPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {userApiKeys.map((key) => (
+                  {userKeysWindow.items.map((key) => (
                     <TableRow key={key.id}>
                       <TableCell className="font-medium">{key.name}</TableCell>
                       <TableCell className="font-mono text-xs">{key.keyPreview || key.keyPrefix}</TableCell>
@@ -413,6 +446,22 @@ export function UsersPage() {
                   ))}
                 </TableBody>
               </Table>
+              <PaginationBar
+                total={userApiKeys.length}
+                page={userKeysWindow.currentPage}
+                pageSize={userKeysPageSize}
+                totalPages={userKeysWindow.totalPages}
+                start={userKeysWindow.start}
+                end={userKeysWindow.end}
+                totalLabel="个 API 密钥"
+                pageSizeOptions={[5, 10, 20, 50]}
+                className="border-t pt-3"
+                onPageChange={(page) => setUserKeysPage(Math.min(Math.max(page, 1), userKeysWindow.totalPages))}
+                onPageSizeChange={(pageSize) => {
+                  setUserKeysPageSize(pageSize)
+                  setUserKeysPage(1)
+                }}
+              />
             </div>
           )}
         </DialogContent>

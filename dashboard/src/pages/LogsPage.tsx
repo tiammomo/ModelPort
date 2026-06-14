@@ -3,7 +3,7 @@ import { useLogs } from '@/hooks'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { Clock3, Radio } from 'lucide-react'
+import { Radio } from 'lucide-react'
 import type { LogFilters, RequestLog } from '@/types'
 import { formatInteger } from './logs/log-utils'
 import { LogsSummaryGrid } from './logs/LogsSummary'
@@ -11,17 +11,23 @@ import { LogsFilters } from './logs/LogsFilters'
 import { LogsTable } from './logs/LogsTable'
 import { LogsDrawer } from './logs/LogsDrawer'
 
-const PAGE_SIZE = 200
+const LOG_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 
 export function LogsPage() {
   const [filters, setFilters] = useState<LogFilters>({})
   const [liveMode, setLiveMode] = useState(false)
   const [selectedLog, setSelectedLog] = useState<RequestLog | null>(null)
+  const [logPage, setLogPage] = useState(1)
+  const [logPageSize, setLogPageSize] = useState(50)
 
-  const { data, isLoading, refetch } = useLogs(filters, 1, PAGE_SIZE)
+  const { data, isLoading, refetch } = useLogs(filters, logPage, logPageSize)
   const logs = data?.logs || []
   const total = data?.total || 0
   const summary = data?.summary
+  const totalLogPages = Math.max(1, Math.ceil(total / logPageSize))
+  const currentLogPage = Math.min(Math.max(logPage, 1), totalLogPages)
+  const logPageStart = total === 0 ? 0 : (currentLogPage - 1) * logPageSize + 1
+  const logPageEnd = Math.min(total, (currentLogPage - 1) * logPageSize + logs.length)
 
   // Live mode: refetch every 3 seconds
   useEffect(() => {
@@ -32,6 +38,18 @@ export function LogsPage() {
 
   const handleFiltersChange = (next: LogFilters) => {
     setFilters(next)
+    setLogPage(1)
+    setSelectedLog(null)
+  }
+
+  const handleLogPageChange = (page: number) => {
+    setLogPage(Math.min(Math.max(page, 1), totalLogPages))
+    setSelectedLog(null)
+  }
+
+  const handleLogPageSizeChange = (pageSize: number) => {
+    setLogPageSize(pageSize)
+    setLogPage(1)
     setSelectedLog(null)
   }
 
@@ -78,12 +96,6 @@ export function LogsPage() {
               <Radio className={cn('h-3.5 w-3.5', liveMode && 'animate-pulse')} />
               实时
             </Button>
-
-            <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm shadow-sm">
-              <Clock3 className="h-4 w-4 text-muted-foreground" />
-              <span className="text-muted-foreground">每页</span>
-              <span className="font-mono font-semibold">{PAGE_SIZE}</span>
-            </div>
           </div>
         </div>
       </section>
@@ -102,7 +114,15 @@ export function LogsPage() {
       <LogsTable
         logs={logs}
         total={total}
+        page={currentLogPage}
+        pageSize={logPageSize}
+        totalPages={totalLogPages}
+        start={logPageStart}
+        end={logPageEnd}
+        pageSizeOptions={LOG_PAGE_SIZE_OPTIONS}
         isLoading={isLoading}
+        onPageChange={handleLogPageChange}
+        onPageSizeChange={handleLogPageSizeChange}
         onSelectLog={setSelectedLog}
       />
 

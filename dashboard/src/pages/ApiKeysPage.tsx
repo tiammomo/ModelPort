@@ -4,7 +4,8 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { Skeleton } from '@/components/shared/Skeleton'
-import { Card, CardContent } from '@/components/ui/card'
+import { PaginationBar } from '@/components/shared/PaginationBar'
+import { Card, CardContent, CardFooter } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Progress } from '@/components/ui/progress'
 import { cn, formatDate, formatNumber } from '@/lib/utils'
+import { paginateItems } from '@/lib/pagination'
 import { CalendarClock, Copy, DollarSign, FolderKanban, KeyRound, Pencil, Plus, RotateCw, Search, ShieldCheck, ShieldOff, Trash2, Zap } from 'lucide-react'
 import type { ApiKey, Team } from '@/types'
 import { toast } from 'sonner'
@@ -22,6 +24,7 @@ import { toast } from 'sonner'
 const ALL = '__all__'
 const NO_GROUP = '__none__'
 const NO_TEAM = '__none_team__'
+const TEAM_PAGE_SIZE_OPTIONS = [4, 8, 12]
 
 interface ConfirmAction {
   title: string
@@ -88,6 +91,8 @@ export function ApiKeysPage() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState(ALL)
   const [group, setGroup] = useState(ALL)
+  const [keysPage, setKeysPage] = useState(1)
+  const [keysPageSize, setKeysPageSize] = useState(20)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
@@ -113,14 +118,15 @@ export function ApiKeysPage() {
     return Array.from(new Set(apiKeys.map((key) => key.group).filter(Boolean))).sort()
   }, [apiKeys])
 
-  const filteredKeys = apiKeys.filter((key) => {
+  const filteredKeys = useMemo(() => apiKeys.filter((key) => {
     const haystack = `${key.name} ${key.username || ''} ${key.keyPreview || key.keyPrefix} ${key.group || ''}`.toLowerCase()
     if (search && !haystack.includes(search.toLowerCase())) return false
     if (status !== ALL && key.status !== status) return false
     if (group === NO_GROUP && key.group) return false
     if (group !== ALL && group !== NO_GROUP && key.group !== group) return false
     return true
-  })
+  }), [apiKeys, group, search, status])
+  const keyWindow = paginateItems(filteredKeys, keysPage, keysPageSize)
 
   const activeKeys = apiKeys.filter((key) => key.status === 'active').length
   const revokedKeys = apiKeys.length - activeKeys
@@ -237,6 +243,15 @@ export function ApiKeysPage() {
 
   const mutationError = errorMessage(deleteApiKey.error || revokeApiKey.error || updateApiKey.error)
 
+  const handleKeysPageChange = (page: number) => {
+    setKeysPage(Math.min(Math.max(page, 1), keyWindow.totalPages))
+  }
+
+  const handleKeysPageSizeChange = (pageSize: number) => {
+    setKeysPageSize(pageSize)
+    setKeysPage(1)
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-md border bg-card p-4 shadow-sm">
@@ -265,10 +280,19 @@ export function ApiKeysPage() {
               className="h-11 rounded-md bg-background pl-9"
               placeholder="搜索名称、用户或 Key..."
               value={search}
-              onChange={(event) => setSearch(event.target.value)}
+              onChange={(event) => {
+                setSearch(event.target.value)
+                setKeysPage(1)
+              }}
             />
           </div>
-          <Select value={group} onValueChange={setGroup}>
+          <Select
+            value={group}
+            onValueChange={(value) => {
+              setGroup(value)
+              setKeysPage(1)
+            }}
+          >
             <SelectTrigger className="h-11 w-[180px] bg-background"><SelectValue placeholder="全部分组" /></SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>全部分组</SelectItem>
@@ -278,7 +302,13 @@ export function ApiKeysPage() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={status} onValueChange={setStatus}>
+          <Select
+            value={status}
+            onValueChange={(value) => {
+              setStatus(value)
+              setKeysPage(1)
+            }}
+          >
             <SelectTrigger className="h-11 w-[160px] bg-background"><SelectValue placeholder="全部状态" /></SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>全部状态</SelectItem>
@@ -349,7 +379,7 @@ export function ApiKeysPage() {
                     />
                   </TableCell>
                 </TableRow>
-              ) : filteredKeys.map((key) => (
+              ) : keyWindow.items.map((key) => (
                 <TableRow key={key.id} className="h-[94px]">
                   <TableCell className="sticky left-0 z-10 border-r bg-card px-5 font-medium">
                     <div className="space-y-1">
@@ -444,6 +474,19 @@ export function ApiKeysPage() {
             </TableBody>
           </Table>
         </CardContent>
+        <CardFooter className="border-t px-5 py-3">
+          <PaginationBar
+            total={filteredKeys.length}
+            page={keyWindow.currentPage}
+            pageSize={keysPageSize}
+            totalPages={keyWindow.totalPages}
+            start={keyWindow.start}
+            end={keyWindow.end}
+            totalLabel="个 API 密钥"
+            onPageChange={handleKeysPageChange}
+            onPageSizeChange={handleKeysPageSizeChange}
+          />
+        </CardFooter>
       </Card>
 
       <Dialog open={showCreateDialog} onOpenChange={(open) => { setShowCreateDialog(open); if (!open) setNewKey(null) }}>
@@ -750,6 +793,10 @@ function TeamStrip({
   onChange: (patch: Partial<TeamForm>) => void
   onCreate: () => void
 }) {
+  const [teamPage, setTeamPage] = useState(1)
+  const [teamPageSize, setTeamPageSize] = useState(4)
+  const teamWindow = paginateItems(teams, teamPage, teamPageSize)
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -758,7 +805,7 @@ function TeamStrip({
           <p className="text-xs text-muted-foreground">按项目管理预算、模型和供应商访问范围。</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {teams.slice(0, 4).map((team) => (
+          {teamWindow.items.map((team) => (
             <Badge key={team.id} variant="outline" className="gap-1.5 rounded-md bg-background px-2.5 py-1">
               <FolderKanban className="h-3.5 w-3.5" />
               {team.name}
@@ -768,6 +815,24 @@ function TeamStrip({
           {teams.length === 0 && <span className="text-xs text-muted-foreground">暂无项目</span>}
         </div>
       </div>
+      {teams.length > 4 && (
+        <PaginationBar
+          total={teams.length}
+          page={teamWindow.currentPage}
+          pageSize={teamPageSize}
+          totalPages={teamWindow.totalPages}
+          start={teamWindow.start}
+          end={teamWindow.end}
+          totalLabel="个项目"
+          pageSizeOptions={TEAM_PAGE_SIZE_OPTIONS}
+          className="rounded-md border bg-background px-3 py-2"
+          onPageChange={(page) => setTeamPage(Math.min(Math.max(page, 1), teamWindow.totalPages))}
+          onPageSizeChange={(pageSize) => {
+            setTeamPageSize(pageSize)
+            setTeamPage(1)
+          }}
+        />
+      )}
       {error && <ErrorNotice message={error} />}
       <div className="grid gap-2 md:grid-cols-[1.1fr_.7fr_.7fr_1fr_1fr_auto]">
         <Input value={form.name} onChange={(event) => onChange({ name: event.target.value })} placeholder="项目名称" />
