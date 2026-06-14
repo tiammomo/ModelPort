@@ -62,6 +62,18 @@ export async function cleanupE2EUsers(page: Page, prefix = 'e2e_') {
   }
 }
 
+export async function cleanupE2EProviders(page: Page, prefix = 'e2e_') {
+  const providersResponse = await page.request.get('/admin/providers')
+  if (!providersResponse.ok()) return
+  const providers = await providersResponse.json() as Array<{ id: string }>
+  for (const provider of providers) {
+    if (!provider.id.startsWith(prefix)) continue
+    await page.request.delete(`/admin/providers/${encodeURIComponent(provider.id)}?force=true`, {
+      headers: csrfHeaders(),
+    }).catch(() => undefined)
+  }
+}
+
 function readEnvFile(filePath: string): EnvMap {
   if (!fs.existsSync(filePath)) return {}
   const env: EnvMap = {}

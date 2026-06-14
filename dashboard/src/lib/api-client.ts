@@ -1,5 +1,17 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
+export class ApiError extends Error {
+  status: number
+  payload: unknown
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.payload = payload
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = options.method || 'GET'
   const headers: Record<string, string> = {
@@ -27,10 +39,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const error = await response.json().catch(() => ({ message: response.statusText }))
     const message = error.error?.message || error.message || `HTTP ${response.status}`
     const hint = error.error?.hint
-    throw new Error(hint ? `${message} · ${hint}` : message)
+    throw new ApiError(hint ? `${message} · ${hint}` : message, response.status, error)
   }
 
-  return response.json()
+  if (response.status === 204) return undefined as T
+  const text = await response.text()
+  if (!text) return undefined as T
+  return JSON.parse(text)
 }
 
 export const api = {
@@ -39,5 +54,6 @@ export const api = {
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
-  delete: (path: string) => request<void>(path, { method: 'DELETE' }),
+  delete: <T = void>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined }),
 }

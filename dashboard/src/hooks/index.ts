@@ -1,6 +1,6 @@
 export { useDashboard, queryKeys } from './use-dashboard'
 export { useUsers, useUser, useApiKeys, useTeams, useUpsertTeam, useDeleteTeam, useUserApiKeys, useCreateUser, useUpdateUser, useDeleteUser, useCreateApiKey, useRevokeApiKey, useUpdateApiKey, useDeleteApiKey } from './use-users'
 export { useQuotas, useUpdateQuota, useCreateQuota, useDeleteQuota } from './use-quotas'
-export { useProviders, useProvider, useAliases, useToggleModel, useDiscoverProviderModels, useCreateAlias, useDeleteAlias, useUpdateDefaultProvider } from './use-models'
+export { useProviders, useProvider, useAliases, useToggleModel, useUpdateDefaultModel, useCreateProvider, useUpdateProvider, useSetProviderDisabled, useDeleteProvider, useDiscoverProviderModels, useCreateAlias, useDeleteAlias, useUpdateDefaultProvider } from './use-models'
 export { useLogs, useLogById, useLatencyStats } from './use-logs'
 export { useSettings, useUpdateSettings, useTestProviderConnection, useReloadConfig, useAuditEvents, useExportBackup } from './use-settings'

@@ -1,10 +1,25 @@
 export type ProviderProtocol = 'anthropic' | 'openai-compat'
 export type MaxTokensField = 'max_completion_tokens' | 'max_tokens' | 'both'
 export type FidelityMode = 'strict' | 'best_effort' | 'stability'
+export type ProviderStatus = 'active' | 'inactive' | 'disabled' | 'error'
+export type ProviderModelStatus = 'active' | 'disabled'
+
+export interface ProviderModelInventory {
+  providerId?: string
+  model: string
+  status: ProviderModelStatus
+  displayName?: string | null
+  family?: string | null
+  contextWindow?: number | null
+  default?: boolean
+  createdAt?: string
+  updatedAt?: string
+}
 
 export interface Provider {
   id: string
   displayName: string
+  source?: 'config' | 'control'
   protocol: ProviderProtocol
   baseUrl: string
   apiKeyEnv: string | null
@@ -17,7 +32,7 @@ export interface Provider {
   deduplicateStreamText: boolean
   bufferStreamText: boolean
   fidelityMode?: FidelityMode
-  status: 'active' | 'inactive' | 'error'
+  status: ProviderStatus
   runtimeStatus?: 'healthy' | 'degraded' | 'cooldown'
   hasApiKey: boolean
   health?: {
@@ -40,6 +55,49 @@ export interface Provider {
     models?: string[]
     modelCount?: number
   } | null
+  modelInventory?: ProviderModelInventory[]
+}
+
+export interface ProviderWritePayload {
+  id?: string
+  displayName?: string
+  protocol?: ProviderProtocol
+  baseUrl?: string
+  apiKeyEnv?: string | null
+  apiKeyRequired?: boolean
+  defaultModel?: string
+  models?: string[]
+  modelPrefixes?: string[]
+  passthroughUnknownModels?: boolean
+  maxTokensField?: MaxTokensField
+  deduplicateStreamText?: boolean
+  bufferStreamText?: boolean
+  fidelityMode?: FidelityMode
+  disabled?: boolean
+}
+
+export interface ProviderModelWritePayload {
+  model: string
+  status?: ProviderModelStatus
+  displayName?: string | null
+  family?: string | null
+  contextWindow?: number | null
+}
+
+export interface ProviderDeleteDependency {
+  type: string
+  id?: string
+  name?: string
+  field?: string
+  target?: string
+}
+
+export interface ProviderDeleteBlocked {
+  ok: false
+  blocked: true
+  providerId: string
+  message: string
+  dependencies: ProviderDeleteDependency[]
 }
 
 export interface ProviderModelDiscovery {

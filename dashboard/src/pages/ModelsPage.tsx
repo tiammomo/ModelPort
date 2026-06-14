@@ -3,9 +3,15 @@ import {
   useProviders,
   useAliases,
   useCreateAlias,
+  useCreateProvider,
+  useDeleteProvider,
   useDeleteAlias,
   useDiscoverProviderModels,
+  useSetProviderDisabled,
+  useToggleModel,
+  useUpdateDefaultModel,
   useUpdateDefaultProvider,
+  useUpdateProvider,
 } from '@/hooks'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { TableToolbar } from '@/components/shared/TableToolbar'
@@ -23,9 +29,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Switch } from '@/components/ui/switch'
 import { PROVIDER_PROTOCOL_LABELS } from '@/lib/constants'
 import { cn, formatNumber, formatRelativeTime } from '@/lib/utils'
 import { paginateItems } from '@/lib/pagination'
+import { ApiError } from '@/lib/api-client'
 import {
   MODEL_FAMILIES,
   PROVIDER_TEMPLATES,
@@ -46,6 +54,9 @@ import {
   Layers3,
   ListChecks,
   Loader2,
+  Pencil,
+  Power,
+  PowerOff,
   Plus,
   RefreshCw,
   Route,
@@ -53,7 +64,15 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react'
-import type { Provider } from '@/types'
+import type {
+  FidelityMode,
+  MaxTokensField,
+  Provider,
+  ProviderDeleteBlocked,
+  ProviderModelInventory,
+  ProviderProtocol,
+  ProviderWritePayload,
+} from '@/types'
 
 interface ModelChannel {
   provider: Provider
@@ -69,7 +88,49 @@ interface ModelRow {
   defaultChannel: ModelChannel
 }
 
+interface ProviderFormState {
+  id: string
+  displayName: string
+  protocol: ProviderProtocol
+  baseUrl: string
+  apiKeyEnv: string
+  apiKeyRequired: boolean
+  defaultModel: string
+  models: string
+  modelPrefixes: string
+  passthroughUnknownModels: boolean
+  maxTokensField: MaxTokensField
+  deduplicateStreamText: boolean
+  bufferStreamText: boolean
+  fidelityMode: FidelityMode
+  disabled: boolean
+}
+
+interface ProviderInventoryGroup {
+  title: string
+  brand: string
+  originClassName: string
+  items: ProviderModelInventory[]
+}
+
 const ALL = '__all__'
+const DEFAULT_PROVIDER_FORM: ProviderFormState = {
+  id: '',
+  displayName: '',
+  protocol: 'openai-compat',
+  baseUrl: '',
+  apiKeyEnv: '',
+  apiKeyRequired: true,
+  defaultModel: '',
+  models: '',
+  modelPrefixes: '',
+  passthroughUnknownModels: false,
+  maxTokensField: 'max_completion_tokens',
+  deduplicateStreamText: false,
+  bufferStreamText: false,
+  fidelityMode: 'best_effort',
+  disabled: false,
+}
 const PROVIDER_BRAND_NAMES: Record<string, string> = {
   deepseek: 'DeepSeek',
   deepseek_openai: 'DeepSeek',
@@ -130,13 +191,24 @@ export function ModelsPage() {
   const createAlias = useCreateAlias()
   const deleteAlias = useDeleteAlias()
   const discoverModels = useDiscoverProviderModels()
+  const createProvider = useCreateProvider()
+  const updateProvider = useUpdateProvider()
+  const setProviderDisabled = useSetProviderDisabled()
+  const deleteProvider = useDeleteProvider()
+  const toggleModel = useToggleModel()
+  const updateDefaultModel = useUpdateDefaultModel()
   const updateDefault = useUpdateDefaultProvider()
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
   const [expandedModel, setExpandedModel] = useState<string | null>(null)
   const [discoveringProvider, setDiscoveringProvider] = useState<string | null>(null)
   const [showAliasDialog, setShowAliasDialog] = useState(false)
+  const [showProviderDialog, setShowProviderDialog] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null)
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
+  const [providerForm, setProviderForm] = useState<ProviderFormState>(DEFAULT_PROVIDER_FORM)
+  const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
+  const [deleteBlock, setDeleteBlock] = useState<ProviderDeleteBlocked | null>(null)
   const [aliasForm, setAliasForm] = useState({ alias: '', target: '' })
   const [defaultProvider, setDefaultProvider] = useState(providers[0]?.id || 'mimo')
   const [search, setSearch] = useState('')
@@ -200,6 +272,12 @@ export function ModelsPage() {
     ...template,
     configured: configuredProviderIds.has(template.id),
   }))
+  const modelMutationKey = toggleModel.isPending && toggleModel.variables
+    ? `${toggleModel.variables.providerId}:${toggleModel.variables.model}`
+    : null
+  const defaultModelMutationKey = updateDefaultModel.isPending && updateDefaultModel.variables
+    ? `${updateDefaultModel.variables.providerId}:${updateDefaultModel.variables.model}`
+    : null
 
   const copyText = async (text: string) => {
     await navigator.clipboard.writeText(text)
@@ -216,6 +294,82 @@ export function ModelsPage() {
       onSettled: () => setDiscoveringProvider(null),
       onSuccess: (result) => toast.success(`已发现 ${result.modelCount} 个模型`),
       onError: (error) => toast.error(error instanceof Error ? error.message : '发现模型失败'),
+    })
+  }
+
+  const openCreateProviderDialog = () => {
+    setEditingProvider(null)
+    setProviderForm(DEFAULT_PROVIDER_FORM)
+    setShowProviderDialog(true)
+  }
+
+  const openEditProviderDialog = (provider: Provider) => {
+    setEditingProvider(provider)
+    setProviderForm(providerToForm(provider))
+    setShowProviderDialog(true)
+  }
+
+  const closeProviderDialog = () => {
+    setShowProviderDialog(false)
+    setEditingProvider(null)
+    setProviderForm(DEFAULT_PROVIDER_FORM)
+  }
+
+  const handleSubmitProvider = () => {
+    const payload = providerPayloadFromForm(providerForm, !editingProvider)
+    const options = {
+      onSuccess: (provider: Provider) => {
+        toast.success(editingProvider ? `已更新供应商 ${provider.displayName}` : `已新增供应商 ${provider.displayName}`)
+        closeProviderDialog()
+      },
+      onError: (error: unknown) => toast.error(error instanceof Error ? error.message : '保存供应商失败'),
+    }
+
+    if (editingProvider) {
+      updateProvider.mutate({ providerId: editingProvider.id, data: payload }, options)
+    } else {
+      createProvider.mutate(payload, options)
+    }
+  }
+
+  const handleSetProviderDisabled = (provider: Provider) => {
+    const disabled = provider.status !== 'disabled'
+    setProviderDisabled.mutate({ providerId: provider.id, disabled }, {
+      onSuccess: () => toast.success(disabled ? `已禁用 ${provider.displayName}` : `已恢复 ${provider.displayName}`),
+      onError: (error) => toast.error(error instanceof Error ? error.message : '更新供应商状态失败'),
+    })
+  }
+
+  const handleDeleteProvider = (force = false) => {
+    if (!deleteTarget) return
+    deleteProvider.mutate({ providerId: deleteTarget.id, force }, {
+      onSuccess: () => {
+        toast.success(`已删除供应商 ${deleteTarget.displayName}`)
+        setDeleteTarget(null)
+        setDeleteBlock(null)
+      },
+      onError: (error) => {
+        const blocked = providerDeleteBlockedFromError(error)
+        if (blocked) {
+          setDeleteBlock(blocked)
+          return
+        }
+        toast.error(error instanceof Error ? error.message : '删除供应商失败')
+      },
+    })
+  }
+
+  const handleToggleProviderModel = (provider: Provider, model: string, enabled: boolean) => {
+    toggleModel.mutate({ providerId: provider.id, model, enabled }, {
+      onSuccess: () => toast.success(enabled ? `已启用 ${model}` : `已禁用 ${model}`),
+      onError: (error) => toast.error(error instanceof Error ? error.message : '更新模型状态失败'),
+    })
+  }
+
+  const handleSetDefaultModel = (provider: Provider, model: string) => {
+    updateDefaultModel.mutate({ providerId: provider.id, model }, {
+      onSuccess: () => toast.success(`默认模型已设为 ${model}`),
+      onError: (error) => toast.error(error instanceof Error ? error.message : '更新默认模型失败'),
     })
   }
 
@@ -477,9 +631,16 @@ export function ModelsPage() {
         </TabsContent>
 
         <TabsContent value="providers" className="space-y-4">
-          <TableToolbar>
+          <TableToolbar
+            actions={(
+              <Button onClick={openCreateProviderDialog}>
+                <Plus className="mr-2 h-4 w-4" />
+                新增供应商
+              </Button>
+            )}
+          >
             <div className="text-sm text-muted-foreground">
-              发现模型会读取供应商模型列表并进入运行时可路由列表；查看列表可复制 provider:model 路由名。
+              发现模型会读取供应商模型列表并进入运行时可路由列表；这里可以新增、编辑、禁用或删除供应商。
             </div>
           </TableToolbar>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -491,8 +652,15 @@ export function ModelsPage() {
                 discovering={discoveringProvider === provider.id && discoverModels.isPending}
                 onDiscover={() => handleDiscoverModels(provider.id)}
                 onToggleList={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
+                onEdit={() => openEditProviderDialog(provider)}
+                onToggleProvider={() => handleSetProviderDisabled(provider)}
+                onDelete={() => { setDeleteTarget(provider); setDeleteBlock(null) }}
                 onCopy={copyText}
                 onAlias={openAliasDialog}
+                onToggleModel={(model, enabled) => handleToggleProviderModel(provider, model, enabled)}
+                onSetDefaultModel={(model) => handleSetDefaultModel(provider, model)}
+                modelMutationKey={modelMutationKey}
+                defaultModelMutationKey={defaultModelMutationKey}
               />
             ))}
           </div>
@@ -636,6 +804,182 @@ export function ModelsPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showProviderDialog} onOpenChange={(open) => { if (open) setShowProviderDialog(true); else closeProviderDialog() }}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{editingProvider ? '编辑供应商' : '新增供应商'}</DialogTitle>
+            <DialogDescription>
+              供应商配置会写入控制面存储并立即参与运行时路由，无需重启后端。
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[68vh] pr-3">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="供应商 ID">
+                <Input
+                  value={providerForm.id}
+                  disabled={!!editingProvider}
+                  onChange={(event) => setProviderForm({ ...providerForm, id: event.target.value })}
+                  placeholder="例如: siliconflow"
+                />
+              </Field>
+              <Field label="显示名称">
+                <Input
+                  value={providerForm.displayName}
+                  onChange={(event) => setProviderForm({ ...providerForm, displayName: event.target.value })}
+                  placeholder="例如: 第三方 · OpenAI"
+                />
+              </Field>
+              <Field label="协议">
+                <Select value={providerForm.protocol} onValueChange={(value) => setProviderForm({ ...providerForm, protocol: value as ProviderProtocol })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai-compat">OpenAI 兼容</SelectItem>
+                    <SelectItem value="anthropic">Anthropic</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="API Key 环境变量">
+                <Input
+                  value={providerForm.apiKeyEnv}
+                  onChange={(event) => setProviderForm({ ...providerForm, apiKeyEnv: event.target.value })}
+                  placeholder="例如: SILICONFLOW_API_KEY"
+                />
+              </Field>
+              <Field label="Base URL" className="md:col-span-2">
+                <Input
+                  value={providerForm.baseUrl}
+                  onChange={(event) => setProviderForm({ ...providerForm, baseUrl: event.target.value })}
+                  placeholder="https://example.com/v1"
+                />
+              </Field>
+              <Field label="默认模型">
+                <Input
+                  value={providerForm.defaultModel}
+                  onChange={(event) => setProviderForm({ ...providerForm, defaultModel: event.target.value })}
+                  placeholder="例如: gpt-4o-mini"
+                />
+              </Field>
+              <Field label="Max Tokens 字段">
+                <Select value={providerForm.maxTokensField} onValueChange={(value) => setProviderForm({ ...providerForm, maxTokensField: value as MaxTokensField })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="max_completion_tokens">max_completion_tokens</SelectItem>
+                    <SelectItem value="max_tokens">max_tokens</SelectItem>
+                    <SelectItem value="both">both</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="模型列表" className="md:col-span-2">
+                <textarea
+                  className="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={providerForm.models}
+                  onChange={(event) => setProviderForm({ ...providerForm, models: event.target.value })}
+                  placeholder={'每行一个模型，或用逗号分隔\nmimo-v2.5-pro\ngpt-4o-mini'}
+                />
+              </Field>
+              <Field label="模型前缀" className="md:col-span-2">
+                <Input
+                  value={providerForm.modelPrefixes}
+                  onChange={(event) => setProviderForm({ ...providerForm, modelPrefixes: event.target.value })}
+                  placeholder="可选，例如 openai/, anthropic/"
+                />
+              </Field>
+              <Field label="保真模式">
+                <Select value={providerForm.fidelityMode} onValueChange={(value) => setProviderForm({ ...providerForm, fidelityMode: value as FidelityMode })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="best_effort">尽量无损</SelectItem>
+                    <SelectItem value="strict">严格无损</SelectItem>
+                    <SelectItem value="stability">稳定优先</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <div className="space-y-3 rounded-md border bg-muted/20 p-3 md:col-span-2">
+                <SwitchRow
+                  label="需要 API Key"
+                  checked={providerForm.apiKeyRequired}
+                  onCheckedChange={(apiKeyRequired) => setProviderForm({ ...providerForm, apiKeyRequired })}
+                />
+                <SwitchRow
+                  label="透传未知模型"
+                  checked={providerForm.passthroughUnknownModels}
+                  onCheckedChange={(passthroughUnknownModels) => setProviderForm({ ...providerForm, passthroughUnknownModels })}
+                />
+                <SwitchRow
+                  label="流式文本去重"
+                  checked={providerForm.deduplicateStreamText}
+                  onCheckedChange={(deduplicateStreamText) => setProviderForm({ ...providerForm, deduplicateStreamText })}
+                />
+                <SwitchRow
+                  label="缓冲非流式文本"
+                  checked={providerForm.bufferStreamText}
+                  onCheckedChange={(bufferStreamText) => setProviderForm({ ...providerForm, bufferStreamText })}
+                />
+                <SwitchRow
+                  label="保存后禁用"
+                  checked={providerForm.disabled}
+                  onCheckedChange={(disabled) => setProviderForm({ ...providerForm, disabled })}
+                />
+              </div>
+            </div>
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeProviderDialog}>取消</Button>
+            <Button
+              onClick={handleSubmitProvider}
+              disabled={createProvider.isPending || updateProvider.isPending || !providerForm.id || !providerForm.baseUrl || !providerForm.defaultModel}
+            >
+              {createProvider.isPending || updateProvider.isPending ? '保存中' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteBlock(null) } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除供应商</DialogTitle>
+            <DialogDescription>
+              删除后该供应商不会再参与路由；如果仍被别名、API Key 或团队策略引用，需要先确认依赖。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm">
+              确认删除 <span className="font-semibold">{deleteTarget?.displayName}</span>？
+            </p>
+            {deleteBlock && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <div className="flex items-center gap-2 font-medium">
+                  <AlertTriangle className="h-4 w-4" />
+                  发现 {deleteBlock.dependencies.length} 个依赖
+                </div>
+                <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+                  {deleteBlock.dependencies.map((dependency, idx) => (
+                    <div key={`${dependency.type}:${dependency.id}:${idx}`} className="rounded bg-background/70 px-2 py-1.5">
+                      <span className="font-medium">{dependencyLabel(dependency.type)}</span>
+                      {dependency.name || dependency.id ? <span className="ml-2 font-mono text-xs">{dependency.name || dependency.id}</span> : null}
+                      {dependency.field && <span className="ml-2 text-xs opacity-75">{dependency.field}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteTarget(null); setDeleteBlock(null) }}>取消</Button>
+            {deleteBlock ? (
+              <Button variant="destructive" onClick={() => handleDeleteProvider(true)} disabled={deleteProvider.isPending}>
+                强制删除
+              </Button>
+            ) : (
+              <Button variant="destructive" onClick={() => handleDeleteProvider(false)} disabled={deleteProvider.isPending}>
+                删除
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!selectedTemplate} onOpenChange={() => setSelectedTemplate(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
@@ -726,6 +1070,29 @@ function providerModelGroups(provider: Provider) {
   return Array.from(groups.values()).sort((a, b) => b.models.length - a.models.length || a.brand.localeCompare(b.brand))
 }
 
+function providerInventoryGroups(provider: Provider): ProviderInventoryGroup[] {
+  const inventory: ProviderModelInventory[] = provider.modelInventory && provider.modelInventory.length > 0
+    ? provider.modelInventory
+    : provider.models.map((model): ProviderModelInventory => ({
+        model,
+        status: 'active',
+        default: model === provider.defaultModel,
+      }))
+  const groups = new Map<string, ProviderInventoryGroup>()
+  const origin = providerOrigin(provider)
+  const originClassName = providerOriginClassName(origin)
+
+  for (const item of inventory) {
+    const brand = item.family || modelOwnerBrand(item.model)
+    const title = `${origin} · ${brand}`
+    const group = groups.get(title) || { title, brand, originClassName, items: [] }
+    group.items.push(item)
+    groups.set(title, group)
+  }
+
+  return Array.from(groups.values()).sort((a, b) => b.items.length - a.items.length || a.brand.localeCompare(b.brand))
+}
+
 function providerOrigin(provider: Provider) {
   const host = providerHost(provider)
   if (LOCAL_PROVIDER_IDS.has(provider.id) || isLocalHost(host)) return '本地'
@@ -769,22 +1136,100 @@ function compactProviderName(value: string) {
     .trim()
 }
 
+function providerToForm(provider: Provider): ProviderFormState {
+  return {
+    id: provider.id,
+    displayName: provider.displayName,
+    protocol: provider.protocol,
+    baseUrl: provider.baseUrl,
+    apiKeyEnv: provider.apiKeyEnv || '',
+    apiKeyRequired: provider.apiKeyRequired,
+    defaultModel: provider.defaultModel,
+    models: provider.models.join('\n'),
+    modelPrefixes: provider.modelPrefixes.join(', '),
+    passthroughUnknownModels: provider.passthroughUnknownModels,
+    maxTokensField: provider.maxTokensField,
+    deduplicateStreamText: provider.deduplicateStreamText,
+    bufferStreamText: provider.bufferStreamText,
+    fidelityMode: provider.fidelityMode || 'best_effort',
+    disabled: provider.status === 'disabled',
+  }
+}
+
+function providerPayloadFromForm(form: ProviderFormState, includeId: boolean): ProviderWritePayload {
+  return {
+    ...(includeId ? { id: form.id.trim() } : {}),
+    displayName: form.displayName.trim() || form.id.trim(),
+    protocol: form.protocol,
+    baseUrl: form.baseUrl.trim(),
+    apiKeyEnv: form.apiKeyEnv.trim() || null,
+    apiKeyRequired: form.apiKeyRequired,
+    defaultModel: form.defaultModel.trim(),
+    models: parseList(form.models),
+    modelPrefixes: parseList(form.modelPrefixes),
+    passthroughUnknownModels: form.passthroughUnknownModels,
+    maxTokensField: form.maxTokensField,
+    deduplicateStreamText: form.deduplicateStreamText,
+    bufferStreamText: form.bufferStreamText,
+    fidelityMode: form.fidelityMode,
+    disabled: form.disabled,
+  }
+}
+
+function parseList(value: string): string[] {
+  return Array.from(new Set(
+    value
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ))
+}
+
+function providerDeleteBlockedFromError(error: unknown): ProviderDeleteBlocked | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null
+  const payload = error.payload as Partial<ProviderDeleteBlocked> | undefined
+  if (!payload?.blocked || !Array.isArray(payload.dependencies)) return null
+  return payload as ProviderDeleteBlocked
+}
+
+function dependencyLabel(type: string) {
+  if (type === 'alias') return '模型别名'
+  if (type === 'apiKey') return 'API 密钥'
+  if (type === 'team') return '团队策略'
+  if (type === 'route') return '路由配置'
+  return type
+}
+
 function ProviderCard({
   provider,
   expanded,
   discovering,
   onDiscover,
   onToggleList,
+  onEdit,
+  onToggleProvider,
+  onDelete,
   onCopy,
   onAlias,
+  onToggleModel,
+  onSetDefaultModel,
+  modelMutationKey,
+  defaultModelMutationKey,
 }: {
   provider: Provider
   expanded: boolean
   discovering: boolean
   onDiscover: () => void
   onToggleList: () => void
+  onEdit: () => void
+  onToggleProvider: () => void
+  onDelete: () => void
   onCopy: (value: string) => Promise<void>
   onAlias: (alias?: string, target?: string) => void
+  onToggleModel: (model: string, enabled: boolean) => void
+  onSetDefaultModel: (model: string) => void
+  modelMutationKey: string | null
+  defaultModelMutationKey: string | null
 }) {
   const credentialReady = provider.hasApiKey || !provider.apiKeyRequired
   const routeReady = provider.status === 'active' && credentialReady
@@ -796,9 +1241,10 @@ function ProviderCard({
   const identity = providerIdentity(provider)
   const displayTitle = providerDisplayTitle(provider)
   const modelGroups = providerModelGroups(provider)
+  const inventoryGroups = providerInventoryGroups(provider)
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden" data-testid={`provider-card-${provider.id}`}>
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -862,6 +1308,18 @@ function ProviderCard({
             {expanded ? '收起列表' : '查看列表'}
             {expanded ? <ChevronDown className="ml-auto h-4 w-4" /> : <ChevronRight className="ml-auto h-4 w-4" />}
           </Button>
+          <Button variant="outline" size="sm" onClick={onEdit}>
+            <Pencil className="mr-2 h-4 w-4" />
+            编辑
+          </Button>
+          <Button variant="outline" size="sm" onClick={onToggleProvider}>
+            {provider.status === 'disabled' ? <Power className="mr-2 h-4 w-4" /> : <PowerOff className="mr-2 h-4 w-4" />}
+            {provider.status === 'disabled' ? '恢复' : '禁用'}
+          </Button>
+          <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={onDelete}>
+            <Trash2 className="mr-2 h-4 w-4" />
+            删除
+          </Button>
         </div>
 
         {!credentialReady && (
@@ -906,16 +1364,20 @@ function ProviderCard({
                 暂无可路由模型，可先发现上游模型或在配置文件中补充 models。
               </div>
             ) : (
-              <div className={cn('grid gap-3 p-2', modelGroups.length > 1 && 'xl:grid-cols-2')}>
-                {modelGroups.map((group) => (
+              <div className={cn('grid gap-3 p-2', inventoryGroups.length > 1 && 'xl:grid-cols-2')}>
+                {inventoryGroups.map((group) => (
                   <ProviderModelGroupPanel
                     key={group.title}
                     group={group}
                     provider={provider}
                     defaultModel={provider.defaultModel}
-                    compact={modelGroups.length > 1}
+                    compact={inventoryGroups.length > 1}
                     onAlias={onAlias}
                     onCopy={onCopy}
+                    onToggleModel={onToggleModel}
+                    onSetDefaultModel={onSetDefaultModel}
+                    modelMutationKey={modelMutationKey}
+                    defaultModelMutationKey={defaultModelMutationKey}
                   />
                 ))}
               </div>
@@ -941,37 +1403,66 @@ function ProviderModelGroupPanel({
   compact,
   onCopy,
   onAlias,
+  onToggleModel,
+  onSetDefaultModel,
+  modelMutationKey,
+  defaultModelMutationKey,
 }: {
-  group: ReturnType<typeof providerModelGroups>[number]
+  group: ProviderInventoryGroup
   provider: Provider
   defaultModel: string
   compact: boolean
   onCopy: (value: string) => Promise<void>
   onAlias: (alias?: string, target?: string) => void
+  onToggleModel: (model: string, enabled: boolean) => void
+  onSetDefaultModel: (model: string) => void
+  modelMutationKey: string | null
+  defaultModelMutationKey: string | null
 }) {
   return (
     <div className="min-w-0 rounded-md border bg-background">
       <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
         <span className="min-w-0 truncate text-sm font-medium">{group.title}</span>
-        <Badge variant="outline" className={cn('shrink-0 font-medium', group.originClassName)}>{group.models.length} 个</Badge>
+        <Badge variant="outline" className={cn('shrink-0 font-medium', group.originClassName)}>{group.items.length} 个</Badge>
       </div>
       <ScrollArea className={cn(compact ? 'h-72' : 'max-h-80')}>
         <div className="space-y-1 p-2">
-          {group.models.map((model) => {
-            const routeName = `${provider.id}:${model}`
+          {group.items.map((item) => {
+            const routeName = `${provider.id}:${item.model}`
+            const enabled = item.status !== 'disabled'
+            const modelBusy = modelMutationKey === routeName
+            const defaultBusy = defaultModelMutationKey === routeName
             return (
-              <div key={model} className="flex items-center gap-2 rounded-md px-2 py-2 hover:bg-muted/60">
+              <div key={item.model} className={cn('flex items-center gap-2 rounded-md px-2 py-2 hover:bg-muted/60', !enabled && 'opacity-65')}>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 truncate font-mono text-sm font-medium">{model}</span>
-                    {model === defaultModel && <Badge variant="outline">默认</Badge>}
+                    <span className="min-w-0 truncate font-mono text-sm font-medium">{item.model}</span>
+                    {item.model === defaultModel && <Badge variant="outline">默认</Badge>}
+                    {!enabled && <Badge variant="secondary">已禁用</Badge>}
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{routeName}</p>
                 </div>
+                <Switch
+                  checked={enabled}
+                  disabled={modelBusy}
+                  onCheckedChange={(checked) => onToggleModel(item.model, checked)}
+                  aria-label={`${enabled ? '禁用' : '启用'} ${item.model}`}
+                />
                 <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => void onCopy(routeName)} aria-label={`复制 ${routeName}`}>
                   <Copy className="h-3.5 w-3.5" />
                 </Button>
-                <Button variant="outline" size="sm" className="shrink-0" onClick={() => onAlias(model, routeName)}>
+                {enabled && item.model !== defaultModel && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    disabled={defaultBusy}
+                    onClick={() => onSetDefaultModel(item.model)}
+                  >
+                    默认
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" className="shrink-0" disabled={!enabled} onClick={() => onAlias(item.model, routeName)}>
                   <Plus className="mr-1 h-3.5 w-3.5" />
                   别名
                 </Button>
@@ -989,6 +1480,32 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
     <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className={cn('min-w-0 truncate text-xs', mono && 'font-mono')}>{value}</span>
+    </div>
+  )
+}
+
+function Field({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+  return (
+    <div className={cn('space-y-2', className)}>
+      <Label>{label}</Label>
+      {children}
+    </div>
+  )
+}
+
+function SwitchRow({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label className="text-sm font-normal">{label}</Label>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
     </div>
   )
 }

@@ -1,4 +1,19 @@
-export type { ProviderProtocol, MaxTokensField, FidelityMode, Provider, ProviderModelDiscovery, ModelAlias, ModelInfo } from './model.types'
+export type {
+  ProviderProtocol,
+  MaxTokensField,
+  FidelityMode,
+  ProviderStatus,
+  ProviderModelStatus,
+  ProviderModelInventory,
+  Provider,
+  ProviderWritePayload,
+  ProviderModelWritePayload,
+  ProviderDeleteDependency,
+  ProviderDeleteBlocked,
+  ProviderModelDiscovery,
+  ModelAlias,
+  ModelInfo,
+} from './model.types'
 export type { UserRole, User, CreateUserInput, UpdateUserInput, ApiKey, Team, UpsertTeamInput } from './user.types'
 export type { QuotaType, QuotaPeriod, Quota, UsageRecord, TimeSeriesPoint, UsageSummary } from './quota.types'
 export type { RequestStatus, StreamMode, RequestLog, LogFilters, LogSummary, LatencyStats } from './log.types'
