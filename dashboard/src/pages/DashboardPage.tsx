@@ -167,6 +167,15 @@ function formatRate(value: number): string {
   return value.toFixed(2)
 }
 
+function tokenBreakdownDescription(
+  inputTokens: number,
+  outputTokens: number,
+  cacheWriteTokens: number,
+  cacheReadTokens: number,
+): string {
+  return `入 ${formatNumber(inputTokens)} / 出 ${formatNumber(outputTokens)} / Cache ${formatNumber(cacheWriteTokens + cacheReadTokens)}`
+}
+
 function currentLogFilters(range: DashboardRange, customFrom: string, customTo: string) {
   if (range === 'custom') {
     return { dateFrom: customFrom || undefined, dateTo: customTo || undefined }
@@ -683,8 +692,18 @@ export function DashboardPage() {
   const billedInputTokens = summaryInputTokens + summaryCacheWriteTokens + summaryCacheReadTokens
   const cacheHitRate = billedInputTokens > 0 ? (summaryCacheReadTokens / billedInputTokens) * 100 : 0
 
-  const tokenDesc =
-    `In ${formatNumber(summaryInputTokens)} / Out ${formatNumber(summaryOutputTokens)} / Cache ${formatNumber(summaryCacheWriteTokens + summaryCacheReadTokens)}`
+  const todayTokenDesc = tokenBreakdownDescription(
+    stats.todayInputTokens ?? 0,
+    stats.todayOutputTokens ?? 0,
+    stats.todayCacheWriteTokens ?? 0,
+    stats.todayCacheReadTokens ?? 0,
+  )
+  const summaryTokenDesc = tokenBreakdownDescription(
+    summaryInputTokens,
+    summaryOutputTokens,
+    summaryCacheWriteTokens,
+    summaryCacheReadTokens,
+  )
 
   const rangeName = rangeLabel(stats.trendRange?.range ?? trendRange)
 
@@ -741,14 +760,14 @@ export function DashboardPage() {
           value={formatNumber(totalTokens)}
           icon={Clock}
           sparkline={sparklineRequests}
-          description={tokenDesc}
+          description={todayTokenDesc}
         />
         <MetricCard
           title="累计 Token"
           value={formatNumber(summaryTokens)}
           icon={Database}
           sparkline={sparklineRequests}
-          description={`当前筛选范围`}
+          description={`当前范围 · ${summaryTokenDesc}`}
         />
         <MetricCard
           title="成功率"

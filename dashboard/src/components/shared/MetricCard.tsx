@@ -72,7 +72,7 @@ export function MetricCard({
           )}
         </div>
         {(description || trend) && (
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <p className="mt-1 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
             {trend && (
               <span
                 className={cn(
@@ -85,7 +85,7 @@ export function MetricCard({
                 {trend.value >= 0 ? '↑' : '↓'} {Math.abs(trend.value)}%
               </span>
             )}
-            <span>{trend?.label || description}</span>
+            <span className="min-w-0 break-words">{trend?.label || description}</span>
           </p>
         )}
       </CardContent>
