@@ -75,6 +75,57 @@ ModelPort is not a large all-in-one model aggregation platform. It is a lightwei
 
 _Quick-start flow: prepare `.env`, validate configuration, start the local gateway, then let VS Code Claude use `mimo-v2.5-pro` through ModelPort._
 
+### Fastest Path
+
+Use Docker Compose if you want the quickest complete stack: backend API, dashboard UI, and internal PostgreSQL.
+
+```bash
+git clone https://github.com/tiammomo/ModelPort.git
+cd ModelPort
+cp deploy/docker/modelport.env.example .env
+```
+
+Edit `.env` and set at least these values:
+
+```bash
+MODELPORT_AUTH_TOKEN=replace-with-a-long-random-local-token
+ANTHROPIC_AUTH_TOKEN=replace-with-the-same-local-router-token
+MODELPORT_ADMIN_PASSWORD=replace-with-a-long-random-admin-password
+MODELPORT_POSTGRES_PASSWORD=replace-with-a-long-random-postgres-password
+MIMO_OPENAI_API_KEY=replace-with-real-mimo-api-key
+```
+
+Then start everything:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Open:
+
+- Dashboard: `http://127.0.0.1:5173`
+- API endpoint: `http://127.0.0.1:17878/v1/messages`
+- Health check: `http://127.0.0.1:17878/health`
+
+PostgreSQL stays inside the Compose network by default; it does not publish host port `5432`, so it will not conflict with another PostgreSQL already running on your machine.
+
+For local source development without Docker, run the backend and dashboard in two terminals:
+
+```bash
+cp .env.example .env
+# Edit .env and set MODELPORT_AUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, admin password, and provider key.
+scripts/start.sh
+```
+
+```bash
+cd dashboard
+npm ci
+npm run dev
+```
+
+The dashboard dev server listens on `http://127.0.0.1:5173` and proxies `/admin`, `/v1`, `/health`, and `/metrics` to the backend on `127.0.0.1:17878`.
+
 ### 1. Install Dependencies
 
 Recommended on Linux / WSL:
@@ -84,12 +135,13 @@ sudo apt-get update
 sudo apt-get install -y build-essential pkg-config jq
 ```
 
-Rust toolchain is required. `jq` is not required at runtime, but it makes JSON checks and `--all` provider matrix runs easier.
+Rust toolchain is required for local source builds. Node.js 24+ and npm are required only when running the dashboard dev server locally. `jq` is not required at runtime, but it makes JSON checks and `--all` provider matrix runs easier.
 
 ### 2. Prepare Configuration
 
 ```bash
-cd /home/tiammomo/projects/dev/ModelPort
+git clone https://github.com/tiammomo/ModelPort.git
+cd ModelPort
 cp .env.example .env
 ```
 
@@ -152,7 +204,15 @@ Check status:
 scripts/status.sh
 ```
 
-Open the dashboard:
+`scripts/start.sh` starts the backend gateway only. For local dashboard development, start the dashboard in a second terminal:
+
+```bash
+cd dashboard
+npm ci
+npm run dev
+```
+
+Open the dashboard after the Vite server is running:
 
 ```text
 http://127.0.0.1:5173
