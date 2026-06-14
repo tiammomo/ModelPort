@@ -68,14 +68,14 @@ const RANGE_MS: Record<Exclude<DashboardRange, 'custom'>, number> = {
 }
 
 const PIE_COLORS = [
-  'var(--primary)',
-  'hsl(217 91% 60%)',
-  'hsl(142 71% 45%)',
+  'hsl(212 86% 48%)',
+  'hsl(162 72% 38%)',
   'hsl(38 92% 50%)',
-  'hsl(0 84% 60%)',
-  'hsl(280 65% 60%)',
-  'hsl(190 70% 50%)',
-  'hsl(340 75% 55%)',
+  'hsl(347 77% 56%)',
+  'hsl(262 83% 62%)',
+  'hsl(190 84% 42%)',
+  'hsl(24 90% 54%)',
+  'hsl(225 70% 58%)',
 ]
 
 const TOOLTIP_STYLE = {
@@ -427,8 +427,8 @@ function ModelDistributionCard({
         <CardTitle className="text-base">模型分布</CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="grid gap-4 xl:grid-cols-[220px_1fr]">
-          <div className="min-h-[220px]">
+        <div className="grid gap-4 xl:grid-cols-[240px_1fr]">
+          <div className="flex min-h-[220px] items-center justify-center">
             {pieData.length > 0 ? (
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
@@ -438,9 +438,11 @@ function ModelDistributionCard({
                     cy="50%"
                     innerRadius={54}
                     outerRadius={86}
-                    paddingAngle={2}
+                    paddingAngle={1.2}
+                    minAngle={pieData.length > 1 ? 4 : 0}
+                    cornerRadius={2}
                     dataKey="value"
-                    stroke="var(--background)"
+                    stroke="var(--card)"
                     strokeWidth={2}
                   >
                     {pieData.map((_, idx) => (
@@ -466,11 +468,19 @@ function ModelDistributionCard({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row) => (
+              {rows.map((row, idx) => (
                 <TableRow key={`${row.provider}:${row.model}`}>
                   <TableCell>
-                    <div className="max-w-[220px] truncate font-mono text-xs font-medium">{row.model}</div>
-                    <div className="text-xs text-muted-foreground">{row.provider}</div>
+                    <div className="flex min-w-0 items-start gap-2">
+                      <span
+                        className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background"
+                        style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}
+                      />
+                      <div className="min-w-0">
+                        <div className="max-w-[220px] truncate font-mono text-xs font-medium">{row.model}</div>
+                        <div className="text-xs text-muted-foreground">{row.provider}</div>
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell className="text-right font-mono text-sm">{formatNumber(row.requests)}</TableCell>
                   <TableCell className="text-right font-mono text-sm">{formatNumber(row.tokens)}</TableCell>
