@@ -35,6 +35,10 @@ struct ControlInner {
     activities: Vec<ActivityRecord>,
     provider_tests: BTreeMap<String, ProviderTestRecord>,
     provider_health: BTreeMap<String, ProviderHealthRecord>,
+    provider_overrides: BTreeMap<String, ProviderOverrideRecord>,
+    disabled_providers: BTreeSet<String>,
+    deleted_providers: BTreeSet<String>,
+    provider_model_overrides: BTreeMap<String, BTreeMap<String, ProviderModelOverrideRecord>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -56,6 +60,14 @@ struct ControlFile {
     provider_tests: Vec<ProviderTestRecord>,
     #[serde(default)]
     provider_health: Vec<ProviderHealthRecord>,
+    #[serde(default)]
+    provider_overrides: Vec<ProviderOverrideRecord>,
+    #[serde(default)]
+    disabled_providers: BTreeSet<String>,
+    #[serde(default)]
+    deleted_providers: BTreeSet<String>,
+    #[serde(default)]
+    provider_model_overrides: Vec<ProviderModelOverrideRecord>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -90,6 +102,52 @@ struct ProviderTestRecord {
     message: String,
     #[serde(default)]
     discovered_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOverrideRecord {
+    pub id: String,
+    pub display_name: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub api_key_env: Option<String>,
+    #[serde(default = "default_true")]
+    pub api_key_required: bool,
+    pub default_model: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub model_prefixes: Vec<String>,
+    #[serde(default)]
+    pub passthrough_unknown_models: bool,
+    #[serde(default = "default_max_tokens_field")]
+    pub max_tokens_field: String,
+    #[serde(default)]
+    pub deduplicate_stream_text: bool,
+    #[serde(default)]
+    pub buffer_stream_text: bool,
+    #[serde(default = "default_fidelity_mode")]
+    pub fidelity_mode: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelOverrideRecord {
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default = "default_model_status")]
+    pub status: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,6 +505,14 @@ pub struct RoutingConfigSnapshot {
     pub provider_order: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProviderControlSnapshot {
+    pub provider_overrides: BTreeMap<String, ProviderOverrideRecord>,
+    pub disabled_providers: BTreeSet<String>,
+    pub deleted_providers: BTreeSet<String>,
+    pub provider_model_overrides: BTreeMap<String, BTreeMap<String, ProviderModelOverrideRecord>>,
+}
+
 impl ControlStore {
     pub fn load() -> Result<Self, AppError> {
         let path = control_store_path();
@@ -464,7 +530,21 @@ impl ControlStore {
             "activities": [],
             "providerTests": [],
             "providerHealth": [],
+            "providerOverrides": [],
+            "disabledProviders": [],
+            "deletedProviders": [],
+            "providerModelOverrides": [],
         }))?;
+        let mut provider_model_overrides: BTreeMap<
+            String,
+            BTreeMap<String, ProviderModelOverrideRecord>,
+        > = BTreeMap::new();
+        for record in file.provider_model_overrides {
+            provider_model_overrides
+                .entry(record.provider_id.clone())
+                .or_default()
+                .insert(record.model.clone(), record);
+        }
 
         Ok(Self {
             store: Some(store),
@@ -497,6 +577,14 @@ impl ControlStore {
                     .into_iter()
                     .map(|record| (record.provider_id.clone(), record))
                     .collect(),
+                provider_overrides: file
+                    .provider_overrides
+                    .into_iter()
+                    .map(|record| (record.id.clone(), record))
+                    .collect(),
+                disabled_providers: file.disabled_providers,
+                deleted_providers: file.deleted_providers,
+                provider_model_overrides,
             }),
             usage_limit,
         })
@@ -516,6 +604,16 @@ impl ControlStore {
         RoutingConfigSnapshot {
             default_provider: inner.route_config.default_provider.clone(),
             provider_order: inner.route_config.provider_order.clone(),
+        }
+    }
+
+    pub fn provider_control_snapshot(&self) -> ProviderControlSnapshot {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        ProviderControlSnapshot {
+            provider_overrides: inner.provider_overrides.clone(),
+            disabled_providers: inner.disabled_providers.clone(),
+            deleted_providers: inner.deleted_providers.clone(),
+            provider_model_overrides: inner.provider_model_overrides.clone(),
         }
     }
 
@@ -592,6 +690,169 @@ impl ControlStore {
         let mut inner = self.inner.lock().expect("control lock poisoned");
         inner.route_config.provider_order = Some(provider_order);
         self.save_locked(&inner)
+    }
+
+    pub fn upsert_provider_override(
+        &self,
+        mut record: ProviderOverrideRecord,
+    ) -> Result<ProviderOverrideRecord, AppError> {
+        let id = validate_provider_id(&record.id)?;
+        record.id = id.clone();
+        record.display_name = validate_non_empty("displayName", &record.display_name, 120)?;
+        record.base_url = validate_non_empty("baseUrl", &record.base_url, 512)?;
+        record.default_model = validate_non_empty("defaultModel", &record.default_model, 240)?;
+        record.models = normalize_policy_list(record.models)?;
+        if !record.models.contains(&record.default_model) {
+            record.models.insert(0, record.default_model.clone());
+        }
+        record.model_prefixes = normalize_policy_list(record.model_prefixes)?;
+        record.api_key_env = record
+            .api_key_env
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let now = now_millis();
+
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        let created_at_ms = inner
+            .provider_overrides
+            .get(&id)
+            .map(|existing| existing.created_at_ms)
+            .unwrap_or(now);
+        record.created_at_ms = created_at_ms;
+        record.updated_at_ms = now;
+        inner.provider_overrides.insert(id.clone(), record.clone());
+        inner.deleted_providers.remove(&id);
+        if let Some(order) = &mut inner.route_config.provider_order
+            && !order.contains(&id)
+        {
+            order.push(id.clone());
+        }
+        self.save_locked(&inner)?;
+        Ok(record)
+    }
+
+    pub fn set_provider_disabled(&self, provider_id: &str, disabled: bool) -> Result<(), AppError> {
+        let provider_id = validate_provider_id(provider_id)?;
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        if disabled {
+            inner.disabled_providers.insert(provider_id);
+        } else {
+            inner.disabled_providers.remove(&provider_id);
+        }
+        self.save_locked(&inner)
+    }
+
+    pub fn delete_provider(&self, provider_id: &str, tombstone: bool) -> Result<(), AppError> {
+        let provider_id = validate_provider_id(provider_id)?;
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        inner.provider_overrides.remove(&provider_id);
+        inner.disabled_providers.remove(&provider_id);
+        inner.provider_model_overrides.remove(&provider_id);
+        inner.provider_tests.remove(&provider_id);
+        inner.provider_health.remove(&provider_id);
+        if tombstone {
+            inner.deleted_providers.insert(provider_id.clone());
+        } else {
+            inner.deleted_providers.remove(&provider_id);
+        }
+        if let Some(order) = &mut inner.route_config.provider_order {
+            order.retain(|value| value != &provider_id);
+        }
+        if inner.route_config.default_provider.as_deref() == Some(provider_id.as_str()) {
+            inner.route_config.default_provider = None;
+        }
+        self.save_locked(&inner)
+    }
+
+    pub fn upsert_provider_model_override(
+        &self,
+        mut record: ProviderModelOverrideRecord,
+    ) -> Result<ProviderModelOverrideRecord, AppError> {
+        record.provider_id = validate_provider_id(&record.provider_id)?;
+        record.model = validate_non_empty("model", &record.model, 240)?;
+        record.status = validate_model_status(&record.status)?;
+        record.display_name = record
+            .display_name
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        record.family = record
+            .family
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let now = now_millis();
+
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        let models = inner
+            .provider_model_overrides
+            .entry(record.provider_id.clone())
+            .or_default();
+        let created_at_ms = models
+            .get(&record.model)
+            .map(|existing| existing.created_at_ms)
+            .unwrap_or(now);
+        record.created_at_ms = created_at_ms;
+        record.updated_at_ms = now;
+        models.insert(record.model.clone(), record.clone());
+        self.save_locked(&inner)?;
+        Ok(record)
+    }
+
+    pub fn delete_provider_model_override(
+        &self,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<ProviderModelOverrideRecord, AppError> {
+        let provider_id = validate_provider_id(provider_id)?;
+        let model = validate_non_empty("model", model, 240)?;
+        let now = now_millis();
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        let models = inner
+            .provider_model_overrides
+            .entry(provider_id.clone())
+            .or_default();
+        let created_at_ms = models
+            .get(&model)
+            .map(|existing| existing.created_at_ms)
+            .unwrap_or(now);
+        let record = ProviderModelOverrideRecord {
+            provider_id,
+            model: model.clone(),
+            status: "disabled".to_owned(),
+            display_name: None,
+            family: None,
+            context_window: None,
+            created_at_ms,
+            updated_at_ms: now,
+        };
+        models.insert(model, record.clone());
+        self.save_locked(&inner)?;
+        Ok(record)
+    }
+
+    pub fn provider_policy_references(&self, provider_id: &str) -> Vec<serde_json::Value> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        let mut references = Vec::new();
+        references.extend(inner.api_keys.values().filter_map(|record| {
+            policy_references_provider(&record.allowed_providers, provider_id).then(|| {
+                json!({
+                    "type": "apiKey",
+                    "id": record.id,
+                    "name": record.name,
+                    "field": "allowedProviders",
+                })
+            })
+        }));
+        references.extend(inner.teams.values().filter_map(|record| {
+            policy_references_provider(&record.allowed_providers, provider_id).then(|| {
+                json!({
+                    "type": "team",
+                    "id": record.id,
+                    "name": record.name,
+                    "field": "allowedProviders",
+                })
+            })
+        }));
+        references
     }
 
     pub fn record_activity(&self, input: ActivityInput) -> Result<(), AppError> {
@@ -708,6 +969,16 @@ impl ControlStore {
                     }),
                 )
             })
+            .collect()
+    }
+
+    pub fn provider_discovered_models(&self) -> BTreeMap<String, Vec<String>> {
+        let inner = self.inner.lock().expect("control lock poisoned");
+        inner
+            .provider_tests
+            .iter()
+            .filter(|(_, record)| record.success && !record.discovered_models.is_empty())
+            .map(|(provider_id, record)| (provider_id.clone(), record.discovered_models.clone()))
             .collect()
     }
 
@@ -1628,6 +1899,14 @@ impl ControlStore {
             activities: inner.activities.clone(),
             provider_tests: inner.provider_tests.values().cloned().collect(),
             provider_health: inner.provider_health.values().cloned().collect(),
+            provider_overrides: inner.provider_overrides.values().cloned().collect(),
+            disabled_providers: inner.disabled_providers.clone(),
+            deleted_providers: inner.deleted_providers.clone(),
+            provider_model_overrides: inner
+                .provider_model_overrides
+                .values()
+                .flat_map(|models| models.values().cloned())
+                .collect(),
         };
         store.write_json(&file)
     }
@@ -1812,6 +2091,63 @@ fn normalize_policy_list(values: Vec<String>) -> Result<Vec<String>, AppError> {
         }
     }
     Ok(output)
+}
+
+fn validate_provider_id(value: &str) -> Result<String, AppError> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty()
+        || value.len() > 80
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+    {
+        return Err(AppError::InvalidRequest(
+            "provider id may only contain lowercase letters, numbers, dashes, and underscores"
+                .to_owned(),
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_non_empty(field: &str, value: &str, max_len: usize) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > max_len {
+        return Err(AppError::InvalidRequest(format!(
+            "{field} must be 1-{max_len} characters"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+fn validate_model_status(value: &str) -> Result<String, AppError> {
+    match value.trim() {
+        "active" | "disabled" => Ok(value.trim().to_owned()),
+        _ => Err(AppError::InvalidRequest(
+            "model status must be active or disabled".to_owned(),
+        )),
+    }
+}
+
+fn policy_references_provider(allowed_providers: &[String], provider_id: &str) -> bool {
+    allowed_providers
+        .iter()
+        .any(|rule| policy_value_matches(rule, provider_id))
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_tokens_field() -> String {
+    "max_completion_tokens".to_owned()
+}
+
+fn default_fidelity_mode() -> String {
+    "best_effort".to_owned()
+}
+
+fn default_model_status() -> String {
+    "active".to_owned()
 }
 
 fn resolve_team_ref(

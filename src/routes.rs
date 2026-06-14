@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State, connect_info::ConnectInfo},
     http::{
-        HeaderMap, HeaderValue,
+        HeaderMap, HeaderValue, StatusCode,
         header::{CONTENT_TYPE, HeaderName, SET_COOKIE},
     },
     response::{IntoResponse, Response},
@@ -28,12 +28,13 @@ use tracing::{info, warn};
 use crate::{
     auth::{AuthStore, CreateUserInput, LoginInput, PublicUser, UpdateUserInput},
     config::{
-        AppConfig, ConfigIssueSeverity, ProviderConfig, ProviderProtocol, ResolvedProvider,
-        RuntimeConfig,
+        AppConfig, ConfigIssueSeverity, FidelityMode, MaxTokensField, ProviderConfig,
+        ProviderProtocol, ResolvedProvider, RuntimeConfig,
     },
     control::{
-        ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput, UpdateApiKeyInput,
-        UpsertQuotaInput, UpsertTeamInput, UsageEstimate, UsageEventInput,
+        ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput,
+        ProviderModelOverrideRecord, ProviderOverrideRecord, UpdateApiKeyInput, UpsertQuotaInput,
+        UpsertTeamInput, UsageEstimate, UsageEventInput,
     },
     error::AppError,
     http::{Header, HttpTransport},
@@ -77,6 +78,48 @@ struct DashboardQuery {
     range: Option<String>,
     from: Option<String>,
     to: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteProviderQuery {
+    force: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderWriteBody {
+    id: Option<String>,
+    display_name: Option<String>,
+    protocol: Option<String>,
+    base_url: Option<String>,
+    api_key_env: Option<String>,
+    api_key_required: Option<bool>,
+    default_model: Option<String>,
+    models: Option<Vec<String>>,
+    model_prefixes: Option<Vec<String>>,
+    passthrough_unknown_models: Option<bool>,
+    max_tokens_field: Option<String>,
+    deduplicate_stream_text: Option<bool>,
+    buffer_stream_text: Option<bool>,
+    fidelity_mode: Option<String>,
+    disabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderDisableBody {
+    disabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModelWriteBody {
+    model: String,
+    status: Option<String>,
+    display_name: Option<String>,
+    family: Option<String>,
+    context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,10 +181,24 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/auth/logout", post(admin_logout))
         .route("/admin/auth/me", get(admin_me))
         .route("/admin/dashboard", get(admin_dashboard))
-        .route("/admin/providers", get(admin_providers))
+        .route(
+            "/admin/providers",
+            get(admin_providers).post(admin_create_provider),
+        )
+        .route(
+            "/admin/providers/{provider_id}",
+            put(admin_update_provider).delete(admin_delete_provider),
+        )
+        .route(
+            "/admin/providers/{provider_id}/disable",
+            post(admin_set_provider_disabled),
+        )
         .route(
             "/admin/providers/{provider_id}/models",
-            get(admin_provider_models),
+            get(admin_provider_models)
+                .post(admin_provider_models)
+                .put(admin_upsert_provider_model)
+                .delete(admin_delete_provider_model),
         )
         .route(
             "/admin/aliases",
@@ -286,7 +343,7 @@ fn public_model_rows(config: &AppConfig) -> Vec<Value> {
                 models.push(json!({
                     "id": model,
                     "type": "model",
-                    "display_name": provider.display_name,
+                    "display_name": public_model_display_name(id, provider, model),
                 }));
             }
         }
@@ -306,7 +363,7 @@ fn public_model_rows(config: &AppConfig) -> Vec<Value> {
             models.push(json!({
                 "id": alias,
                 "type": "model",
-                "display_name": resolved.provider.display_name,
+                "display_name": public_model_display_name(&resolved.provider_id, &resolved.provider, &resolved.model),
             }));
         }
     }
@@ -316,6 +373,123 @@ fn public_model_rows(config: &AppConfig) -> Vec<Value> {
 
 fn provider_is_configured(provider: &ProviderConfig) -> bool {
     !provider.api_key_required || provider.api_key().ok().flatten().is_some()
+}
+
+fn public_model_display_name(provider_id: &str, provider: &ProviderConfig, model: &str) -> String {
+    format!(
+        "{} · {}",
+        provider_origin_label(provider_id, provider),
+        model_owner_label(model)
+    )
+}
+
+fn provider_origin_label(provider_id: &str, provider: &ProviderConfig) -> &'static str {
+    let host = provider_host(&provider.base_url);
+    if is_local_provider(provider_id, &host) {
+        return "本地";
+    }
+    if provider_id == "custom" {
+        return "自定义";
+    }
+    if provider_id == "openrouter" {
+        return "聚合平台";
+    }
+    if official_provider_host(provider_id, &host) {
+        return "官方";
+    }
+    "第三方"
+}
+
+fn model_owner_label(model: &str) -> &'static str {
+    let value = model.to_ascii_lowercase();
+    if value.starts_with("gpt-")
+        || value.starts_with("o1")
+        || value.starts_with("o3")
+        || value.starts_with("o4")
+        || value.starts_with("o5")
+        || value.starts_with("chatgpt-")
+        || value.starts_with("codex-")
+        || value.contains("-codex")
+        || value.starts_with("openai/")
+    {
+        return "OpenAI";
+    }
+    if value.contains("mimo") {
+        return "小米 MiMo";
+    }
+    if value.contains("deepseek") {
+        return "DeepSeek";
+    }
+    if value.contains("claude") || value.starts_with("anthropic/") {
+        return "Anthropic Claude";
+    }
+    if value.contains("gemini") || value.starts_with("google/") {
+        return "Google Gemini";
+    }
+    if value.contains("qwen") || value.starts_with("qwq-") || value.starts_with("qvq-") {
+        return "Qwen";
+    }
+    if value.contains("kimi") || value.contains("moonshot") {
+        return "Moonshot Kimi";
+    }
+    if value.starts_with("glm-") || value.contains("z-ai/") {
+        return "智谱 GLM";
+    }
+    if value.contains("grok") || value.contains("x-ai/") {
+        return "xAI Grok";
+    }
+    if value.contains("llama") || value.contains("meta-llama/") {
+        return "Llama";
+    }
+    if value.contains("mistral") || value.contains("codestral") {
+        return "Mistral AI";
+    }
+    if value.contains("doubao") {
+        return "Doubao";
+    }
+    "自定义模型"
+}
+
+fn provider_host(base_url: &str) -> String {
+    let rest = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    host_port
+        .trim_matches(['[', ']'])
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches("www.")
+        .to_ascii_lowercase()
+}
+
+fn is_local_provider(provider_id: &str, host: &str) -> bool {
+    matches!(
+        provider_id,
+        "ollama" | "local_sglang" | "local_vllm" | "local_llamacpp"
+    ) || matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
+}
+
+fn official_provider_host(provider_id: &str, host: &str) -> bool {
+    let expected = match provider_id {
+        "deepseek" | "deepseek_openai" => "api.deepseek.com",
+        "mimo" => "api.xiaomimimo.com",
+        "openai" => "api.openai.com",
+        "anthropic" => "api.anthropic.com",
+        "gemini" => "generativelanguage.googleapis.com",
+        "dashscope" => "dashscope.aliyuncs.com",
+        "kimi" => "api.moonshot.cn",
+        "zhipu" => "open.bigmodel.cn",
+        "xai" => "api.x.ai",
+        "groq" => "api.groq.com",
+        "mistral" => "api.mistral.ai",
+        "ark" => "ark.cn-beijing.volces.com",
+        _ => return false,
+    };
+    host == expected || host.ends_with(&format!(".{expected}"))
 }
 
 async fn messages(
@@ -1048,6 +1222,141 @@ async fn admin_providers(
     Ok(Json(Value::Array(provider_rows(&state))))
 }
 
+async fn admin_create_provider(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ProviderWriteBody>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let provider_id = body
+        .id
+        .clone()
+        .ok_or_else(|| AppError::InvalidRequest("provider id is required".to_owned()))?;
+    let disabled = body.disabled.unwrap_or(false);
+    let record = provider_body_to_record(&provider_id, body, None)?;
+    let record = state.control.upsert_provider_override(record)?;
+    state.control.set_provider_disabled(&record.id, disabled)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{}", record.id),
+        format!("新增供应商 {}", record.id),
+        "info",
+    );
+    Ok(Json(provider_row_by_id(&state, &record.id)?))
+}
+
+async fn admin_update_provider(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderWriteBody>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let disabled = body.disabled;
+    let current = management_config(&state)
+        .providers
+        .get(&provider_id)
+        .cloned()
+        .ok_or_else(|| AppError::ProviderNotFound(provider_id.clone()))?;
+    let record = provider_body_to_record(&provider_id, body, Some((&provider_id, current)))?;
+    let record = state.control.upsert_provider_override(record)?;
+    if let Some(disabled) = disabled {
+        state.control.set_provider_disabled(&record.id, disabled)?;
+    }
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{}", record.id),
+        format!("更新供应商 {}", record.id),
+        "info",
+    );
+    Ok(Json(provider_row_by_id(&state, &record.id)?))
+}
+
+async fn admin_set_provider_disabled(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderDisableBody>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    if !management_config(&state)
+        .providers
+        .contains_key(&provider_id)
+    {
+        return Err(AppError::ProviderNotFound(provider_id));
+    }
+    let disabled = body.disabled.unwrap_or(true);
+    state
+        .control
+        .set_provider_disabled(&provider_id, disabled)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{provider_id}"),
+        if disabled {
+            format!("禁用供应商 {provider_id}")
+        } else {
+            format!("启用供应商 {provider_id}")
+        },
+        if disabled { "warning" } else { "info" },
+    );
+    Ok(Json(provider_row_by_id(&state, &provider_id)?))
+}
+
+async fn admin_delete_provider(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Query(query): Query<DeleteProviderQuery>,
+) -> Result<Response, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let management = management_config(&state);
+    if !management.providers.contains_key(&provider_id) {
+        return Err(AppError::ProviderNotFound(provider_id));
+    }
+    let dependencies = provider_delete_dependencies(&state, &management, &provider_id);
+    if !dependencies.is_empty() && !query.force.unwrap_or(false) {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "blocked": true,
+                "providerId": provider_id,
+                "message": "provider is still referenced; pass force=true after reviewing dependencies",
+                "dependencies": dependencies,
+            })),
+        )
+            .into_response());
+    }
+
+    for dependency in dependencies
+        .iter()
+        .filter(|dependency| dependency.get("type").and_then(Value::as_str) == Some("alias"))
+    {
+        if let Some(alias) = dependency.get("id").and_then(Value::as_str) {
+            let tombstone = state.config.snapshot().aliases.contains_key(alias);
+            state.control.delete_alias(alias, tombstone)?;
+        }
+    }
+
+    let tombstone = state.config.snapshot().providers.contains_key(&provider_id);
+    state.control.delete_provider(&provider_id, tombstone)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{provider_id}"),
+        format!("删除供应商 {provider_id}"),
+        "warning",
+    );
+    Ok(Json(json!({ "ok": true, "providerId": provider_id })).into_response())
+}
+
 async fn admin_aliases(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1154,7 +1463,7 @@ async fn admin_update_settings(
     let actor = require_admin_write_user(&state, &headers)?;
     let mut changes = Vec::new();
     if let Some(gateway) = body.get("gateway") {
-        let config = state.config.snapshot();
+        let config = effective_config(&state);
         if let Some(provider_id) = gateway.get("defaultProvider").and_then(Value::as_str) {
             if !config.providers.contains_key(provider_id) {
                 return Err(AppError::ProviderNotFound(provider_id.to_owned()));
@@ -1195,7 +1504,7 @@ async fn admin_test_provider(
         .get("providerId")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let config = effective_config(&state);
+    let config = management_config(&state);
     let Some(provider) = config.providers.get(provider_id).cloned() else {
         return Ok(Json(json!({
             "success": false,
@@ -1244,7 +1553,7 @@ async fn admin_provider_models(
     Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let actor = require_admin_write_user(&state, &headers)?;
-    let config = effective_config(&state);
+    let config = management_config(&state);
     let Some(provider) = config.providers.get(&provider_id).cloned() else {
         return Err(AppError::ProviderNotFound(provider_id));
     };
@@ -1283,6 +1592,110 @@ async fn admin_provider_models(
         "models": models,
         "modelCount": models.len(),
         "discoveredAt": tested_at.to_string(),
+    })))
+}
+
+async fn admin_upsert_provider_model(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderModelWriteBody>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let config = management_config(&state);
+    let Some(provider) = config.providers.get(&provider_id) else {
+        return Err(AppError::ProviderNotFound(provider_id));
+    };
+    let status = body.status.unwrap_or_else(|| "active".to_owned());
+    if status == "disabled"
+        && provider.default_model == body.model
+        && provider
+            .models
+            .iter()
+            .filter(|model| *model != &body.model)
+            .count()
+            == 0
+    {
+        return Err(AppError::InvalidRequest(
+            "cannot disable the last/default model of an enabled provider; disable the provider instead"
+                .to_owned(),
+        ));
+    }
+    let record = state
+        .control
+        .upsert_provider_model_override(ProviderModelOverrideRecord {
+            provider_id: provider_id.clone(),
+            model: body.model,
+            status,
+            display_name: body.display_name,
+            family: body.family,
+            context_window: body.context_window,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        })?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{provider_id}:model:{}", record.model),
+        format!(
+            "更新供应商 {provider_id} 模型 {} 为 {}",
+            record.model, record.status
+        ),
+        if record.status == "disabled" {
+            "warning"
+        } else {
+            "info"
+        },
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "providerId": provider_id,
+        "model": provider_model_row(&record),
+        "provider": provider_row_by_id(&state, &record.provider_id)?,
+    })))
+}
+
+async fn admin_delete_provider_model(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderModelWriteBody>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let config = management_config(&state);
+    let Some(provider) = config.providers.get(&provider_id) else {
+        return Err(AppError::ProviderNotFound(provider_id));
+    };
+    if provider.default_model == body.model
+        && provider
+            .models
+            .iter()
+            .filter(|model| *model != &body.model)
+            .count()
+            == 0
+    {
+        return Err(AppError::InvalidRequest(
+            "cannot delete the last/default model of an enabled provider; disable the provider instead"
+                .to_owned(),
+        ));
+    }
+    let record = state
+        .control
+        .delete_provider_model_override(&provider_id, &body.model)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "config_change",
+        format!("provider:{provider_id}:model:{}", record.model),
+        format!("从供应商 {provider_id} 可路由列表移除模型 {}", record.model),
+        "warning",
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "providerId": provider_id,
+        "model": provider_model_row(&record),
+        "provider": provider_row_by_id(&state, &provider_id)?,
     })))
 }
 
@@ -1807,7 +2220,8 @@ async fn admin_delete_quota(
 }
 
 fn provider_rows(state: &AppState) -> Vec<Value> {
-    let config = effective_config(state);
+    let config = management_config(state);
+    let controls = state.control.provider_control_snapshot();
     let provider_tests = state.control.provider_test_rows();
     let provider_health = state.control.provider_health_rows();
     config
@@ -1827,9 +2241,15 @@ fn provider_rows(state: &AppState) -> Vec<Value> {
             } else {
                 "inactive"
             };
+            let status = if controls.disabled_providers.contains(id) {
+                "disabled"
+            } else {
+                config_status
+            };
             Some(json!({
                 "id": id,
                 "displayName": provider.display_name,
+                "source": if controls.provider_overrides.contains_key(id) { "control" } else { "config" },
                 "protocol": provider_protocol_value(provider.protocol),
                 "baseUrl": provider.base_url,
                 "apiKeyEnv": provider.api_key_env,
@@ -1842,11 +2262,12 @@ fn provider_rows(state: &AppState) -> Vec<Value> {
                 "deduplicateStreamText": provider.deduplicate_stream_text,
                 "bufferStreamText": provider.buffer_stream_text,
                 "fidelityMode": fidelity_mode_value(provider.fidelity_mode),
-                "status": config_status,
+                "status": status,
                 "runtimeStatus": runtime_status,
                 "hasApiKey": has_api_key,
                 "lastTest": provider_tests.get(id).cloned(),
                 "health": health,
+                "modelInventory": provider_inventory_rows(id, provider, &controls),
             }))
         })
         .collect()
@@ -2087,8 +2508,57 @@ fn cidr_matches(base: u128, ip: u128, prefix: u8, bits: u8) -> bool {
 }
 
 fn effective_config(state: &AppState) -> AppConfig {
+    merged_config(state, false)
+}
+
+fn management_config(state: &AppState) -> AppConfig {
+    merged_config(state, true)
+}
+
+fn merged_config(state: &AppState, include_disabled: bool) -> AppConfig {
     let mut config = state.config.snapshot();
+    let controls = state.control.provider_control_snapshot();
     let snapshot = state.control.routing_config();
+    let discovered_models = state.control.provider_discovered_models();
+
+    for provider_id in &controls.deleted_providers {
+        config.providers.remove(provider_id);
+        config.provider_order.retain(|id| id != provider_id);
+    }
+
+    for (provider_id, record) in &controls.provider_overrides {
+        if controls.deleted_providers.contains(provider_id) {
+            continue;
+        }
+        let Ok(provider) = provider_record_to_config(record) else {
+            continue;
+        };
+        config.providers.insert(provider_id.clone(), provider);
+        if !config.provider_order.contains(provider_id) {
+            config.provider_order.push(provider_id.clone());
+        }
+    }
+
+    if !include_disabled {
+        for provider_id in &controls.disabled_providers {
+            config.providers.remove(provider_id);
+            config.provider_order.retain(|id| id != provider_id);
+        }
+    }
+
+    for (provider_id, models) in discovered_models {
+        let Some(provider) = config.providers.get_mut(&provider_id) else {
+            continue;
+        };
+        let mut seen = provider.models.iter().cloned().collect::<BTreeSet<_>>();
+        for model in models {
+            if seen.insert(model.clone()) {
+                provider.models.push(model);
+            }
+        }
+    }
+
+    apply_provider_model_overrides(&mut config, &controls.provider_model_overrides);
     config.aliases = state.control.effective_aliases(&config.aliases);
 
     if let Some(provider_id) = snapshot.default_provider
@@ -2107,7 +2577,295 @@ fn effective_config(state: &AppState) -> AppConfig {
         }
     }
 
+    normalize_provider_order(&mut config);
+    if !config.providers.contains_key(&config.default_provider)
+        && let Some(provider_id) = config.provider_order.first().cloned()
+    {
+        config.default_provider = provider_id;
+    }
+
     config
+}
+
+fn provider_record_to_config(record: &ProviderOverrideRecord) -> Result<ProviderConfig, AppError> {
+    Ok(ProviderConfig {
+        display_name: record.display_name.clone(),
+        protocol: parse_provider_protocol(&record.protocol)?,
+        base_url: record.base_url.clone(),
+        api_key_env: record.api_key_env.clone(),
+        api_key: record
+            .api_key_env
+            .as_deref()
+            .and_then(|name| env::var(name).ok()),
+        api_key_required: record.api_key_required,
+        default_model: record.default_model.clone(),
+        models: record.models.clone(),
+        model_prefixes: record.model_prefixes.clone(),
+        passthrough_unknown_models: record.passthrough_unknown_models,
+        max_tokens_field: parse_max_tokens_field(&record.max_tokens_field)?,
+        deduplicate_stream_text: record.deduplicate_stream_text,
+        buffer_stream_text: record.buffer_stream_text,
+        fidelity_mode: parse_fidelity_mode(&record.fidelity_mode)?,
+    })
+}
+
+fn apply_provider_model_overrides(
+    config: &mut AppConfig,
+    model_overrides: &std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, ProviderModelOverrideRecord>,
+    >,
+) {
+    for (provider_id, models) in model_overrides {
+        let Some(provider) = config.providers.get_mut(provider_id) else {
+            continue;
+        };
+        for record in models.values() {
+            if record.status == "disabled" {
+                provider.models.retain(|model| model != &record.model);
+                if provider.default_model == record.model
+                    && let Some(next_model) = provider.models.first().cloned()
+                {
+                    provider.default_model = next_model;
+                }
+                continue;
+            }
+            if !provider.models.contains(&record.model) {
+                provider.models.push(record.model.clone());
+            }
+        }
+    }
+}
+
+fn normalize_provider_order(config: &mut AppConfig) {
+    let mut seen = BTreeSet::new();
+    config
+        .provider_order
+        .retain(|id| config.providers.contains_key(id) && seen.insert(id.clone()));
+    let mut remaining = config.providers.keys().cloned().collect::<Vec<_>>();
+    remaining.sort();
+    for provider_id in remaining {
+        if !seen.contains(&provider_id) {
+            config.provider_order.push(provider_id.clone());
+            seen.insert(provider_id);
+        }
+    }
+}
+
+fn provider_body_to_record(
+    provider_id: &str,
+    body: ProviderWriteBody,
+    current: Option<(&str, ProviderConfig)>,
+) -> Result<ProviderOverrideRecord, AppError> {
+    let current_provider = current.as_ref().map(|(_, provider)| provider);
+    let id = provider_id.trim().to_ascii_lowercase();
+    let display_name = body
+        .display_name
+        .or_else(|| current_provider.map(|provider| provider.display_name.clone()))
+        .unwrap_or_else(|| id.clone());
+    let protocol = body
+        .protocol
+        .or_else(|| {
+            current_provider.map(|provider| provider_protocol_value(provider.protocol).to_owned())
+        })
+        .unwrap_or_else(|| "openai-compat".to_owned());
+    parse_provider_protocol(&protocol)?;
+    let base_url = body
+        .base_url
+        .or_else(|| current_provider.map(|provider| provider.base_url.clone()))
+        .ok_or_else(|| AppError::InvalidRequest("baseUrl is required".to_owned()))?;
+    let default_model = body
+        .default_model
+        .or_else(|| current_provider.map(|provider| provider.default_model.clone()))
+        .ok_or_else(|| AppError::InvalidRequest("defaultModel is required".to_owned()))?;
+    let mut models = body
+        .models
+        .or_else(|| current_provider.map(|provider| provider.models.clone()))
+        .unwrap_or_default();
+    if !models.contains(&default_model) {
+        models.insert(0, default_model.clone());
+    }
+    let model_prefixes = body
+        .model_prefixes
+        .or_else(|| current_provider.map(|provider| provider.model_prefixes.clone()))
+        .unwrap_or_default();
+    let api_key_env = body
+        .api_key_env
+        .or_else(|| current_provider.and_then(|provider| provider.api_key_env.clone()));
+    let max_tokens_field = body
+        .max_tokens_field
+        .or_else(|| {
+            current_provider
+                .map(|provider| max_tokens_field_value(provider.max_tokens_field).to_owned())
+        })
+        .unwrap_or_else(|| "max_completion_tokens".to_owned());
+    parse_max_tokens_field(&max_tokens_field)?;
+    let fidelity_mode = body
+        .fidelity_mode
+        .or_else(|| {
+            current_provider.map(|provider| fidelity_mode_value(provider.fidelity_mode).to_owned())
+        })
+        .unwrap_or_else(|| "best_effort".to_owned());
+    parse_fidelity_mode(&fidelity_mode)?;
+
+    Ok(ProviderOverrideRecord {
+        id,
+        display_name,
+        protocol,
+        base_url,
+        api_key_env,
+        api_key_required: body
+            .api_key_required
+            .or_else(|| current_provider.map(|provider| provider.api_key_required))
+            .unwrap_or(true),
+        default_model,
+        models,
+        model_prefixes,
+        passthrough_unknown_models: body
+            .passthrough_unknown_models
+            .or_else(|| current_provider.map(|provider| provider.passthrough_unknown_models))
+            .unwrap_or(false),
+        max_tokens_field,
+        deduplicate_stream_text: body
+            .deduplicate_stream_text
+            .or_else(|| current_provider.map(|provider| provider.deduplicate_stream_text))
+            .unwrap_or(false),
+        buffer_stream_text: body
+            .buffer_stream_text
+            .or_else(|| current_provider.map(|provider| provider.buffer_stream_text))
+            .unwrap_or(false),
+        fidelity_mode,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+    })
+}
+
+fn provider_row_by_id(state: &AppState, provider_id: &str) -> Result<Value, AppError> {
+    provider_rows(state)
+        .into_iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(provider_id))
+        .ok_or_else(|| AppError::ProviderNotFound(provider_id.to_owned()))
+}
+
+fn provider_inventory_rows(
+    provider_id: &str,
+    provider: &ProviderConfig,
+    controls: &crate::control::ProviderControlSnapshot,
+) -> Vec<Value> {
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::new();
+    let overrides = controls.provider_model_overrides.get(provider_id);
+    for model in &provider.models {
+        seen.insert(model.clone());
+        let override_record = overrides.and_then(|models| models.get(model));
+        rows.push(json!({
+            "model": model,
+            "status": override_record.map(|record| record.status.as_str()).unwrap_or("active"),
+            "displayName": override_record.and_then(|record| record.display_name.as_deref()),
+            "family": override_record.and_then(|record| record.family.as_deref()),
+            "contextWindow": override_record.and_then(|record| record.context_window),
+            "default": model == &provider.default_model,
+        }));
+    }
+    if let Some(overrides) = overrides {
+        for record in overrides.values() {
+            if seen.insert(record.model.clone()) {
+                rows.push(provider_model_row(record));
+            }
+        }
+    }
+    rows
+}
+
+fn provider_model_row(record: &ProviderModelOverrideRecord) -> Value {
+    json!({
+        "providerId": record.provider_id,
+        "model": record.model,
+        "status": record.status,
+        "displayName": record.display_name,
+        "family": record.family,
+        "contextWindow": record.context_window,
+        "createdAt": record.created_at_ms.to_string(),
+        "updatedAt": record.updated_at_ms.to_string(),
+    })
+}
+
+fn provider_delete_dependencies(
+    state: &AppState,
+    config: &AppConfig,
+    provider_id: &str,
+) -> Vec<Value> {
+    let mut dependencies = Vec::new();
+    if config.default_provider == provider_id {
+        dependencies.push(json!({
+            "type": "defaultProvider",
+            "id": provider_id,
+            "field": "gateway.defaultProvider",
+        }));
+    }
+    if config.provider_order.iter().any(|id| id == provider_id) {
+        dependencies.push(json!({
+            "type": "providerOrder",
+            "id": provider_id,
+            "field": "gateway.providerOrder",
+        }));
+    }
+    for (alias, target) in &config.aliases {
+        let direct = target == provider_id
+            || target
+                .split_once(':')
+                .is_some_and(|(target_provider, _)| target_provider == provider_id);
+        let resolved = config
+            .resolve(alias)
+            .ok()
+            .is_some_and(|resolved| resolved.provider_id == provider_id);
+        if direct || resolved {
+            dependencies.push(json!({
+                "type": "alias",
+                "id": alias,
+                "target": target,
+                "field": "aliases",
+            }));
+        }
+    }
+    dependencies.extend(state.control.provider_policy_references(provider_id));
+    dependencies
+}
+
+fn parse_provider_protocol(value: &str) -> Result<ProviderProtocol, AppError> {
+    match value.trim() {
+        "anthropic" => Ok(ProviderProtocol::Anthropic),
+        "openai-compat" | "openai_compat" | "openaiCompatible" => {
+            Ok(ProviderProtocol::OpenaiCompat)
+        }
+        _ => Err(AppError::InvalidRequest(
+            "protocol must be anthropic or openai-compat".to_owned(),
+        )),
+    }
+}
+
+fn parse_max_tokens_field(value: &str) -> Result<MaxTokensField, AppError> {
+    match value.trim() {
+        "max_completion_tokens" | "max-completion-tokens" => {
+            Ok(MaxTokensField::MaxCompletionTokens)
+        }
+        "max_tokens" | "max-tokens" => Ok(MaxTokensField::MaxTokens),
+        "both" => Ok(MaxTokensField::Both),
+        _ => Err(AppError::InvalidRequest(
+            "maxTokensField must be max_completion_tokens, max_tokens, or both".to_owned(),
+        )),
+    }
+}
+
+fn parse_fidelity_mode(value: &str) -> Result<FidelityMode, AppError> {
+    match value.trim() {
+        "strict" => Ok(FidelityMode::Strict),
+        "best_effort" | "best-effort" => Ok(FidelityMode::BestEffort),
+        "stability" => Ok(FidelityMode::Stability),
+        _ => Err(AppError::InvalidRequest(
+            "fidelityMode must be strict, best_effort, or stability".to_owned(),
+        )),
+    }
 }
 
 fn validate_alias_target(state: &AppState, alias: &str, target: &str) -> Result<(), AppError> {
@@ -2483,6 +3241,47 @@ mod tests {
         assert!(ids.contains(&"fast-chat"));
         assert!(!ids.contains(&"deepseek-v4-pro"));
         assert!(!ids.contains(&"deepseek-route"));
+    }
+
+    #[test]
+    fn public_model_rows_use_model_owner_for_third_party_channels() {
+        let provider = ProviderConfig {
+            display_name: "小米 MiMo".to_owned(),
+            protocol: ProviderProtocol::OpenaiCompat,
+            base_url: "https://w.ciykj.cn/v1".to_owned(),
+            api_key_env: None,
+            api_key: Some("upstream-key".to_owned()),
+            api_key_required: true,
+            default_model: "mimo-v2.5-pro".to_owned(),
+            models: vec!["gpt-5.2".to_owned(), "mimo-v2.5-pro".to_owned()],
+            model_prefixes: vec!["mimo-".to_owned()],
+            passthrough_unknown_models: false,
+            max_tokens_field: MaxTokensField::MaxCompletionTokens,
+            deduplicate_stream_text: true,
+            buffer_stream_text: true,
+            fidelity_mode: FidelityMode::Stability,
+        };
+        let config = AppConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            max_request_body_bytes: 1024 * 1024,
+            max_concurrent_requests: 16,
+            auth_token: Some(CLIENT_TOKEN.to_owned()),
+            default_provider: "mimo".to_owned(),
+            provider_order: vec!["mimo".to_owned()],
+            providers: HashMap::from([("mimo".to_owned(), provider)]),
+            aliases: HashMap::new(),
+        };
+
+        let rows = public_model_rows(&config);
+        let display_name = |id: &str| {
+            rows.iter()
+                .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+                .and_then(|row| row.get("display_name").and_then(Value::as_str))
+                .unwrap()
+        };
+
+        assert_eq!(display_name("gpt-5.2"), "第三方 · OpenAI");
+        assert_eq!(display_name("mimo-v2.5-pro"), "第三方 · 小米 MiMo");
     }
 
     #[tokio::test]
@@ -3054,6 +3853,264 @@ data: [DONE]
         );
     }
 
+    #[tokio::test]
+    async fn admin_provider_models_post_discovers_with_csrf() {
+        let upstream = spawn_openai_models_upstream(
+            r#"{"data":[{"id":"mimo-v2.5-pro"},{"id":"mimo-v2.6-pro"}]}"#,
+        )
+        .await;
+        let app = router(test_state_with_admin(upstream, 1024 * 1024));
+
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .body(Body::from(
+                        json!({
+                            "username": "admin",
+                            "password": "strong-password-123",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_response.status(), StatusCode::OK);
+        let session_cookie = login_response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("login should set a session cookie")
+            .clone();
+
+        let missing_csrf_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/providers/mimo/models")
+                    .header(COOKIE, session_cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_csrf_response.status(), StatusCode::FORBIDDEN);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/providers/mimo/models")
+                    .header("x-modelport-csrf", "1")
+                    .header(COOKIE, session_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["success"], json!(true));
+        assert_eq!(body["modelCount"], json!(2));
+
+        let models_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/models")
+                    .header("x-api-key", CLIENT_TOKEN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(models_response.status(), StatusCode::OK);
+        let body = to_bytes(models_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let ids = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"mimo-v2.6-pro"));
+    }
+
+    #[test]
+    fn discovered_provider_models_are_runtime_routable() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        state
+            .control
+            .record_provider_test(
+                "mimo".to_owned(),
+                true,
+                "discovered 2 model(s)".to_owned(),
+                vec!["mimo-v2.5-pro".to_owned(), "mimo-v2.6-pro".to_owned()],
+            )
+            .unwrap();
+
+        let config = effective_config(&state);
+        let provider = config.providers.get("mimo").unwrap();
+        assert_eq!(
+            provider
+                .models
+                .iter()
+                .filter(|model| model.as_str() == "mimo-v2.5-pro")
+                .count(),
+            1
+        );
+        assert!(provider.models.contains(&"mimo-v2.6-pro".to_owned()));
+
+        let rows = public_model_rows(&config);
+        let ids = rows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"mimo-v2.6-pro"));
+        assert_eq!(config.resolve("mimo-v2.6-pro").unwrap().provider_id, "mimo");
+    }
+
+    #[test]
+    fn provider_override_is_routable_until_disabled() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        state
+            .control
+            .upsert_provider_override(ProviderOverrideRecord {
+                id: "local_custom".to_owned(),
+                display_name: "Local Custom".to_owned(),
+                protocol: "openai-compat".to_owned(),
+                base_url: "http://127.0.0.1:11434/v1".to_owned(),
+                api_key_env: None,
+                api_key_required: false,
+                default_model: "qwen-local".to_owned(),
+                models: vec!["qwen-local".to_owned()],
+                model_prefixes: vec!["qwen-".to_owned()],
+                passthrough_unknown_models: true,
+                max_tokens_field: "max_tokens".to_owned(),
+                deduplicate_stream_text: false,
+                buffer_stream_text: false,
+                fidelity_mode: "strict".to_owned(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+            })
+            .unwrap();
+
+        let config = effective_config(&state);
+        assert_eq!(
+            config.resolve("qwen-local").unwrap().provider_id,
+            "local_custom"
+        );
+        assert!(
+            public_model_rows(&config)
+                .iter()
+                .any(|row| row.get("id").and_then(Value::as_str) == Some("qwen-local"))
+        );
+
+        state
+            .control
+            .set_provider_disabled("local_custom", true)
+            .unwrap();
+        assert!(
+            !effective_config(&state)
+                .providers
+                .contains_key("local_custom")
+        );
+        assert!(
+            management_config(&state)
+                .providers
+                .contains_key("local_custom")
+        );
+    }
+
+    #[test]
+    fn provider_model_override_disables_discovered_model() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        state
+            .control
+            .record_provider_test(
+                "mimo".to_owned(),
+                true,
+                "discovered 2 model(s)".to_owned(),
+                vec!["mimo-v2.5-pro".to_owned(), "mimo-v2.6-pro".to_owned()],
+            )
+            .unwrap();
+        state
+            .control
+            .upsert_provider_model_override(ProviderModelOverrideRecord {
+                provider_id: "mimo".to_owned(),
+                model: "mimo-v2.6-pro".to_owned(),
+                status: "disabled".to_owned(),
+                display_name: None,
+                family: Some("小米 MiMo".to_owned()),
+                context_window: Some(128_000),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+            })
+            .unwrap();
+
+        let config = effective_config(&state);
+        let provider = config.providers.get("mimo").unwrap();
+        assert!(!provider.models.contains(&"mimo-v2.6-pro".to_owned()));
+        assert!(
+            !public_model_rows(&config)
+                .iter()
+                .any(|row| row.get("id").and_then(Value::as_str) == Some("mimo-v2.6-pro"))
+        );
+    }
+
+    #[test]
+    fn provider_delete_dependencies_include_routes_aliases_and_policies() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        state
+            .control
+            .upsert_alias("fast".to_owned(), "mimo:mimo-v2.5-pro".to_owned())
+            .unwrap();
+        state
+            .control
+            .create_api_key(CreateApiKeyInput {
+                user_id: "usr_test".to_owned(),
+                username: Some("test-user".to_owned()),
+                name: "mimo only".to_owned(),
+                group: None,
+                team_id: None,
+                allowed_models: None,
+                allowed_providers: Some(vec!["mimo".to_owned()]),
+                expires_at: None,
+            })
+            .unwrap();
+
+        let dependencies = provider_delete_dependencies(&state, &management_config(&state), "mimo");
+        assert!(
+            dependencies
+                .iter()
+                .any(|row| row.get("type").and_then(Value::as_str) == Some("defaultProvider"))
+        );
+        assert!(
+            dependencies
+                .iter()
+                .any(|row| row.get("type").and_then(Value::as_str) == Some("providerOrder"))
+        );
+        assert!(
+            dependencies.iter().any(
+                |row| row.get("type").and_then(Value::as_str) == Some("alias")
+                    && row.get("id").and_then(Value::as_str) == Some("fast")
+            )
+        );
+        assert!(
+            dependencies
+                .iter()
+                .any(|row| row.get("type").and_then(Value::as_str) == Some("apiKey"))
+        );
+    }
+
     #[test]
     fn client_ip_uses_peer_when_forwarded_header_is_untrusted() {
         let mut headers = HeaderMap::new();
@@ -3139,6 +4196,22 @@ data: [DONE]
         let app = Router::new().route(
             "/v1/chat/completions",
             post(move || async move { (status, [(CONTENT_TYPE, content_type)], body) }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        format!("http://{addr}/v1")
+    }
+
+    async fn spawn_openai_models_upstream(body: &'static str) -> String {
+        let app = Router::new().route(
+            "/v1/models",
+            get(
+                move || async move { (StatusCode::OK, [(CONTENT_TYPE, "application/json")], body) },
+            ),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

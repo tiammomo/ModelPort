@@ -742,7 +742,7 @@ impl ProviderConfig {
 
 const DEEPSEEK_SPEC: ProviderSpec = ProviderSpec {
     id: "deepseek",
-    display_name: "DeepSeek Official Anthropic",
+    display_name: "DeepSeek",
     protocol: ProviderProtocol::Anthropic,
     base_url_env: "DEEPSEEK_ANTHROPIC_BASE_URL",
     base_url_env_fallbacks: &[],
@@ -767,7 +767,7 @@ const DEEPSEEK_SPEC: ProviderSpec = ProviderSpec {
 
 const MIMO_SPEC: ProviderSpec = ProviderSpec {
     id: "mimo",
-    display_name: "Xiaomi Mimo OpenAI-Compatible",
+    display_name: "小米 MiMo",
     protocol: ProviderProtocol::OpenaiCompat,
     base_url_env: "MIMO_OPENAI_BASE_URL",
     base_url_env_fallbacks: &["BASE_URL"],
@@ -788,7 +788,7 @@ const MIMO_SPEC: ProviderSpec = ProviderSpec {
 const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
     ProviderSpec {
         id: "deepseek_openai",
-        display_name: "DeepSeek Official OpenAI-Compatible",
+        display_name: "DeepSeek",
         protocol: ProviderProtocol::OpenaiCompat,
         base_url_env: "DEEPSEEK_OPENAI_BASE_URL",
         base_url_env_fallbacks: &[],
@@ -904,7 +904,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
     },
     ProviderSpec {
         id: "gemini",
-        display_name: "Google Gemini OpenAI-Compatible",
+        display_name: "Google Gemini",
         protocol: ProviderProtocol::OpenaiCompat,
         base_url_env: "GEMINI_OPENAI_BASE_URL",
         base_url_env_fallbacks: &[],
@@ -967,7 +967,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
     },
     ProviderSpec {
         id: "dashscope",
-        display_name: "Alibaba DashScope Qwen",
+        display_name: "阿里云百炼 Qwen",
         protocol: ProviderProtocol::OpenaiCompat,
         base_url_env: "DASHSCOPE_BASE_URL",
         base_url_env_fallbacks: &[],
@@ -1019,7 +1019,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
     },
     ProviderSpec {
         id: "zhipu",
-        display_name: "Zhipu GLM",
+        display_name: "智谱 GLM",
         protocol: ProviderProtocol::OpenaiCompat,
         base_url_env: "ZHIPU_BASE_URL",
         base_url_env_fallbacks: &[],
@@ -1063,7 +1063,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
     },
     ProviderSpec {
         id: "ark",
-        display_name: "Volcengine Ark Doubao",
+        display_name: "火山方舟 Doubao",
         protocol: ProviderProtocol::OpenaiCompat,
         base_url_env: "ARK_BASE_URL",
         base_url_env_fallbacks: &[],
@@ -1082,7 +1082,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
     },
     ProviderSpec {
         id: "ollama",
-        display_name: "Ollama Local OpenAI-Compatible",
+        display_name: "Ollama",
         protocol: ProviderProtocol::OpenaiCompat,
         base_url_env: "OLLAMA_BASE_URL",
         base_url_env_fallbacks: &[],
@@ -1160,7 +1160,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
 
 const CUSTOM_OPENAI_SPEC: ProviderSpec = ProviderSpec {
     id: "custom",
-    display_name: "Custom OpenAI-Compatible",
+    display_name: "自定义 OpenAI 兼容",
     protocol: ProviderProtocol::OpenaiCompat,
     base_url_env: "CUSTOM_OPENAI_BASE_URL",
     base_url_env_fallbacks: &[],
