@@ -209,19 +209,22 @@ pub fn pricing_for_model(model: &str) -> ModelPricing {
         };
     }
     if normalized.contains("mimo-v2.5-pro") {
+        // Xiaomi MiMo overseas pay-as-you-go, updated 2026-06-12:
+        // input cache miss $0.435/M, output $0.87/M, cache hit $0.0036/M.
+        // Cache write is listed as limited-time free.
         return ModelPricing {
-            input_per_million: 0.8,
-            output_per_million: 3.2,
-            cache_write_per_million: 1.0,
-            cache_read_per_million: 0.08,
+            input_per_million: 0.435,
+            output_per_million: 0.87,
+            cache_write_per_million: 0.0,
+            cache_read_per_million: 0.0036,
         };
     }
     if normalized.contains("mimo-") {
         return ModelPricing {
-            input_per_million: 0.5,
-            output_per_million: 2.0,
-            cache_write_per_million: 0.625,
-            cache_read_per_million: 0.05,
+            input_per_million: 0.14,
+            output_per_million: 0.28,
+            cache_write_per_million: 0.0,
+            cache_read_per_million: 0.0028,
         };
     }
     if normalized.contains("gpt-4o") {
@@ -328,5 +331,20 @@ mod tests {
         let charge = charge_for_model("claude-sonnet-4-20250514", usage);
 
         assert!((charge.cost_estimate - 22.05).abs() < 0.000001);
+    }
+
+    #[test]
+    fn mimo_v25_pro_uses_current_overseas_pay_as_you_go_pricing() {
+        let charge = charge_for_model(
+            "mimo-v2.5-pro",
+            TokenUsageBreakdown {
+                input_tokens: 1_000_000,
+                output_tokens: 1_000_000,
+                cache_write_tokens: 1_000_000,
+                cache_read_tokens: 1_000_000,
+            },
+        );
+
+        assert!((charge.cost_estimate - 1.3086).abs() < 0.000001);
     }
 }

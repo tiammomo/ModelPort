@@ -973,15 +973,36 @@ async fn admin_dashboard(
             let metric_requests = provider_messages.iter().map(|message| message.requests_total).sum::<u64>();
             let metric_successes = provider_messages.iter().map(|message| message.successes_total).sum::<u64>();
             let metric_duration = provider_messages.iter().map(|message| message.duration_ms_total).sum::<u64>();
-            let input_tokens = provider_messages.iter().map(|message| message.input_tokens_total).sum::<u64>();
-            let output_tokens = provider_messages.iter().map(|message| message.output_tokens_total).sum::<u64>();
-            let cache_write_tokens = provider_messages.iter().map(|message| message.cache_write_tokens_total).sum::<u64>();
-            let cache_read_tokens = provider_messages.iter().map(|message| message.cache_read_tokens_total).sum::<u64>();
-            let cost_estimate = provider_messages.iter().map(|message| message.cost_estimate_usd_total).sum::<f64>();
             let persisted = persisted_provider_usage.get(id);
-            let requests = if metric_requests > 0 { metric_requests } else { persisted.map(|stats| stats.requests_total).unwrap_or(0) };
-            let successes = if metric_requests > 0 { metric_successes } else { persisted.map(|stats| stats.successes_total).unwrap_or(0) };
-            let duration = if metric_requests > 0 { metric_duration } else { persisted.map(|stats| stats.duration_ms_total).unwrap_or(0) };
+            let has_persisted_usage = persisted.is_some_and(|stats| stats.requests_total > 0);
+            let requests = if has_persisted_usage { persisted.map(|stats| stats.requests_total).unwrap_or(0) } else { metric_requests };
+            let successes = if has_persisted_usage { persisted.map(|stats| stats.successes_total).unwrap_or(0) } else { metric_successes };
+            let duration = if has_persisted_usage { persisted.map(|stats| stats.duration_ms_total).unwrap_or(0) } else { metric_duration };
+            let input_tokens = if has_persisted_usage {
+                persisted.map(|stats| stats.input_tokens_total).unwrap_or(0)
+            } else {
+                provider_messages.iter().map(|message| message.input_tokens_total).sum::<u64>()
+            };
+            let output_tokens = if has_persisted_usage {
+                persisted.map(|stats| stats.output_tokens_total).unwrap_or(0)
+            } else {
+                provider_messages.iter().map(|message| message.output_tokens_total).sum::<u64>()
+            };
+            let cache_write_tokens = if has_persisted_usage {
+                persisted.map(|stats| stats.cache_write_tokens_total).unwrap_or(0)
+            } else {
+                provider_messages.iter().map(|message| message.cache_write_tokens_total).sum::<u64>()
+            };
+            let cache_read_tokens = if has_persisted_usage {
+                persisted.map(|stats| stats.cache_read_tokens_total).unwrap_or(0)
+            } else {
+                provider_messages.iter().map(|message| message.cache_read_tokens_total).sum::<u64>()
+            };
+            let cost_estimate = if has_persisted_usage {
+                persisted.map(|stats| stats.cost_estimate_usd_total).unwrap_or(0.0)
+            } else {
+                provider_messages.iter().map(|message| message.cost_estimate_usd_total).sum::<f64>()
+            };
             let success_rate = percent(successes, requests);
             let provider_status = provider.get("status").and_then(Value::as_str).unwrap_or("inactive");
             let runtime_status = provider.get("runtimeStatus").and_then(Value::as_str).unwrap_or("healthy");

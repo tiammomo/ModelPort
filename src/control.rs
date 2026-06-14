@@ -434,6 +434,11 @@ pub struct ProviderUsageStats {
     pub requests_total: u64,
     pub successes_total: u64,
     pub duration_ms_total: u64,
+    pub input_tokens_total: u64,
+    pub output_tokens_total: u64,
+    pub cache_write_tokens_total: u64,
+    pub cache_read_tokens_total: u64,
+    pub cost_estimate_usd_total: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1344,6 +1349,7 @@ impl ControlStore {
             .rev()
             .map(|record| {
                 let pricing = pricing::pricing_for_model(&record.resolved_model);
+                let cost_estimate = usage_record_cost(record);
                 let input_cost =
                     pricing::cost_component(record.input_tokens, pricing.input_per_million);
                 let output_cost =
@@ -1404,14 +1410,14 @@ impl ControlStore {
                     "billedInputTokens": billed_input_tokens,
                     "totalTokens": total_tokens,
                     "cacheHitRate": cache_hit_rate,
-                    "costEstimate": record.cost_estimate,
+                    "costEstimate": cost_estimate,
                     "modelPricing": pricing,
                     "costBreakdown": {
                         "inputCost": input_cost,
                         "outputCost": output_cost,
                         "cacheWriteCost": cache_write_cost,
                         "cacheReadCost": cache_read_cost,
-                        "totalCost": record.cost_estimate,
+                        "totalCost": cost_estimate,
                     },
                     "latencyMs": record.latency_ms,
                     "firstByteLatencyMs": first_byte_latency_ms,
@@ -1545,6 +1551,17 @@ impl ControlStore {
                 stats.successes_total = stats.successes_total.saturating_add(1);
             }
             stats.duration_ms_total = stats.duration_ms_total.saturating_add(record.latency_ms);
+            stats.input_tokens_total = stats.input_tokens_total.saturating_add(record.input_tokens);
+            stats.output_tokens_total = stats
+                .output_tokens_total
+                .saturating_add(record.output_tokens);
+            stats.cache_write_tokens_total = stats
+                .cache_write_tokens_total
+                .saturating_add(record.cache_write_tokens);
+            stats.cache_read_tokens_total = stats
+                .cache_read_tokens_total
+                .saturating_add(record.cache_read_tokens);
+            stats.cost_estimate_usd_total += usage_record_cost(record);
         }
 
         providers
@@ -1589,7 +1606,7 @@ impl ControlStore {
             summary.total_cache_read_tokens = summary
                 .total_cache_read_tokens
                 .saturating_add(record.cache_read_tokens);
-            summary.total_cost_estimate += record.cost_estimate;
+            summary.total_cost_estimate += usage_record_cost(record);
             total_latency = total_latency.saturating_add(record.latency_ms);
         }
         summary.average_latency_ms = total_latency
@@ -2033,7 +2050,8 @@ fn usage_cost_for_api_key(usage: &[UsageRecord], api_key_id: &str, since: Option
         .iter()
         .filter(|record| record.api_key_id.as_deref() == Some(api_key_id))
         .filter(|record| since.is_none_or(|since| record.timestamp_ms >= since))
-        .map(|record| record.cost_estimate.max(0.0))
+        .map(usage_record_cost)
+        .map(|cost| cost.max(0.0))
         .sum()
 }
 
@@ -2042,8 +2060,31 @@ fn usage_cost_for_team(usage: &[UsageRecord], team_id: &str, since: Option<u64>)
         .iter()
         .filter(|record| record.team_id.as_deref() == Some(team_id))
         .filter(|record| since.is_none_or(|since| record.timestamp_ms >= since))
-        .map(|record| record.cost_estimate.max(0.0))
+        .map(usage_record_cost)
+        .map(|cost| cost.max(0.0))
         .sum()
+}
+
+fn usage_record_cost(record: &UsageRecord) -> f64 {
+    let has_token_breakdown = record
+        .input_tokens
+        .saturating_add(record.output_tokens)
+        .saturating_add(record.cache_write_tokens)
+        .saturating_add(record.cache_read_tokens)
+        > 0;
+    if !has_token_breakdown {
+        return record.cost_estimate;
+    }
+
+    pricing::cost_for_model(
+        &record.resolved_model,
+        pricing::TokenUsageBreakdown {
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            cache_write_tokens: record.cache_write_tokens,
+            cache_read_tokens: record.cache_read_tokens,
+        },
+    )
 }
 
 fn policy_value_matches(rule: &str, value: &str) -> bool {
