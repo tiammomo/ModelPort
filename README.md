@@ -4,98 +4,92 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+ModelPort is a local model gateway for Claude Code and VS Code Claude. It exposes an Anthropic-compatible `/v1/messages` endpoint on your machine, then routes requests to DeepSeek, Mimo, Anthropic, OpenAI-compatible providers, OpenRouter, Ollama, or custom local runtimes.
+
+The goal is practical: keep your editor workflow unchanged while switching models through one local, observable, authenticated port.
+
 ![ModelPort architecture overview](docs/assets/modelport-overview.svg)
 
-_Architecture overview: Claude clients call local ModelPort, then ModelPort handles auth, routing, protocol conversion, streaming, and metrics before reaching configured providers._
+## Current Working Profile
 
-**ModelPort is a local model gateway for Claude Code and VS Code Claude.**
+This workspace is currently configured and verified with:
 
-It exposes an Anthropic-compatible `/v1/messages` endpoint on your machine, then routes Claude Code / VS Code Claude requests to Mimo, DeepSeek, Anthropic, OpenAI-compatible providers, OpenRouter, Ollama, or a custom upstream. The core goal is simple: keep the editor workflow unchanged while making different foundation models usable through one stable local port.
+| Item | Current value |
+| --- | --- |
+| Dashboard | `http://127.0.0.1:5173` |
+| Local API | `http://127.0.0.1:17878` |
+| Default provider | `deepseek` |
+| Claude model | `deepseek-v4-pro` |
+| Storage | Docker Compose PostgreSQL volume |
 
-## Status
+`mimo-v2.5-pro` is still supported by the router, but upstream quota, balance, and rate limits decide whether it is usable at any moment. The current local Claude settings point to `deepseek-v4-pro`.
 
-ModelPort is production-ready within its current scope:
+## Product Screens
 
-- Suitable for personal long-running local usage and daily VS Code Claude / Claude Code development.
-- Suitable for small internal production or pilot deployments behind a trusted network boundary or reverse proxy.
-- Not recommended for direct public internet exposure.
-- Not a multi-tenant SaaS gateway; it provides a lightweight small-team control plane, but not enterprise SSO, external billing, or public multi-tenant isolation.
+These screenshots are captured from the running local dashboard, not mockups.
 
-Verified baseline:
+### Operations Dashboard
 
-- Third-party Mimo base URL: `https://w.ciykj.cn/v1`
-- Model: `mimo-v2.5-pro`
-- Non-streaming `/v1/messages`
-- Streaming `/v1/messages`
-- VS Code Claude settings on Windows/WSL
-- Dashboard login and control-plane E2E flows
-- `doctor`, `provider-matrix`, `/metrics`, acceptance checks, and configuration validation
+The dashboard shows API key status, request volume, token usage, cost estimates, success rate, provider health, model distribution, and recent usage.
 
-## Features
+![ModelPort dashboard overview](docs/assets/dashboard-overview.png)
 
-- Local token authentication; starting without auth is disabled by default.
-- Anthropic-compatible entry API.
-- OpenAI-compatible upstream protocol conversion.
-- `provider:model`, model aliases, model prefixes, and unknown-model passthrough.
-- Native `reqwest` / `rustls` HTTP transport, with no system `curl` subprocess.
-- Upstream connection pooling, connection timeout, request timeout, and stream idle timeout.
-- Request body, response body, and concurrency limits.
-- Admin users, API keys, teams/projects, key budgets, team budgets, model/provider allowlists, audit events, and full backup/restore.
-- Provider runtime health, cooldown, and simple fallback between compatible providers.
-- Runtime reload for provider keys, base URLs, model lists, aliases, and route priority from the dashboard.
-- Mimo stable streaming output to avoid replayed fragments in Claude Code.
-- Web dashboard for API keys, users, quotas, providers, request logs, rich usage charts, token trends, and cost estimates.
-- Usage accounting for input/output/cache tokens, latency, retries, request logs, and model/provider breakdowns.
-- Runtime `doctor`, static `config validate`, provider matrix checks, and Prometheus `/metrics`.
-- Docker Compose, systemd, quick-start scripts, and GitHub Actions CI.
+### Model And Provider Management
 
-## Positioning
+The model page shows registered models, default routes, provider mappings, aliases, provider lifecycle controls, and model inventory.
 
-ModelPort is not a large all-in-one model aggregation platform. It is a lightweight, local, controllable developer model routing adapter.
+![ModelPort model management](docs/assets/dashboard-models.png)
 
-- For users: a local port that lets Claude Code connect to common code models.
-- For developers: a small protocol gateway from Anthropic Messages API to multiple providers.
-- For long-term evolution: a minimal local AI provider control plane for model naming, routing, protocol conversion, key isolation, and provider policy.
+### System Settings
 
-## Documentation
+System settings expose readiness checks, server parameters, authentication, rate limits, provider credentials, runtime diagnostics, backup/export, and config reload operations.
 
-- [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md): positioning, architecture boundaries, and roadmap.
-- [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md): provider compatibility matrix, verification status, and acceptance criteria.
-- [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md): production acceptance checklist for personal and small-team deployments.
-- [docs/DOCKER.md](docs/DOCKER.md): lightweight Docker Compose deployment with internal PostgreSQL.
-- [docs/LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md): SGLang, vLLM, llama.cpp, Ollama, and custom local runtime integration.
-- [docs/PERFORMANCE.md](docs/PERFORMANCE.md): efficiency, benchmarks, metrics, and production tuning.
-- [docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md): GitHub repository settings, branch protection, and release suggestions.
-- [docs/GPT_IMAGE_2_GUIDE.md](docs/GPT_IMAGE_2_GUIDE.md): future image capability guidance.
-- [dashboard/README.md](dashboard/README.md): dashboard development, environment variables, and E2E testing.
+![ModelPort system settings](docs/assets/dashboard-settings.png)
+
+## What It Does
+
+- Authenticates local clients with `x-api-key` or `Authorization: Bearer`.
+- Accepts Anthropic Messages API requests from Claude Code and VS Code Claude.
+- Converts requests to upstream Anthropic-compatible or OpenAI-compatible provider APIs.
+- Routes by `provider:model`, aliases, explicit model IDs, and model prefixes.
+- Tracks requests, latency, retries, input/output/cache tokens, provider health, and cost estimates.
+- Provides a web dashboard for API keys, users, teams/projects, quotas, logs, provider configuration, model inventory, aliases, backup, and runtime settings.
+- Supports Docker Compose, local source development, systemd deployment, Prometheus metrics, and production acceptance scripts.
+
+ModelPort is meant for personal and small-team trusted environments. Do not expose it directly to the public internet.
 
 ## Quick Start
 
-![ModelPort quick-start flow](docs/assets/modelport-quickstart.svg)
-
-_Quick-start flow: prepare `.env`, validate configuration, start the local gateway, then let VS Code Claude use `mimo-v2.5-pro` through ModelPort._
-
-### Fastest Path
-
-Use Docker Compose if you want the quickest complete stack: backend API, dashboard UI, and internal PostgreSQL.
+The fastest complete stack is Docker Compose: backend API, dashboard UI, and internal PostgreSQL.
 
 ```bash
-git clone https://github.com/tiammomo/ModelPort.git
-cd ModelPort
 cp deploy/docker/modelport.env.example .env
 ```
 
-Edit `.env` and set at least these values:
+Edit `.env` and set at least:
 
 ```bash
 MODELPORT_AUTH_TOKEN=replace-with-a-long-random-local-token
 ANTHROPIC_AUTH_TOKEN=replace-with-the-same-local-router-token
+MODELPORT_ADMIN_USERNAME=admin
 MODELPORT_ADMIN_PASSWORD=replace-with-a-long-random-admin-password
 MODELPORT_POSTGRES_PASSWORD=replace-with-a-long-random-postgres-password
-MIMO_OPENAI_API_KEY=replace-with-real-mimo-api-key
+
+MODELPORT_DEFAULT_PROVIDER=deepseek
+DEEPSEEK_ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+DEEPSEEK_ANTHROPIC_AUTH_TOKEN=replace-with-real-deepseek-api-key
+DEEPSEEK_MODEL=deepseek-v4-pro
+
+ANTHROPIC_BASE_URL=http://127.0.0.1:17878
+ANTHROPIC_MODEL=deepseek-v4-pro
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-pro
+ANTHROPIC_SMALL_FAST_MODEL=deepseek-v4-pro
+CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-pro
 ```
 
-Then start everything:
+Start the stack:
 
 ```bash
 docker compose up -d --build
@@ -105,184 +99,30 @@ docker compose ps
 Open:
 
 - Dashboard: `http://127.0.0.1:5173`
-- API endpoint: `http://127.0.0.1:17878/v1/messages`
 - Health check: `http://127.0.0.1:17878/health`
+- Messages API: `http://127.0.0.1:17878/v1/messages`
 
-PostgreSQL stays inside the Compose network by default; it does not publish host port `5432`, so it will not conflict with another PostgreSQL already running on your machine.
+Log in to the dashboard with `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`.
 
-For local source development without Docker, run the backend and dashboard in two terminals:
+## Claude Code Setup
 
-```bash
-cp .env.example .env
-# Edit .env and set MODELPORT_AUTH_TOKEN, ANTHROPIC_AUTH_TOKEN, admin password, and provider key.
-scripts/start.sh
-```
+Configure VS Code Claude / Claude Code with the local gateway URL and the same router token from `.env`.
 
-```bash
-cd dashboard
-npm ci
-npm run dev
-```
-
-The dashboard dev server listens on `http://127.0.0.1:5173` and proxies `/admin`, `/v1`, `/health`, and `/metrics` to the backend on `127.0.0.1:17878`.
-
-### 1. Install Dependencies
-
-Recommended on Linux / WSL:
+Common settings paths:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential pkg-config jq
+# Linux / WSL
+~/.config/Code/User/settings.json
+
+# Windows path from WSL
+/mnt/c/Users/<you>/AppData/Roaming/Code/User/settings.json
 ```
 
-Rust toolchain is required for local source builds. Node.js 24+ and npm are required only when running the dashboard dev server locally. `jq` is not required at runtime, but it makes JSON checks and `--all` provider matrix runs easier.
-
-### 2. Prepare Configuration
-
-```bash
-git clone https://github.com/tiammomo/ModelPort.git
-cd ModelPort
-cp .env.example .env
-```
-
-Edit `.env`. At minimum, set:
-
-```bash
-MODELPORT_BIND=127.0.0.1:17878
-MODELPORT_AUTH_TOKEN=replace-with-a-long-random-local-token
-MODELPORT_ADMIN_USERNAME=admin
-MODELPORT_ADMIN_PASSWORD=replace-with-a-long-random-admin-password
-MODELPORT_DEFAULT_PROVIDER=mimo
-
-BASE_URL=https://w.ciykj.cn/v1
-MIMO_OPENAI_API_KEY=replace-with-real-mimo-api-key
-MIMO_MODEL=mimo-v2.5-pro
-
-ANTHROPIC_BASE_URL=http://127.0.0.1:17878
-ANTHROPIC_AUTH_TOKEN=replace-with-the-same-local-router-token
-ANTHROPIC_MODEL=mimo-v2.5-pro
-ANTHROPIC_DEFAULT_OPUS_MODEL=mimo-v2.5-pro
-ANTHROPIC_DEFAULT_SONNET_MODEL=mimo-v2.5-pro
-ANTHROPIC_DEFAULT_HAIKU_MODEL=mimo-v2.5-pro
-ANTHROPIC_SMALL_FAST_MODEL=mimo-v2.5-pro
-CLAUDE_CODE_SUBAGENT_MODEL=mimo-v2.5-pro
-```
-
-Notes:
-
-- `MODELPORT_AUTH_TOKEN` is the local token used by Claude Code to call ModelPort.
-- `ANTHROPIC_AUTH_TOKEN` must match `MODELPORT_AUTH_TOKEN`.
-- `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD` are used only for the management dashboard.
-- `MIMO_OPENAI_API_KEY` must be a real upstream key, not a placeholder.
-- `.env` is ignored by `.gitignore`; do not commit real secrets.
-
-Validate before startup:
-
-```bash
-scripts/config-validate.sh
-```
-
-After installing the release binary, you can also run:
-
-```bash
-model-port config validate
-```
-
-If the DeepSeek key is not set, validation will show a warning. The default Mimo path is not affected.
-
-### 3. Start Service
-
-Start in the background:
-
-```bash
-scripts/start.sh
-```
-
-Check status:
-
-```bash
-scripts/status.sh
-```
-
-`scripts/start.sh` starts the backend gateway only. For local dashboard development, start the dashboard in a second terminal:
-
-```bash
-cd dashboard
-npm ci
-npm run dev
-```
-
-Open the dashboard after the Vite server is running:
-
-```text
-http://127.0.0.1:5173
-```
-
-Log in with `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`. The dashboard manages users, API keys, teams/projects, quotas, provider configuration, request logs, and usage/cost monitoring.
-
-Stop and restart:
-
-```bash
-scripts/stop.sh
-scripts/restart.sh
-```
-
-Run in the foreground for development:
-
-```bash
-scripts/dev.sh
-```
-
-### 4. Verify Service
-
-Local full self-check:
-
-```bash
-scripts/doctor.sh
-```
-
-Real Mimo upstream verification:
-
-```bash
-scripts/doctor.sh --upstream
-scripts/smoke-test.sh --upstream
-```
-
-Provider non-streaming and streaming compatibility check:
-
-```bash
-scripts/provider-matrix.sh --model mimo-v2.5-pro
-```
-
-Verify all registered models:
-
-```bash
-scripts/provider-matrix.sh --all
-```
-
-`--all` makes real upstream calls and may incur provider cost.
-
-### 5. VS Code Claude Integration
-
-Configure the Claude Code extension environment variables in VS Code user-level `settings.json`.
-
-Common Linux / WSL path:
-
-```bash
-/home/tiammomo/.config/Code/User/settings.json
-```
-
-Windows path as seen from WSL:
-
-```bash
-/mnt/c/Users/pearf/AppData/Roaming/Code/User/settings.json
-```
-
-Recommended configuration:
+Recommended settings:
 
 ```json
 {
-  "claudeCode.selectedModel": "mimo-v2.5-pro",
+  "claudeCode.selectedModel": "deepseek-v4-pro",
   "claudeCode.environmentVariables": [
     {
       "name": "ANTHROPIC_BASE_URL",
@@ -294,242 +134,113 @@ Recommended configuration:
     },
     {
       "name": "ANTHROPIC_MODEL",
-      "value": "mimo-v2.5-pro"
+      "value": "deepseek-v4-pro"
     },
     {
       "name": "ANTHROPIC_DEFAULT_OPUS_MODEL",
-      "value": "mimo-v2.5-pro"
+      "value": "deepseek-v4-pro"
     },
     {
       "name": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      "value": "mimo-v2.5-pro"
+      "value": "deepseek-v4-pro"
     },
     {
       "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      "value": "mimo-v2.5-pro"
+      "value": "deepseek-v4-pro"
     },
     {
       "name": "ANTHROPIC_SMALL_FAST_MODEL",
-      "value": "mimo-v2.5-pro"
+      "value": "deepseek-v4-pro"
     },
     {
       "name": "CLAUDE_CODE_SUBAGENT_MODEL",
-      "value": "mimo-v2.5-pro"
+      "value": "deepseek-v4-pro"
     }
   ]
 }
 ```
 
-After editing settings, restart VS Code or reload the Claude Code window, then ask a simple question. ModelPort logs should show `routing message request`.
+Reload VS Code or restart the Claude Code session after editing settings.
 
-## Common Commands
+## Verify The Running Gateway
 
-```bash
-scripts/config-validate.sh
-scripts/start.sh
-scripts/status.sh
-scripts/doctor.sh --upstream
-scripts/provider-matrix.sh --model mimo-v2.5-pro
-scripts/bench.sh
-scripts/restart.sh
-```
-
-## API
-
-### `GET /health`
-
-No token required:
+Local service health:
 
 ```bash
 curl http://127.0.0.1:17878/health
 ```
 
-### `GET /v1/models`
-
-Token required:
+Authenticated model list:
 
 ```bash
+source .env
 curl -sS \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
   http://127.0.0.1:17878/v1/models
 ```
 
-### `POST /v1/messages`
-
-Non-streaming:
+Real `deepseek-v4-pro` message call:
 
 ```bash
+source .env
 curl -sS \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   http://127.0.0.1:17878/v1/messages \
   -d '{
-    "model": "mimo-v2.5-pro",
-    "max_tokens": 128,
+    "model": "deepseek-v4-pro",
+    "max_tokens": 96,
     "messages": [
       {
         "role": "user",
-        "content": "Reply in one short sentence: ModelPort is connected."
+        "content": "Reply exactly: OK"
       }
     ]
   }'
 ```
 
-Streaming:
+Provider compatibility check:
 
 ```bash
-curl -N -sS \
-  -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  http://127.0.0.1:17878/v1/messages \
-  -d '{
-    "model": "mimo-v2.5-pro",
-    "max_tokens": 128,
-    "stream": true,
-    "messages": [
-      {
-        "role": "user",
-        "content": "Stream a short hello."
-      }
-    ]
-  }'
+scripts/provider-matrix.sh --model deepseek-v4-pro
 ```
 
-### `GET /metrics`
-
-Prometheus text format, token required:
+Full local checks:
 
 ```bash
-curl -sS \
-  -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  http://127.0.0.1:17878/metrics
+scripts/config-validate.sh
+scripts/status.sh
+scripts/acceptance.sh
 ```
 
-Current metrics include:
+`scripts/acceptance.sh --upstream` and `scripts/provider-matrix.sh --all` make real provider calls and may incur upstream cost.
 
-- `modelport_uptime_seconds`
-- `modelport_route_requests_total`
-- `modelport_route_successes_total`
-- `modelport_route_failures_total`
-- `modelport_route_duration_ms_total`
-- `modelport_message_requests_total`
-- `modelport_message_successes_total`
-- `modelport_message_failures_total`
-- `modelport_message_duration_ms_total`
+## API Surface
 
-Supported auth header:
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /health` | No | Runtime health and provider status. |
+| `GET /v1/models` | Yes | Anthropic-style model listing. |
+| `POST /v1/messages` | Yes | Anthropic-compatible messages API. |
+| `GET /metrics` | Yes | Prometheus text metrics. |
+| `/admin/*` | Cookie session | Dashboard and control-plane APIs. |
+
+Example auth headers:
 
 ```http
 x-api-key: <MODELPORT_AUTH_TOKEN>
-```
-
-or:
-
-```http
 Authorization: Bearer <MODELPORT_AUTH_TOKEN>
 ```
 
-The management dashboard uses account login instead of this router token. The first admin user is bootstrapped from `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`; if no admin password is configured, ModelPort falls back to `MODELPORT_AUTH_TOKEN` only for initial local migration.
-
-## Management Dashboard
-
-The dashboard is designed for personal and small-team operations, not public multi-tenant SaaS. It includes:
-
-- Dashboard overview with requests, success rate, tokens, latency, cost estimates, provider breakdowns, model distribution, token trends, recent usage, and quick actions.
-- Request logs with channel, identity, model, cache/token details, latency, cost, retry, network, and raw context fields.
-- API key management with status restore/disable, user binding, teams/projects, IP restrictions, spend limits, rate windows, and model/provider policies.
-- User management for roles, status, email, and password updates.
-- Quotas, provider lifecycle management, route aliases, provider model discovery, per-model enable/disable controls, and setup/runtime diagnostics.
-
-Cost estimates are operational estimates based on the current pricing table and recorded token usage. Historical records with token details are recalculated from the current pricing table in dashboard summaries and logs; legacy records without token details keep their stored estimate.
-
-For Mimo overseas pay-as-you-go pricing, the current built-in `mimo-v2.5-pro` table uses:
-
-| Item | Price |
-| --- | --- |
-| Input cache miss | `$0.435 / 1M tokens` |
-| Output | `$0.87 / 1M tokens` |
-| Input cache hit | `$0.0036 / 1M tokens` |
-| Cache write | Limited-time free, represented as `$0` |
-
-Reference: <https://mimo.mi.com/docs/en-US/price/pay-as-you-go>
-
-## Model Switching
-
-Set a model directly:
-
-```bash
-export ANTHROPIC_MODEL=mimo-v2.5-pro
-export ANTHROPIC_MODEL=deepseek-v4-pro
-export ANTHROPIC_MODEL=qwen-plus
-```
-
-Force a provider:
-
-```bash
-export ANTHROPIC_MODEL=mimo:mimo-v2.5-pro
-export ANTHROPIC_MODEL=openrouter:anthropic/claude-sonnet-4
-export ANTHROPIC_MODEL=gemini:gemini-2.5-flash
-export ANTHROPIC_MODEL=custom:any-model-name-from-your-upstream
-```
-
-Configure aliases:
-
-```toml
-[aliases]
-sonnet = "openrouter:anthropic/claude-sonnet-4"
-qwen = "dashscope:qwen-plus"
-mimo = "mimo:mimo-v2.5-pro"
-```
-
-Then:
-
-```bash
-export ANTHROPIC_MODEL=sonnet
-```
-
-`openrouter`, `custom`, and `ollama` are best suited for unknown-model passthrough and arbitrary model switching.
-
-## Local OpenAI-Compatible Runtimes
-
-Local models served by SGLang, vLLM, llama.cpp, Ollama, or another OpenAI-compatible server can be routed through ModelPort. Point a provider at the runtime's `/v1` base URL and keep `api_key_required = false` unless your local server enforces a key. Use the exact served model ID exposed by `/v1/models`; for fine-tuned deployments, that is usually the fine-tuned served name rather than only the base model family name.
-
-```toml
-[providers.local_vllm]
-display_name = "Local vLLM"
-protocol = "openai-compat"
-base_url = "http://127.0.0.1:8000/v1"
-api_key_required = false
-default_model = "local-model"
-models = ["local-model"]
-passthrough_unknown_models = true
-max_tokens_field = "max_tokens"
-fidelity_mode = "best_effort"
-
-[aliases]
-local = "local_vllm:local-model"
-```
-
-Common base URLs are `http://127.0.0.1:30000/v1` for SGLang, `http://127.0.0.1:8000/v1` for vLLM, and `http://127.0.0.1:8080/v1` for llama.cpp's OpenAI-compatible server. Use `fidelity_mode = "strict"` only when you prefer ModelPort to reject Anthropic features that cannot be represented by the OpenAI-compatible runtime.
-
-See [docs/LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md) for model discovery, served-name guidance, and local runtime troubleshooting.
-
-These local runtimes are also built in as optional providers. For example:
-
-```bash
-export MODELPORT_ENABLE_LOCAL_VLLM=1
-export VLLM_BASE_URL=http://127.0.0.1:8000/v1
-export VLLM_MODEL=qwen2.5-coder
-export ANTHROPIC_MODEL=local_vllm:qwen2.5-coder
-```
+The dashboard uses account login, not the router token. The first admin is bootstrapped from `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`.
 
 ## Providers
 
-| Provider | Protocol | Key Environment Variables |
+| Provider | Protocol | Main environment variables |
 | --- | --- | --- |
-| `mimo` | OpenAI-compatible | `BASE_URL`, `MIMO_OPENAI_BASE_URL`, `MIMO_OPENAI_API_KEY`, `MIMO_MODEL` |
 | `deepseek` | Anthropic-compatible | `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_MODEL` |
 | `deepseek_openai` | OpenAI-compatible | `DEEPSEEK_OPENAI_API_KEY`, `DEEPSEEK_OPENAI_MODEL`, `DEEPSEEK_API_KEY` |
+| `mimo` | OpenAI-compatible | `BASE_URL`, `MIMO_OPENAI_BASE_URL`, `MIMO_OPENAI_API_KEY`, `MIMO_MODEL` |
 | `anthropic` | Anthropic-compatible | `ANTHROPIC_API_KEY`, `ANTHROPIC_UPSTREAM_MODEL` |
 | `openai` | OpenAI-compatible | `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | `openrouter` | OpenAI-compatible | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` |
@@ -547,221 +258,158 @@ export ANTHROPIC_MODEL=local_vllm:qwen2.5-coder
 | `local_vllm` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_VLLM`, `VLLM_BASE_URL`, `VLLM_MODEL` |
 | `local_llamacpp` | OpenAI-compatible | `MODELPORT_ENABLE_LOCAL_LLAMACPP`, `LLAMACPP_BASE_URL`, `LLAMACPP_MODEL` |
 
-Mimo has completed real baseline verification. Other provider configurations are built in, but should be marked verified only after running `scripts/provider-matrix.sh` with real keys. See [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md).
+See [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md) for compatibility status and verification notes.
 
-## Configuration File
+## Model Switching
 
-No configuration file is required by default; environment variables are enough. Use a config file when you need fixed providers, aliases, or routing priority:
+Set a model directly:
 
 ```bash
-mkdir -p ~/.config/modelport
-cp config.example.toml ~/.config/modelport/config.toml
+export ANTHROPIC_MODEL=deepseek-v4-pro
+export ANTHROPIC_MODEL=mimo-v2.5-pro
+export ANTHROPIC_MODEL=qwen-plus
 ```
 
-You can also specify another path:
+Force a provider:
 
 ```bash
-MODELPORT_CONFIG=/path/to/config.toml model-port config validate
+export ANTHROPIC_MODEL=deepseek:deepseek-v4-pro
+export ANTHROPIC_MODEL=mimo:mimo-v2.5-pro
+export ANTHROPIC_MODEL=openrouter:anthropic/claude-sonnet-4
+export ANTHROPIC_MODEL=custom:any-model-name-from-your-upstream
 ```
 
-Real secrets should still be provided through environment variables instead of being hardcoded in `config.toml`.
+Configure aliases in `config.toml`:
 
-Important provider fields:
+```toml
+[aliases]
+main = "deepseek:deepseek-v4-pro"
+mimo = "mimo:mimo-v2.5-pro"
+local = "local_vllm:qwen2.5-coder"
+```
 
-- `provider_order`: prefix matching priority.
-- `models`: explicit model names.
-- `model_prefixes`: model name prefix matching.
-- `passthrough_unknown_models`: whether unknown models are passed through.
-- `max_tokens_field`: OpenAI-compatible token field strategy.
-- `deduplicate_stream_text`: handles streaming upstreams that replay text fragments; enabled for Mimo by default.
-- `buffer_stream_text`: converts unstable upstream streaming into stable downstream SSE; enabled for Mimo by default.
-- `fidelity_mode`: `strict` rejects lossy Anthropic-to-OpenAI-compatible conversions, `best_effort` preserves current compatibility, and `stability` allows stream text rewriting for unstable upstreams.
-- `[aliases]`: model aliases that can target a provider, a model name, or `provider:model`.
-
-Runtime reload:
-
-- Dashboard route aliases, default provider, provider order, provider lifecycle changes, and provider model inventory changes are applied immediately.
-- After editing `.env` or `config.toml`, use `System Settings -> Operations -> Reload Configuration` or call `POST /admin/settings/reload-config`. New requests use the refreshed provider keys, base URLs, model lists, aliases, provider order, and legacy client auth token.
-- Service-level settings still require a backend restart: listen address, request body limit, concurrency layer, HTTP client timeouts, trusted proxies, and first-admin bootstrap values.
-
-Service-level variables:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `MODELPORT_BIND` | `127.0.0.1:17878` | Listen address. Keep it local in production or place it behind a reverse proxy. |
-| `MODELPORT_ENV_FILE` | current `.env` when present | Optional env file to reread during configuration reload. Scripts and Docker Compose set this automatically. |
-| `MODELPORT_MAX_REQUEST_BODY_BYTES` | `33554432` | Maximum request body size. |
-| `MODELPORT_MAX_CONCURRENT_REQUESTS` | `64` | Maximum concurrent requests. |
-| `MODELPORT_HTTP_CONNECT_TIMEOUT_SECS` | `10` | Upstream connection timeout. |
-| `MODELPORT_HTTP_REQUEST_TIMEOUT_SECS` | `600` | Total non-streaming request timeout. |
-| `MODELPORT_HTTP_STREAM_IDLE_TIMEOUT_SECS` | `300` | Streaming upstream idle timeout. |
-| `MODELPORT_HTTP_MAX_RESPONSE_BYTES` | `33554432` | Non-streaming response and error body limit. |
-| `MODELPORT_INCLUDE_UNAVAILABLE_PROVIDERS` | unset | Set to `1` to list providers without configured keys. |
-| `MODELPORT_ALLOW_NO_AUTH` | unset | Set to `1` only for isolated tests; do not enable in production. |
-| `MODELPORT_TRUSTED_PROXIES` | `127.0.0.1,::1` | Only these proxy peers may supply `X-Forwarded-For` / `X-Real-IP`. The Docker template also includes `172.16.0.0/12`. |
-| `MODELPORT_ALLOWED_ORIGINS` | unset | Extra allowed origins for console write requests; usually not needed. |
-| `MODELPORT_DISABLE_CSRF` | unset | Emergency local debugging only; do not enable in production. |
-
-Dashboard-only variables:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `VITE_API_BASE_URL` | current origin | Backend base URL for the dashboard during Vite development or split deployment. |
-| `VITE_MODELPORT_MOCK` | unset | Set to `1` to use local dashboard mock data for demos and UI testing. Do not enable in production builds. |
-
-## Long-Running Usage
-
-### Background Scripts
+Then use:
 
 ```bash
+export ANTHROPIC_MODEL=main
+```
+
+Dashboard changes to aliases, provider order, default provider, provider lifecycle, and model inventory can be applied at runtime. Service-level changes such as listen address and concurrency limits still require a backend restart.
+
+## Local Development
+
+Backend only:
+
+```bash
+cp .env.example .env
 scripts/start.sh
 scripts/status.sh
-tail -f .modelport/model-port.log
 ```
 
-### Docker Compose
+Dashboard development server:
 
 ```bash
-cp deploy/docker/modelport.env.example .env
-# Edit .env and set MODELPORT_AUTH_TOKEN, MODELPORT_ADMIN_PASSWORD, and provider keys.
-docker compose up -d --build
+cd dashboard
+npm ci
+npm run dev
+```
+
+The Vite dashboard listens on `http://127.0.0.1:5173` and proxies `/admin`, `/v1`, `/health`, and `/metrics` to the backend.
+
+Foreground backend development:
+
+```bash
+scripts/dev.sh
+```
+
+Checks before committing:
+
+```bash
+scripts/check.sh
+cd dashboard
+npm run lint
+npm run build
+```
+
+## Operations
+
+Common Docker commands:
+
+```bash
+docker compose ps
 docker compose logs -f modelport
-```
-
-The default stack starts three lightweight containers:
-
-- `postgres`: internal PostgreSQL for control-plane persistence; no host port is published by default.
-- `modelport`: backend API, routing, auth, and control-plane data.
-- `dashboard`: static dashboard UI with `/admin` and `/v1` proxied to the backend.
-
-Default host endpoints:
-
-- Dashboard: `http://127.0.0.1:5173`
-- API: `http://127.0.0.1:17878/v1/messages`
-
-Control-plane data is stored in the Docker named volume `modelport-postgres` by default. PostgreSQL is only reachable on the Docker network, so it does not conflict with a host PostgreSQL on port 5432. See [docs/DOCKER.md](docs/DOCKER.md) for deployment details.
-
-Production acceptance:
-
-```bash
-scripts/acceptance.sh
-# Include one real upstream model request:
-scripts/acceptance.sh --upstream
-```
-
-The acceptance script creates a temporary user, team/project, and API key, verifies IP/spend-limit rejection, audit logging, and backup validation, then cleans up temporary resources. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
-
-Stop:
-
-```bash
+docker compose restart modelport
 docker compose down
 ```
 
-### systemd
+Backup and validate:
 
 ```bash
-scripts/build-release.sh
-sudo install -m 0755 target/release/model-port /usr/local/bin/model-port
-sudo mkdir -p /etc/modelport
-sudo cp deploy/systemd/modelport.env.example /etc/modelport/modelport.env
-sudo nano /etc/modelport/modelport.env
-sudo chmod 600 /etc/modelport/modelport.env
-sudo cp deploy/systemd/modelport.service /etc/systemd/system/modelport.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now modelport
-sudo systemctl status modelport
+docker compose exec modelport model-port backup export /data/modelport-backup.json
+docker compose exec modelport model-port backup validate /data/modelport-backup.json
 ```
 
-Logs:
+Prometheus metrics:
 
 ```bash
-journalctl -u modelport -f
+source .env
+curl -sS \
+  -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+  http://127.0.0.1:17878/metrics
 ```
 
-WSL does not always enable systemd by default. If unavailable, use background scripts or `tmux`.
+Useful scripts:
+
+| Script | Purpose |
+| --- | --- |
+| `scripts/config-validate.sh` | Validate configuration without starting the service. |
+| `scripts/start.sh` | Build and start the local backend in the background. |
+| `scripts/stop.sh` | Stop the local backend started by scripts. |
+| `scripts/restart.sh` | Restart the local backend. |
+| `scripts/status.sh` | Show PID, log path, listener, and `/health` status. |
+| `scripts/doctor.sh` | Check env, service, auth, VS Code settings, and key endpoints. |
+| `scripts/provider-matrix.sh` | Verify non-streaming and streaming compatibility for selected models. |
+| `scripts/acceptance.sh` | Run personal/small-team production acceptance checks. |
+| `scripts/bench.sh` | Measure local and optional upstream latency. |
+| `scripts/build-release.sh` | Build `target/release/model-port`. |
+| `scripts/check.sh` | Run fmt, tests, and clippy. |
 
 ## Troubleshooting
 
-Recommended log level:
+| Symptom | Meaning | Fix |
+| --- | --- | --- |
+| Startup reports missing token | `MODELPORT_AUTH_TOKEN` or `ANTHROPIC_AUTH_TOKEN` is not set | Set both values and make them match. |
+| `/v1/models` returns 401 | Client token is missing or wrong | Check `x-api-key` or `ANTHROPIC_AUTH_TOKEN`. |
+| Claude Code still uses the old model | VS Code has not reloaded settings | Reload VS Code or restart the Claude Code session. |
+| Provider is `degraded` or `cooldown` | Recent upstream calls failed | Open dashboard settings/logs, test the provider, then check upstream quota and status. |
+| Upstream returns 403 | Provider account or key was rejected | Check upstream key, account permission, and balance. |
+| Upstream returns 429 | Provider rate limit or quota was hit | Wait, reduce traffic, or switch provider. |
+| Large request returns 413 | Request body is above the configured limit | Increase `MODELPORT_MAX_REQUEST_BODY_BYTES`. |
+| Streaming returns `event: error` | Upstream streaming failed after the local request started | Inspect request logs and backend logs. |
+
+Recommended backend log level:
 
 ```bash
 RUST_LOG=model_port=info,tower_http=info
 ```
 
-More detailed debugging:
+## Documentation
 
-```bash
-RUST_LOG=model_port=debug,tower_http=info
-```
-
-| Symptom | Meaning | Fix |
-| --- | --- | --- |
-| Startup reports missing token | `MODELPORT_AUTH_TOKEN` or `ANTHROPIC_AUTH_TOKEN` is not set | Set a long random local token. |
-| `config validate` reports a placeholder | A key or token is still a placeholder | Replace it with a real value. |
-| `/v1/models` returns 401 | Client token is missing or mismatched | Check `x-api-key` and `ANTHROPIC_AUTH_TOKEN`. |
-| Upstream returns `INVALID_API_KEY` | Upstream was reached, but upstream key is invalid | Replace `MIMO_OPENAI_API_KEY`. |
-| VS Code Claude does not use ModelPort | The extension did not load environment variables or was not reloaded | Restart VS Code and verify `ANTHROPIC_BASE_URL`. |
-| Request timeout | Upstream or network is slow | Check upstream and network first, then tune timeout variables. |
-| Streaming returns `event: error` | Upstream streaming request failed; ModelPort converted it into an Anthropic error event | Check the error message and ModelPort logs. |
-| Large request returns 413 | Request body exceeds the configured limit | Increase `MODELPORT_MAX_REQUEST_BODY_BYTES`. |
-
-## Upgrade And Rollback
-
-Before upgrading:
-
-```bash
-scripts/check.sh
-scripts/config-validate.sh
-scripts/doctor.sh --upstream
-```
-
-Upgrade:
-
-```bash
-git pull
-scripts/build-release.sh
-scripts/restart.sh
-```
-
-systemd:
-
-```bash
-sudo install -m 0755 target/release/model-port /usr/local/bin/model-port
-sudo systemctl restart modelport
-journalctl -u modelport -f
-```
-
-To roll back, switch to the previous binary or previous git commit, rebuild, and restart.
-
-## Script Reference
-
-| Script | Purpose |
-| --- | --- |
-| `scripts/config-validate.sh` | Validate configuration without starting the service. |
-| `scripts/start.sh` | Build release binary and start ModelPort in the background. |
-| `scripts/stop.sh` | Stop the current project's ModelPort process. |
-| `scripts/restart.sh` | Stop and restart in the background. |
-| `scripts/status.sh` | Show PID, log path, and `/health` status. |
-| `scripts/doctor.sh` | Check configuration, service, auth, VS Code settings, and key endpoints. |
-| `scripts/doctor.sh --upstream` | Run doctor plus real Mimo upstream verification. |
-| `scripts/provider-matrix.sh` | Verify non-streaming and streaming compatibility for a selected model. |
-| `scripts/provider-matrix.sh --all` | Verify all models from `/v1/models`; this makes real upstream calls. |
-| `scripts/bench.sh` | Measure local `/health` and `/v1/models` latency. |
-| `scripts/bench.sh --upstream` | Measure real `/v1/messages` upstream latency; this makes model calls. |
-| `scripts/dev.sh` | Load `.env` and run `cargo run` in the foreground. |
-| `scripts/smoke-test.sh` | Verify local gateway and auth. |
-| `scripts/smoke-test.sh --upstream` | Verify a real upstream model response. |
-| `scripts/build-release.sh` | Build `target/release/model-port`. |
-| `scripts/check.sh` | Run fmt, tests, and clippy. |
-| `scripts/install-deps-ubuntu.sh` | Install base dependencies on Ubuntu / WSL. |
+- [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md): project positioning, architecture boundaries, and roadmap.
+- [docs/PROVIDER_MATRIX.md](docs/PROVIDER_MATRIX.md): provider compatibility matrix and verification process.
+- [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md): production acceptance checklist.
+- [docs/DOCKER.md](docs/DOCKER.md): Docker Compose deployment and PostgreSQL persistence.
+- [docs/LOCAL_RUNTIME.md](docs/LOCAL_RUNTIME.md): SGLang, vLLM, llama.cpp, Ollama, and custom local runtime integration.
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md): benchmark guidance and runtime tuning.
+- [docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md): release and repository setup notes.
+- [dashboard/README.md](dashboard/README.md): dashboard development and E2E test guidance.
 
 ## Non-Goals
 
-ModelPort intentionally stays small and clear:
+ModelPort intentionally stays small:
 
 - It is not a chat client.
 - It is not a cloud model aggregation platform.
 - It is not an enterprise IAM, external billing, or public multi-tenant SaaS system.
-- It does not run model inference; it only adapts protocols and routes locally.
-- It does not mix image base64 payloads into the Claude Code text path.
-- It does not try to support every provider-native API; it prioritizes Anthropic-compatible and OpenAI-compatible APIs.
+- It does not run model inference locally; it routes and adapts protocols.
+- It does not try to support every provider-native API; it focuses on Anthropic-compatible and OpenAI-compatible APIs.
