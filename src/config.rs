@@ -762,7 +762,7 @@ const DEEPSEEK_SPEC: ProviderSpec = ProviderSpec {
     model_prefixes: &["deepseek-"],
     passthrough_unknown_models: false,
     max_tokens_field: MaxTokensField::MaxTokens,
-    deduplicate_stream_text: false,
+    deduplicate_stream_text: true,
 };
 
 const MIMO_SPEC: ProviderSpec = ProviderSpec {

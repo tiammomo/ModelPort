@@ -666,7 +666,7 @@ fn wrap_long_chunk(chunk: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
-fn text_delta(seen: &mut String, content: &str, deduplicate: bool) -> String {
+pub(crate) fn text_delta(seen: &mut String, content: &str, deduplicate: bool) -> String {
     if content.is_empty() {
         return String::new();
     }
