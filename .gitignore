@@ -2,5 +2,7 @@
 .env
 .env.backup-*
 .modelport/
+.claude/settings.json
 dashboard/playwright-report/
 dashboard/test-results/
+.vscode/settings.json

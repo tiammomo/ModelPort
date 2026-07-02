@@ -194,7 +194,7 @@ fn normalize_anthropic_stream(
 }
 
 fn event_with_metadata(frame: &SseFrame, event_name: &str, data: String) -> Event {
-    let mut event = Event::default().event(event_name.to_owned()).data(data);
+    let mut event = Event::default().event(event_name).data(data);
     if let Some(id) = &frame.id {
         event = event.id(id.clone());
     }

@@ -8,6 +8,7 @@ use std::{
 };
 
 use axum::http::HeaderMap;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -17,6 +18,7 @@ use crate::{config::ProviderConfig, error::AppError, pricing, storage::JsonStore
 
 const DEFAULT_USAGE_LIMIT: usize = 5_000;
 const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
+const ACCOUNT_ISSUE_CREDENTIAL_COOLDOWN_SECONDS: u64 = 30 * 60;
 
 #[derive(Debug)]
 pub struct ControlStore {
@@ -788,6 +790,11 @@ impl ControlStore {
         record.id = id.clone();
         record.display_name = validate_non_empty("displayName", &record.display_name, 120)?;
         record.base_url = validate_non_empty("baseUrl", &record.base_url, 512)?;
+        crate::config::validate_provider_base_url_for_request(
+            &id,
+            &record.base_url,
+            env_flag("MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS"),
+        )?;
         record.default_model = validate_non_empty("defaultModel", &record.default_model, 240)?;
         record.models = normalize_policy_list(record.models)?;
         if !record.models.contains(&record.default_model) {
@@ -939,6 +946,13 @@ impl ControlStore {
             return Err(AppError::InvalidRequest(
                 "baseUrl must start with http:// or https://".to_owned(),
             ));
+        }
+        if let Some(base_url) = &record.base_url {
+            crate::config::validate_provider_base_url_for_request(
+                &record.provider_id,
+                base_url,
+                env_flag("MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS"),
+            )?;
         }
         record.status = validate_credential_status(&record.status)?;
         let now = now_millis();
@@ -1363,7 +1377,7 @@ impl ControlStore {
         let Some(health) = inner.provider_health.get(provider_id) else {
             return false;
         };
-        if !health.cooldown_until_ms.is_some_and(|until| until > now) {
+        if health.cooldown_until_ms.is_none_or(|until| until <= now) {
             return false;
         }
         let mode = provider_credential_pool_mode_locked(&inner, provider_id);
@@ -1409,6 +1423,24 @@ impl ControlStore {
     ) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
         let now = now_millis();
+        let previous_provider_issue = inner
+            .provider_health
+            .get(provider_id)
+            .map(|record| {
+                provider_account_issue(record.last_status_code, record.last_error.as_deref())
+            })
+            .unwrap_or("none");
+        let previous_credential_issue = credential_id
+            .and_then(|credential_id| {
+                inner
+                    .provider_credential_health
+                    .get(provider_id)
+                    .and_then(|health| health.get(credential_id))
+            })
+            .map(|record| {
+                provider_account_issue(record.last_status_code, record.last_error.as_deref())
+            })
+            .unwrap_or("none");
         let failure_kind = record_provider_health_locked(
             &mut inner,
             provider_id,
@@ -1422,14 +1454,28 @@ impl ControlStore {
                 &mut inner,
                 provider_id,
                 credential_id,
-                success,
-                status_code,
-                error_message,
-                failure_kind,
-                now,
+                ProviderHealthUpdate {
+                    success,
+                    status_code,
+                    error_message,
+                    failure_kind,
+                    now,
+                },
             );
         }
         if !success {
+            record_recharge_required_activity_locked(
+                &mut inner,
+                RechargeActivityInput {
+                    provider_id,
+                    credential_id,
+                    previous_provider_issue,
+                    previous_credential_issue,
+                    status_code,
+                    error_message,
+                    now,
+                },
+            );
             let mode = provider_credential_pool_mode_locked(&inner, provider_id);
             if mode != "manual"
                 && should_rotate_provider_credential(failure_kind)
@@ -1446,7 +1492,8 @@ impl ControlStore {
                     actor: "system".to_owned(),
                     target: format!("provider:{provider_id}:credential:{to_id}"),
                     message: format!(
-                        "自动将供应商 {provider_id} 账号从 {from_id} 切换为 {to_name}"
+                        "自动将供应商 {provider_id} 账号从 {from_id} 切换为 {to_name}（{}）",
+                        provider_failure_reason_label(failure_kind)
                     ),
                     severity: "warning".to_owned(),
                 });
@@ -1496,7 +1543,7 @@ impl ControlStore {
         let Some(api_key_id) = inner
             .api_keys
             .iter()
-            .find(|(_, record)| record.key_hash == token_hash)
+            .find(|(_, record)| constant_time_eq(record.key_hash.as_bytes(), token_hash.as_bytes()))
             .map(|(id, _)| id.clone())
         else {
             return Ok(None);
@@ -2360,6 +2407,9 @@ fn provider_health_row(record: &ProviderHealthRecord, now: u64) -> serde_json::V
     };
     let (failure_kind, recommended_action) =
         provider_failure_guidance(record.last_status_code, record.last_error.as_deref());
+    let account_issue =
+        provider_account_issue(record.last_status_code, record.last_error.as_deref());
+    let recharge_required = account_issue == "insufficient_balance";
     json!({
         "providerId": record.provider_id,
         "requestsTotal": record.requests_total,
@@ -2374,6 +2424,9 @@ fn provider_health_row(record: &ProviderHealthRecord, now: u64) -> serde_json::V
         "lastError": record.last_error,
         "lastStatusCode": record.last_status_code,
         "failureKind": failure_kind,
+        "accountIssue": account_issue,
+        "rechargeRequired": recharge_required,
+        "rechargeBadge": if recharge_required { Some("代充值") } else { None },
         "recommendedAction": recommended_action,
     })
 }
@@ -2390,6 +2443,9 @@ fn provider_credential_health_row(
     };
     let (failure_kind, recommended_action) =
         provider_failure_guidance(record.last_status_code, record.last_error.as_deref());
+    let account_issue =
+        provider_account_issue(record.last_status_code, record.last_error.as_deref());
+    let recharge_required = account_issue == "insufficient_balance";
     json!({
         "providerId": record.provider_id,
         "credentialId": record.credential_id,
@@ -2406,6 +2462,9 @@ fn provider_credential_health_row(
         "lastError": record.last_error,
         "lastStatusCode": record.last_status_code,
         "failureKind": failure_kind,
+        "accountIssue": account_issue,
+        "rechargeRequired": recharge_required,
+        "rechargeBadge": if recharge_required { Some("代充值") } else { None },
         "recommendedAction": recommended_action,
     })
 }
@@ -2447,15 +2506,29 @@ fn record_provider_health_locked(
     provider_failure_guidance(health.last_status_code, health.last_error.as_deref()).0
 }
 
+struct ProviderHealthUpdate<'a> {
+    success: bool,
+    status_code: u16,
+    error_message: Option<&'a str>,
+    failure_kind: &'a str,
+    now: u64,
+}
+
+struct RechargeActivityInput<'a> {
+    provider_id: &'a str,
+    credential_id: Option<&'a str>,
+    previous_provider_issue: &'a str,
+    previous_credential_issue: &'a str,
+    status_code: u16,
+    error_message: Option<&'a str>,
+    now: u64,
+}
+
 fn record_provider_credential_health_locked(
     inner: &mut ControlInner,
     provider_id: &str,
     credential_id: &str,
-    success: bool,
-    status_code: u16,
-    error_message: Option<&str>,
-    failure_kind: &str,
-    now: u64,
+    update: ProviderHealthUpdate<'_>,
 ) {
     let health = inner
         .provider_credential_health
@@ -2468,23 +2541,27 @@ fn record_provider_credential_health_locked(
             ..ProviderCredentialHealthRecord::default()
         });
     health.requests_total = health.requests_total.saturating_add(1);
-    health.last_used_at_ms = Some(now);
-    if success {
+    health.last_used_at_ms = Some(update.now);
+    if update.success {
         health.successes_total = health.successes_total.saturating_add(1);
         health.consecutive_failures = 0;
-        health.last_success_at_ms = Some(now);
+        health.last_success_at_ms = Some(update.now);
         health.cooldown_until_ms = None;
         health.last_error = None;
-        health.last_status_code = Some(status_code);
+        health.last_status_code = Some(update.status_code);
     } else {
         health.failures_total = health.failures_total.saturating_add(1);
         health.consecutive_failures = health.consecutive_failures.saturating_add(1);
-        health.last_failure_at_ms = Some(now);
-        health.last_status_code = Some(status_code);
-        health.last_error = truncated_error(error_message, status_code);
-        if should_rotate_provider_credential(failure_kind) || health.consecutive_failures >= 3 {
-            let seconds = cooldown_seconds(health.consecutive_failures);
-            health.cooldown_until_ms = Some(now.saturating_add(seconds.saturating_mul(1_000)));
+        health.last_failure_at_ms = Some(update.now);
+        health.last_status_code = Some(update.status_code);
+        health.last_error = truncated_error(update.error_message, update.status_code);
+        if should_rotate_provider_credential(update.failure_kind)
+            || health.consecutive_failures >= 3
+        {
+            let seconds =
+                credential_cooldown_seconds(update.failure_kind, health.consecutive_failures);
+            health.cooldown_until_ms =
+                Some(update.now.saturating_add(seconds.saturating_mul(1_000)));
         }
     }
 }
@@ -2589,10 +2666,10 @@ fn provider_credential_is_usable(
         && env::var(&credential.api_key_env)
             .ok()
             .is_some_and(|value| !value.trim().is_empty())
-        && !health
+        && health
             .and_then(|health| health.get(&credential.id))
             .and_then(|record| record.cooldown_until_ms)
-            .is_some_and(|until| until > now)
+            .is_none_or(|until| until <= now)
 }
 
 fn provider_credential_pool_mode_locked(inner: &ControlInner, provider_id: &str) -> String {
@@ -2611,16 +2688,59 @@ fn trim_activities_locked(inner: &mut ControlInner) {
     }
 }
 
+fn record_recharge_required_activity_locked(
+    inner: &mut ControlInner,
+    input: RechargeActivityInput<'_>,
+) {
+    if provider_account_issue(Some(input.status_code), input.error_message)
+        != "insufficient_balance"
+    {
+        return;
+    }
+    let previous_issue = if input.credential_id.is_some() {
+        input.previous_credential_issue
+    } else {
+        input.previous_provider_issue
+    };
+    if previous_issue == "insufficient_balance" {
+        return;
+    }
+
+    let target = input
+        .credential_id
+        .map(|credential_id| format!("provider:{}:credential:{credential_id}", input.provider_id))
+        .unwrap_or_else(|| format!("provider:{}", input.provider_id));
+    let message = input
+        .credential_id
+        .map(|credential_id| {
+            format!(
+                "供应商 {} 账号 {credential_id} 余额不足，已标记为待代充值",
+                input.provider_id
+            )
+        })
+        .unwrap_or_else(|| format!("供应商 {} 余额不足，已标记为待代充值", input.provider_id));
+    inner.activities.push(ActivityRecord {
+        id: format!("act_{}", Uuid::new_v4().simple()),
+        timestamp_ms: input.now,
+        activity_type: "account_issue".to_owned(),
+        actor: "system".to_owned(),
+        target,
+        message,
+        severity: "warning".to_owned(),
+    });
+    trim_activities_locked(inner);
+}
+
 fn provider_failure_guidance(
     status_code: Option<u16>,
     error: Option<&str>,
 ) -> (&'static str, &'static str) {
-    let normalized_error = error.unwrap_or("").to_ascii_lowercase();
-    if normalized_error.contains("insufficient_balance")
-        || normalized_error.contains("insufficient account balance")
-        || normalized_error.contains("balance")
-    {
-        return ("account", "检查上游账号余额，或切换到另一个账号/Provider。");
+    let normalized_error = normalized_error_text(error);
+    if provider_account_issue(status_code, error) == "insufficient_balance" {
+        return (
+            "account",
+            "上游账号余额不足，可为该渠道处理代充值后重试，或切换到另一个账号/Provider。",
+        );
     }
     if status_code == Some(401) || status_code == Some(403) {
         return (
@@ -2649,8 +2769,46 @@ fn provider_failure_guidance(
     ("none", "")
 }
 
+fn provider_account_issue(status_code: Option<u16>, error: Option<&str>) -> &'static str {
+    let normalized_error = normalized_error_text(error);
+    if normalized_error.contains("insufficient_balance")
+        || normalized_error.contains("insufficient balance")
+        || normalized_error.contains("insufficient account balance")
+        || normalized_error.contains("balance not enough")
+        || normalized_error.contains("余额不足")
+    {
+        return "insufficient_balance";
+    }
+    if status_code == Some(401) || status_code == Some(403) {
+        return "auth";
+    }
+    "none"
+}
+
+fn normalized_error_text(error: Option<&str>) -> String {
+    error.unwrap_or("").to_ascii_lowercase()
+}
+
 fn should_rotate_provider_credential(failure_kind: &str) -> bool {
     matches!(failure_kind, "account" | "rate_limit" | "config")
+}
+
+fn provider_failure_reason_label(failure_kind: &str) -> &'static str {
+    match failure_kind {
+        "account" => "账号异常，检查 API Key 或余额",
+        "rate_limit" => "上游限流",
+        "config" => "凭证配置异常",
+        "upstream_unavailable" => "上游不可用",
+        _ => "请求失败",
+    }
+}
+
+fn credential_cooldown_seconds(failure_kind: &str, consecutive_failures: u32) -> u64 {
+    let base = cooldown_seconds(consecutive_failures);
+    if failure_kind == "account" {
+        return base.max(ACCOUNT_ISSUE_CREDENTIAL_COOLDOWN_SECONDS);
+    }
+    base
 }
 
 fn rotate_provider_credential_locked(
@@ -3380,8 +3538,21 @@ fn control_store_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".modelport").join("control-plane.json"))
 }
 
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn new_api_key() -> String {
-    format!("sk-mp-{}", Uuid::new_v4().simple())
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    format!("sk-mp-{}", hex_bytes(&bytes))
 }
 
 fn hash_secret(value: &str) -> String {
@@ -3401,6 +3572,24 @@ fn preview_secret(value: &str) -> String {
         .rev()
         .collect::<String>();
     format!("{start}...{end}")
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut diff = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(a ^ b);
+    }
+    diff == 0
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -3796,6 +3985,143 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn provider_health_marks_insufficient_balance_for_recharge() {
+        let row = provider_health_row(
+            &ProviderHealthRecord {
+                provider_id: "deepseek".to_owned(),
+                requests_total: 1,
+                failures_total: 1,
+                consecutive_failures: 1,
+                last_error: Some(
+                    r#"upstream returned HTTP 402: {"error":{"message":"Insufficient Balance"}}"#
+                        .to_owned(),
+                ),
+                last_status_code: Some(402),
+                ..ProviderHealthRecord::default()
+            },
+            now_millis(),
+        );
+
+        assert_eq!(row["failureKind"], "account");
+        assert_eq!(row["accountIssue"], "insufficient_balance");
+        assert_eq!(row["rechargeRequired"], true);
+        assert_eq!(row["rechargeBadge"], "代充值");
+        assert!(
+            row["recommendedAction"]
+                .as_str()
+                .is_some_and(|value| value.contains("代充值"))
+        );
+    }
+
+    #[test]
+    fn provider_health_does_not_mark_auth_error_for_recharge() {
+        let row = provider_health_row(
+            &ProviderHealthRecord {
+                provider_id: "deepseek".to_owned(),
+                requests_total: 1,
+                failures_total: 1,
+                consecutive_failures: 1,
+                last_error: Some("upstream returned HTTP 401: invalid api key".to_owned()),
+                last_status_code: Some(401),
+                ..ProviderHealthRecord::default()
+            },
+            now_millis(),
+        );
+
+        assert_eq!(row["failureKind"], "account");
+        assert_eq!(row["accountIssue"], "auth");
+        assert_eq!(row["rechargeRequired"], false);
+        assert!(row["rechargeBadge"].is_null());
+    }
+
+    #[test]
+    fn credential_health_marks_insufficient_balance_for_recharge() {
+        let row = provider_credential_health_row(
+            &ProviderCredentialHealthRecord {
+                provider_id: "deepseek".to_owned(),
+                credential_id: "main".to_owned(),
+                requests_total: 1,
+                failures_total: 1,
+                consecutive_failures: 1,
+                last_error: Some("余额不足，请充值后重试".to_owned()),
+                last_status_code: Some(402),
+                ..ProviderCredentialHealthRecord::default()
+            },
+            now_millis(),
+        );
+
+        assert_eq!(row["accountIssue"], "insufficient_balance");
+        assert_eq!(row["rechargeRequired"], true);
+        assert_eq!(row["rechargeBadge"], "代充值");
+    }
+
+    #[test]
+    fn insufficient_balance_records_recharge_activity_once() {
+        let store = ControlStore::for_tests();
+
+        for _ in 0..2 {
+            store
+                .record_provider_outcome_for_credential(
+                    "deepseek",
+                    Some("main"),
+                    false,
+                    500,
+                    Some(
+                        r#"upstream returned HTTP 402: {"error":{"message":"Insufficient Balance"}}"#,
+                    ),
+                )
+                .unwrap();
+        }
+
+        let health = store.provider_credential_health_rows();
+        let row = health
+            .get("deepseek")
+            .and_then(|items| items.get("main"))
+            .unwrap();
+        assert_eq!(row["accountIssue"], "insufficient_balance");
+        assert_eq!(row["rechargeRequired"], true);
+
+        let activities = store.activity_rows(10);
+        let recharge_activities = activities
+            .iter()
+            .filter(|activity| {
+                activity.get("type").and_then(serde_json::Value::as_str) == Some("account_issue")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recharge_activities.len(), 1);
+        assert!(
+            recharge_activities[0]["message"]
+                .as_str()
+                .is_some_and(|value| value.contains("待代充值"))
+        );
+    }
+
+    #[test]
+    fn account_failure_sets_longer_credential_cooldown() {
+        let mut inner = ControlInner::default();
+        record_provider_credential_health_locked(
+            &mut inner,
+            "deepseek",
+            "main",
+            ProviderHealthUpdate {
+                success: false,
+                status_code: 402,
+                error_message: Some("Insufficient Balance"),
+                failure_kind: "account",
+                now: 1_000,
+            },
+        );
+
+        let cooldown_until = inner
+            .provider_credential_health
+            .get("deepseek")
+            .and_then(|items| items.get("main"))
+            .and_then(|record| record.cooldown_until_ms)
+            .unwrap();
+        assert!(cooldown_until >= 1_000 + ACCOUNT_ISSUE_CREDENTIAL_COOLDOWN_SECONDS * 1_000);
     }
 
     #[test]

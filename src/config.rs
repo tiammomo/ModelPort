@@ -1,12 +1,13 @@
 use std::{
     collections::{BTreeSet, HashMap},
     env, fmt, fs,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{Arc, RwLock},
 };
 
 use axum::http::HeaderMap;
+use reqwest::Url;
 use serde::Deserialize;
 
 use crate::error::AppError;
@@ -85,10 +86,26 @@ pub enum ConfigIssueSeverity {
     Warning,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum NumericEnvRequirement {
+    NonZeroU64,
+    NonZeroUsize,
+    U32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigIssue {
     pub severity: ConfigIssueSeverity,
     pub message: String,
+}
+
+pub fn validate_provider_base_url_for_request(
+    provider_id: &str,
+    base_url: &str,
+    allow_private_provider_urls: bool,
+) -> Result<(), AppError> {
+    validate_provider_base_url_policy(provider_id, base_url, allow_private_provider_urls)
+        .map_err(AppError::InvalidRequest)
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +260,17 @@ impl AppConfig {
                 bind = self.bind_addr
             )));
         }
+        if self.max_request_body_bytes == 0 {
+            issues.push(ConfigIssue::error(
+                "MODELPORT_MAX_REQUEST_BODY_BYTES must be greater than 0",
+            ));
+        }
+        if self.max_concurrent_requests == 0 {
+            issues.push(ConfigIssue::error(
+                "MODELPORT_MAX_CONCURRENT_REQUESTS must be greater than 0",
+            ));
+        }
+        validate_runtime_guardrail_env(&mut issues);
 
         if self.providers.is_empty() {
             issues.push(ConfigIssue::error(
@@ -620,7 +648,10 @@ impl AppConfig {
         let mut provider_order = Vec::new();
 
         insert_spec(&mut providers, &mut provider_order, &DEEPSEEK_SPEC);
-        insert_spec(&mut providers, &mut provider_order, &MIMO_SPEC);
+
+        if should_enable_provider(&MIMO_SPEC) {
+            insert_spec(&mut providers, &mut provider_order, &MIMO_SPEC);
+        }
 
         for spec in OPTIONAL_PROVIDER_SPECS {
             if should_enable_provider(spec) {
@@ -634,7 +665,7 @@ impl AppConfig {
 
         let aliases = default_aliases();
         let default_provider =
-            env_value("MODELPORT_DEFAULT_PROVIDER").unwrap_or_else(|| "mimo".to_owned());
+            env_value("MODELPORT_DEFAULT_PROVIDER").unwrap_or_else(|| "deepseek".to_owned());
 
         Ok(Self {
             bind_addr,
@@ -751,7 +782,7 @@ const DEEPSEEK_SPEC: ProviderSpec = ProviderSpec {
     api_key_env_fallbacks: &["DEEPSEEK_API_KEY"],
     api_key_required: true,
     default_model_env: "DEEPSEEK_MODEL",
-    default_model: "deepseek-v4-pro",
+    default_model: "deepseek-v4-flash",
     models_env: "DEEPSEEK_MODELS",
     models: &[
         "deepseek-v4-pro",
@@ -782,7 +813,7 @@ const MIMO_SPEC: ProviderSpec = ProviderSpec {
     model_prefixes: &["mimo-"],
     passthrough_unknown_models: false,
     max_tokens_field: MaxTokensField::MaxCompletionTokens,
-    deduplicate_stream_text: true,
+    deduplicate_stream_text: false,
 };
 
 const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
@@ -797,7 +828,7 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         api_key_env_fallbacks: &["DEEPSEEK_API_KEY"],
         api_key_required: true,
         default_model_env: "DEEPSEEK_OPENAI_MODEL",
-        default_model: "deepseek-v4-pro",
+        default_model: "deepseek-v4-flash",
         models_env: "DEEPSEEK_OPENAI_MODELS",
         models: &[
             "deepseek-v4-pro",
@@ -1241,11 +1272,11 @@ fn insert_spec(
 }
 
 fn default_fidelity_mode(
-    provider_id: &str,
+    _provider_id: &str,
     deduplicate_stream_text: bool,
     buffer_stream_text: bool,
 ) -> FidelityMode {
-    if provider_id == "mimo" || deduplicate_stream_text || buffer_stream_text {
+    if deduplicate_stream_text || buffer_stream_text {
         FidelityMode::Stability
     } else {
         FidelityMode::BestEffort
@@ -1258,7 +1289,7 @@ fn default_buffer_stream_text(provider_id: &str) -> bool {
             "MODELPORT_{}_BUFFER_STREAM_TEXT",
             env_key_fragment(provider_id)
         ),
-        provider_id == "mimo",
+        false,
     )
 }
 
@@ -1332,6 +1363,101 @@ fn env_list(name: &str, defaults: &[&str]) -> Vec<String> {
 fn env_value(name: &str) -> Option<String> {
     let mut file_values = env_file_values();
     file_values.remove(name).or_else(|| env::var(name).ok())
+}
+
+fn validate_runtime_guardrail_env(issues: &mut Vec<ConfigIssue>) {
+    for (name, requirement) in [
+        (
+            "MODELPORT_RATE_LIMIT_WINDOW_SECONDS",
+            NumericEnvRequirement::NonZeroU64,
+        ),
+        (
+            "MODELPORT_RATE_LIMIT_GLOBAL_PER_MINUTE",
+            NumericEnvRequirement::U32,
+        ),
+        (
+            "MODELPORT_RATE_LIMIT_API_KEY_PER_MINUTE",
+            NumericEnvRequirement::U32,
+        ),
+        (
+            "MODELPORT_RATE_LIMIT_IP_PER_MINUTE",
+            NumericEnvRequirement::U32,
+        ),
+        (
+            "MODELPORT_RATE_LIMIT_PROVIDER_PER_MINUTE",
+            NumericEnvRequirement::U32,
+        ),
+        (
+            "MODELPORT_RATE_LIMIT_MODEL_PER_MINUTE",
+            NumericEnvRequirement::U32,
+        ),
+        (
+            "MODELPORT_MAX_MODEL_NAME_CHARS",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_MAX_MESSAGES",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_MAX_MESSAGES_JSON_CHARS",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_MAX_SYSTEM_JSON_CHARS",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        ("MODELPORT_MAX_TOOLS", NumericEnvRequirement::NonZeroUsize),
+        (
+            "MODELPORT_MAX_TOOLS_JSON_CHARS",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_MAX_OUTPUT_TOKENS",
+            NumericEnvRequirement::NonZeroU64,
+        ),
+    ] {
+        if let Some(value) = env_value(name) {
+            validate_numeric_env_value(name, &value, requirement, issues);
+        }
+    }
+}
+
+fn validate_numeric_env_value(
+    name: &str,
+    value: &str,
+    requirement: NumericEnvRequirement,
+    issues: &mut Vec<ConfigIssue>,
+) {
+    let value = value.trim();
+    if value.is_empty() {
+        issues.push(ConfigIssue::error(format!("{name} must not be empty")));
+        return;
+    }
+
+    match requirement {
+        NumericEnvRequirement::NonZeroU64 => match value.parse::<u64>() {
+            Ok(parsed) if parsed > 0 => {}
+            Ok(_) => issues.push(ConfigIssue::error(format!("{name} must be greater than 0"))),
+            Err(_) => issues.push(ConfigIssue::error(format!(
+                "{name} must be an unsigned integer"
+            ))),
+        },
+        NumericEnvRequirement::NonZeroUsize => match value.parse::<usize>() {
+            Ok(parsed) if parsed > 0 => {}
+            Ok(_) => issues.push(ConfigIssue::error(format!("{name} must be greater than 0"))),
+            Err(_) => issues.push(ConfigIssue::error(format!(
+                "{name} must be an unsigned integer"
+            ))),
+        },
+        NumericEnvRequirement::U32 => {
+            if value.parse::<u32>().is_err() {
+                issues.push(ConfigIssue::error(format!(
+                    "{name} must be an unsigned 32-bit integer"
+                )));
+            }
+        }
+    }
 }
 
 fn service_env_value(name: &str) -> Option<String> {
@@ -1496,6 +1622,15 @@ fn validate_provider(
             "provider `{id}` base_url looks like a full endpoint; configure the API base URL instead"
         )));
     }
+    if let Err(err) = validate_provider_base_url_policy(
+        id,
+        &provider.base_url,
+        env_flag("MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS"),
+    ) {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` base_url is not allowed: {err}"
+        )));
+    }
 
     if provider.api_key_required && provider.api_key.is_none() {
         let name = provider
@@ -1565,18 +1700,6 @@ fn validate_provider(
         )));
     }
 
-    if id == "mimo" && !provider.deduplicate_stream_text {
-        issues.push(ConfigIssue::warning(
-            "provider `mimo` should keep deduplicate_stream_text=true for stable streaming output",
-        ));
-    }
-
-    if id == "mimo" && !provider.buffer_stream_text {
-        issues.push(ConfigIssue::warning(
-            "provider `mimo` should keep buffer_stream_text=true for stable Claude streaming output",
-        ));
-    }
-
     if provider.fidelity_mode == FidelityMode::Strict
         && (provider.deduplicate_stream_text || provider.buffer_stream_text)
     {
@@ -1584,6 +1707,89 @@ fn validate_provider(
             "provider `{id}` cannot use fidelity_mode=strict together with stream text rewriting"
         )));
     }
+}
+
+fn validate_provider_base_url_policy(
+    provider_id: &str,
+    base_url: &str,
+    allow_private_provider_urls: bool,
+) -> Result<(), String> {
+    let url = Url::parse(base_url).map_err(|err| format!("invalid URL: {err}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("URL scheme must be http or https".to_owned());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URL userinfo is not allowed".to_owned());
+    }
+    if url.fragment().is_some() {
+        return Err("URL fragments are not allowed".to_owned());
+    }
+
+    let Some(host) = url.host_str() else {
+        return Err("URL host is required".to_owned());
+    };
+    let host = host.trim_matches(['[', ']']).trim_end_matches('.');
+    if host.is_empty() {
+        return Err("URL host is required".to_owned());
+    }
+
+    if allow_private_provider_urls {
+        return Ok(());
+    }
+
+    if host.eq_ignore_ascii_case("localhost") {
+        if provider_allows_loopback_base_url(provider_id) {
+            return Ok(());
+        }
+        return Err("localhost base URLs are only allowed for local/custom providers".to_owned());
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if ip.is_loopback() && provider_allows_loopback_base_url(provider_id) {
+            return Ok(());
+        }
+        if private_or_metadata_ip(ip) {
+            return Err(format!(
+                "private, link-local, metadata, or unspecified IP `{ip}` requires MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS=1"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn provider_allows_loopback_base_url(provider_id: &str) -> bool {
+    provider_id.starts_with("local_")
+        || matches!(
+            provider_id,
+            "custom" | "ollama" | "local_sglang" | "local_vllm" | "local_llamacpp"
+        )
+}
+
+fn private_or_metadata_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.octets() == [169, 254, 169, 254]
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ipv6_is_unique_local(ip)
+                || ipv6_is_unicast_link_local(ip)
+        }
+    }
+}
+
+fn ipv6_is_unique_local(ip: std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xfe00) == 0xfc00
+}
+
+fn ipv6_is_unicast_link_local(ip: std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
 fn is_placeholder_value(value: &str) -> bool {
@@ -1742,6 +1948,67 @@ mod tests {
         assert_eq!(provider.api_key_required, Some(false));
         assert_eq!(provider.max_tokens_field, Some(MaxTokensField::MaxTokens));
         assert_eq!(provider.fidelity_mode, Some(FidelityMode::Strict));
+    }
+
+    #[test]
+    fn provider_url_policy_blocks_metadata_ip_for_remote_provider() {
+        let err = validate_provider_base_url_for_request(
+            "deepseek",
+            "http://169.254.169.254/latest/meta-data",
+            false,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("private"));
+    }
+
+    #[test]
+    fn provider_url_policy_allows_loopback_for_local_provider() {
+        validate_provider_base_url_for_request("local_vllm", "http://127.0.0.1:8000/v1", false)
+            .unwrap();
+    }
+
+    #[test]
+    fn provider_url_policy_blocks_userinfo() {
+        let err = validate_provider_base_url_for_request(
+            "deepseek",
+            "https://token:secret@api.deepseek.com/anthropic",
+            false,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("userinfo"));
+    }
+
+    #[test]
+    fn runtime_guardrail_env_validation_rejects_bad_values() {
+        let mut issues = Vec::new();
+
+        validate_numeric_env_value(
+            "MODELPORT_MAX_MESSAGES",
+            "0",
+            NumericEnvRequirement::NonZeroUsize,
+            &mut issues,
+        );
+        validate_numeric_env_value(
+            "MODELPORT_RATE_LIMIT_API_KEY_PER_MINUTE",
+            "-1",
+            NumericEnvRequirement::U32,
+            &mut issues,
+        );
+        validate_numeric_env_value(
+            "MODELPORT_RATE_LIMIT_WINDOW_SECONDS",
+            "abc",
+            NumericEnvRequirement::NonZeroU64,
+            &mut issues,
+        );
+
+        assert_eq!(issues.len(), 3);
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.severity == ConfigIssueSeverity::Error)
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ load_env
 dashboard_url="${MODELPORT_DASHBOARD_URL:-http://127.0.0.1:5173}"
 admin_username="${MODELPORT_ADMIN_USERNAME:-admin}"
 admin_password="${MODELPORT_ADMIN_PASSWORD:-}"
-acceptance_model="${ANTHROPIC_MODEL:-${MIMO_MODEL:-mimo-v2.5-pro}}"
+acceptance_model="$(default_upstream_model)"
 
 cookie_file="$(mktemp)"
 headers_file="$(mktemp)"
@@ -167,9 +167,9 @@ if [[ -z "$admin_password" ]]; then
 fi
 
 if health_ok; then
-  ok "health endpoint is reachable: $(base_url)/health"
+  ok "liveness endpoint is reachable: $(base_url)/livez"
 else
-  die "health endpoint is not reachable: $(base_url)/health"
+  die "liveness endpoint is not reachable: $(base_url)/livez"
 fi
 
 dashboard_status="$(
@@ -307,7 +307,7 @@ ok "backup export and validate succeeded"
 
 if [[ "$upstream" == "1" ]]; then
   if is_placeholder_key; then
-    die "cannot run upstream acceptance because MIMO_OPENAI_API_KEY is missing or placeholder"
+    die "cannot run upstream acceptance because $(upstream_key_name) is missing or placeholder"
   fi
 
   upstream_policy_payload='{"ipRestricted":true,"allowedIps":["203.0.113.10"],"spendLimitUsd":0}'

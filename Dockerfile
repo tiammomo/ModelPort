@@ -31,6 +31,6 @@ ENV RUST_LOG=model_port=info,tower_http=info
 EXPOSE 17878
 VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:17878/health >/dev/null || exit 1
+  CMD curl -fsS http://127.0.0.1:17878/livez >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/model-port"]

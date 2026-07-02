@@ -17,7 +17,7 @@ case "${1:-}" in
 Usage: scripts/doctor.sh [--upstream]
 
 Checks local ModelPort configuration without printing secrets.
-Use --upstream to also verify a real /v1/messages call through the configured Mimo upstream.
+Use --upstream to also verify a real /v1/messages call through the configured DeepSeek upstream.
 USAGE
     exit 0
     ;;
@@ -129,18 +129,20 @@ check_binary_and_scripts() {
   fi
 }
 
-check_mimo_env() {
+check_deepseek_env() {
   check_required_value MODELPORT_BIND
   check_required_secret MODELPORT_AUTH_TOKEN
-  check_required_secret MIMO_OPENAI_API_KEY
-  check_required_value MIMO_MODEL
 
-  if [[ -n "${MIMO_OPENAI_BASE_URL:-}" ]]; then
-    ok "MIMO_OPENAI_BASE_URL=$MIMO_OPENAI_BASE_URL"
-  elif [[ -n "${BASE_URL:-}" ]]; then
-    ok "BASE_URL=$BASE_URL"
+  if is_placeholder_key; then
+    fail "$(upstream_key_name) is missing or placeholder"
   else
-    fail "BASE_URL or MIMO_OPENAI_BASE_URL is required for Mimo"
+    ok "$(upstream_key_name) is set"
+  fi
+
+  if [[ -n "${DEEPSEEK_ANTHROPIC_BASE_URL:-}" ]]; then
+    ok "DEEPSEEK_ANTHROPIC_BASE_URL=$DEEPSEEK_ANTHROPIC_BASE_URL"
+  else
+    ok "DEEPSEEK_ANTHROPIC_BASE_URL defaults to https://api.deepseek.com/anthropic"
   fi
 
   if [[ "${ANTHROPIC_AUTH_TOKEN:-}" == "$MODELPORT_AUTH_TOKEN" ]]; then
@@ -155,10 +157,10 @@ check_mimo_env() {
     warn "ANTHROPIC_BASE_URL is '${ANTHROPIC_BASE_URL:-unset}', expected '$(base_url)' for local VS Code"
   fi
 
-  if [[ "${ANTHROPIC_MODEL:-}" == "${MIMO_MODEL:-mimo-v2.5-pro}" ]]; then
-    ok "ANTHROPIC_MODEL matches Mimo model"
+  if [[ "${ANTHROPIC_MODEL:-}" == "${DEEPSEEK_MODEL:-deepseek-v4-flash}" ]]; then
+    ok "ANTHROPIC_MODEL matches DeepSeek model"
   else
-    warn "ANTHROPIC_MODEL is '${ANTHROPIC_MODEL:-unset}', MIMO_MODEL is '${MIMO_MODEL:-unset}'"
+    warn "ANTHROPIC_MODEL is '${ANTHROPIC_MODEL:-unset}', DEEPSEEK_MODEL is '${DEEPSEEK_MODEL:-deepseek-v4-flash}'"
   fi
 }
 
@@ -182,9 +184,9 @@ check_gateway() {
   fi
 
   if health_ok; then
-    ok "health endpoint is reachable: $(base_url)/health"
+    ok "liveness endpoint is reachable: $(base_url)/livez"
   else
-    fail "health endpoint is not reachable: $(base_url)/health"
+    fail "liveness endpoint is not reachable: $(base_url)/livez"
     return
   fi
 
@@ -192,6 +194,21 @@ check_gateway() {
   local status
   body_file="$(mktemp)"
   temp_files+=("$body_file")
+
+  status="$(
+    curl_local -sS -m 5 \
+      -o "$body_file" \
+      -w '%{http_code}' \
+      -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+      "$(base_url)/readyz" || true
+  )"
+
+  if [[ "$status" == "200" ]]; then
+    ok "authenticated /readyz returned HTTP 200"
+  else
+    fail "authenticated /readyz returned HTTP ${status:-unknown}"
+    sed -n '1,20p' "$body_file" >&2 || true
+  fi
 
   status="$(
     curl_local -sS -m 5 \
@@ -239,10 +256,10 @@ check_vscode_settings_text() {
     warn "VS Code settings may not point ANTHROPIC_BASE_URL to $(base_url)"
   fi
 
-  if grep -Fq '"mimo-v2.5-pro"' "$settings_file"; then
-    ok "VS Code settings references mimo-v2.5-pro"
+  if grep -Fq '"deepseek-v4-flash"' "$settings_file"; then
+    ok "VS Code settings references deepseek-v4-flash"
   else
-    warn "VS Code settings does not reference mimo-v2.5-pro"
+    warn "VS Code settings does not reference deepseek-v4-flash"
   fi
 }
 
@@ -270,7 +287,7 @@ check_vscode_settings() {
 check_upstream_message() {
   if [[ "$upstream" != "1" ]]; then
     if is_placeholder_key; then
-      warn "upstream test skipped because MIMO_OPENAI_API_KEY is missing or placeholder"
+      warn "upstream test skipped because $(upstream_key_name) is missing or placeholder"
     else
       ok "upstream key is present; run scripts/doctor.sh --upstream for a real model call"
     fi
@@ -278,14 +295,16 @@ check_upstream_message() {
   fi
 
   if is_placeholder_key; then
-    fail "cannot run upstream test because MIMO_OPENAI_API_KEY is missing or placeholder"
+    fail "cannot run upstream test because $(upstream_key_name) is missing or placeholder"
     return
   fi
 
   local body_file
+  local model
   local status
   body_file="$(mktemp)"
   temp_files+=("$body_file")
+  model="$(default_upstream_model)"
 
   status="$(
     curl_local -sS -m 60 \
@@ -294,16 +313,7 @@ check_upstream_message() {
       -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
       -H 'Content-Type: application/json' \
       "$(base_url)/v1/messages" \
-      -d '{
-        "model": "mimo-v2.5-pro",
-        "max_tokens": 128,
-        "messages": [
-          {
-            "role": "user",
-            "content": "用一句话回复：ModelPort doctor OK。"
-          }
-        ]
-      }' || true
+      -d "$(printf '{"model":"%s","max_tokens":128,"messages":[{"role":"user","content":"用一句话回复：ModelPort doctor OK。"}]}' "$model")" || true
   )"
 
   if [[ "$status" =~ ^[0-9]+$ && "$status" -ge 200 && "$status" -lt 300 ]]; then
@@ -317,7 +327,7 @@ check_upstream_message() {
 load_doctor_env
 check_env_is_ignored
 check_binary_and_scripts
-check_mimo_env
+check_deepseek_env
 check_static_config
 check_gateway
 check_vscode_settings

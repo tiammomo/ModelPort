@@ -1,4 +1,4 @@
-default_provider = "mimo"
+default_provider = "deepseek"
 provider_order = [
   "deepseek",
   "deepseek_openai",
@@ -37,7 +37,7 @@ protocol = "anthropic"
 base_url_env = "DEEPSEEK_ANTHROPIC_BASE_URL"
 base_url = "https://api.deepseek.com/anthropic"
 api_key_env = "DEEPSEEK_ANTHROPIC_AUTH_TOKEN"
-default_model = "deepseek-v4-pro"
+default_model = "deepseek-v4-flash"
 models = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
@@ -61,9 +61,6 @@ models = [
 model_prefixes = ["mimo-"]
 passthrough_unknown_models = false
 max_tokens_field = "max_completion_tokens"
-deduplicate_stream_text = true
-buffer_stream_text = true
-fidelity_mode = "stability"
 
 [providers.deepseek_openai]
 display_name = "DeepSeek Official OpenAI-Compatible"
@@ -71,7 +68,7 @@ protocol = "openai-compat"
 base_url_env = "DEEPSEEK_OPENAI_BASE_URL"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_OPENAI_API_KEY"
-default_model = "deepseek-v4-pro"
+default_model = "deepseek-v4-flash"
 models = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",

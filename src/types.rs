@@ -206,7 +206,7 @@ pub fn anthropic_error_event(error: &AppError) -> Result<Event, AppError> {
         AppError::InvalidRequest(_) | AppError::ProviderNotFound(_) => "invalid_request_error",
         AppError::Auth => "authentication_error",
         AppError::Forbidden(_) => "permission_error",
-        AppError::QuotaExceeded(_) => "rate_limit_error",
+        AppError::QuotaExceeded(_) | AppError::RateLimited { .. } => "rate_limit_error",
         AppError::MissingSecret(_) | AppError::Config(_) | AppError::Database(_) => "server_error",
         AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
             "api_error"
@@ -609,10 +609,121 @@ fn map_finish_reason(reason: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    const STANDARD_MODEL: &str = "deepseek-v4-flash";
+
+    #[test]
+    fn anthropic_passthrough_preserves_deepseek_standard_request_shape() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": "fast-chat",
+            "max_tokens": 512,
+            "system": "Keep answers concise.",
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Summarize this project."
+                }]
+            }],
+            "tools": [{
+                "name": "read_file",
+                "description": "Read a file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    },
+                    "required": ["path"]
+                }
+            }],
+            "tool_choice": { "type": "auto" }
+        }))
+        .unwrap();
+
+        let body = anthropic_request_value(&request, STANDARD_MODEL).unwrap();
+
+        assert_eq!(body["model"], STANDARD_MODEL);
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["system"], "Keep answers concise.");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(body["tools"][0]["name"], "read_file");
+        assert_eq!(body["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn converts_deepseek_tool_conversation_to_openai_messages() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": STANDARD_MODEL,
+            "max_tokens": 256,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Inspect the manifest."
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "I'll inspect it."
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_read_manifest",
+                            "name": "read_file",
+                            "input": { "path": "Cargo.toml" }
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_read_manifest",
+                        "content": [{
+                            "type": "text",
+                            "text": "name = \"model-port\""
+                        }]
+                    }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let body = anthropic_to_openai_request(
+            &request,
+            STANDARD_MODEL,
+            false,
+            MaxTokensField::MaxCompletionTokens,
+        )
+        .unwrap();
+
+        assert_eq!(body["model"], STANDARD_MODEL);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["id"],
+            "toolu_read_manifest"
+        );
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+        let arguments = body["messages"][1]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
+        assert_eq!(arguments["path"], "Cargo.toml");
+        assert_eq!(body["messages"][2]["role"], "tool");
+        assert_eq!(body["messages"][2]["tool_call_id"], "toolu_read_manifest");
+        assert_eq!(body["messages"][2]["content"], "name = \"model-port\"");
+    }
+
     #[test]
     fn converts_anthropic_tools_to_openai_tools() {
         let request: AnthropicRequest = serde_json::from_value(json!({
-            "model": "mimo-v2.5-pro",
+            "model": STANDARD_MODEL,
             "max_tokens": 128,
             "tools": [{
                 "name": "read_file",
@@ -633,7 +744,7 @@ mod tests {
 
         let body = anthropic_to_openai_request(
             &request,
-            "mimo-v2.5-pro",
+            STANDARD_MODEL,
             false,
             MaxTokensField::MaxCompletionTokens,
         )
@@ -689,7 +800,7 @@ mod tests {
             }
         });
 
-        let body = openai_response_to_anthropic(&response, "mimo-v2.5-pro").unwrap();
+        let body = openai_response_to_anthropic(&response, STANDARD_MODEL).unwrap();
         assert_eq!(body["stop_reason"], "tool_use");
         assert_eq!(body["content"][0]["type"], "tool_use");
         assert_eq!(body["content"][0]["input"]["path"], "Cargo.toml");
@@ -698,7 +809,7 @@ mod tests {
     #[test]
     fn strict_fidelity_accepts_simple_text_and_tools() {
         let request: AnthropicRequest = serde_json::from_value(json!({
-            "model": "mimo-v2.5-pro",
+            "model": STANDARD_MODEL,
             "max_tokens": 128,
             "tools": [{
                 "name": "read_file",
@@ -723,7 +834,7 @@ mod tests {
     #[test]
     fn strict_fidelity_rejects_cache_control() {
         let request: AnthropicRequest = serde_json::from_value(json!({
-            "model": "mimo-v2.5-pro",
+            "model": STANDARD_MODEL,
             "max_tokens": 128,
             "messages": [{
                 "role": "user",
@@ -743,7 +854,7 @@ mod tests {
     #[test]
     fn strict_fidelity_rejects_thinking_blocks() {
         let request: AnthropicRequest = serde_json::from_value(json!({
-            "model": "mimo-v2.5-pro",
+            "model": STANDARD_MODEL,
             "max_tokens": 128,
             "messages": [{
                 "role": "assistant",

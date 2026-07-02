@@ -10,6 +10,7 @@ use reqwest::{
     Client, Response,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
+use serde_json::Value;
 use tracing::debug;
 
 use crate::error::AppError;
@@ -96,7 +97,7 @@ impl HttpTransport {
         if status.is_client_error() || status.is_server_error() {
             return Err(AppError::Upstream {
                 status: status.as_u16(),
-                body: truncate(String::from_utf8_lossy(&body).to_string()),
+                body: sanitize_error_body(&body),
             });
         }
 
@@ -132,7 +133,7 @@ impl HttpTransport {
         if status.is_client_error() || status.is_server_error() {
             return Err(AppError::Upstream {
                 status: status.as_u16(),
-                body: truncate(String::from_utf8_lossy(&body).to_string()),
+                body: sanitize_error_body(&body),
             });
         }
 
@@ -166,7 +167,7 @@ impl HttpTransport {
                 let body = response_body(response, transport.max_response_bytes).await?;
                 Err(AppError::Upstream {
                     status: status.as_u16(),
-                    body: truncate(String::from_utf8_lossy(&body).to_string()),
+                    body: sanitize_error_body(&body),
                 })?;
             } else {
                 debug!(
@@ -248,7 +249,7 @@ impl HttpTransport {
                     };
                 }
 
-                let raw_body = truncate(raw_body.join("\n"));
+                let raw_body = sanitize_error_text(&raw_body.join("\n"));
                 debug!(
                     upstream_url = url,
                     elapsed_ms = started.elapsed().as_millis(),
@@ -259,7 +260,7 @@ impl HttpTransport {
                 if !yielded_frame && !raw_body.is_empty() {
                     Err(AppError::UpstreamProtocol(format!(
                         "upstream returned a non-SSE response: {}",
-                        truncate(raw_body)
+                        raw_body
                     )))?;
                 }
             }
@@ -381,6 +382,89 @@ fn truncate(value: String) -> String {
     let mut truncated = value.chars().take(MAX_ERROR_BODY_CHARS).collect::<String>();
     truncated.push_str("... [truncated]");
     truncated
+}
+
+fn sanitize_error_body(body: &[u8]) -> String {
+    sanitize_error_text(&String::from_utf8_lossy(body))
+}
+
+fn sanitize_error_text(value: &str) -> String {
+    if let Ok(mut parsed) = serde_json::from_str::<Value>(value) {
+        redact_json_value(&mut parsed);
+        return truncate(parsed.to_string());
+    }
+
+    truncate(redact_secret_fragments(value))
+}
+
+fn redact_json_value(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if sensitive_key(key) {
+                    *value = Value::String("[redacted]".to_owned());
+                } else {
+                    redact_json_value(value);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_json_value(value);
+            }
+        }
+        Value::String(value) => {
+            *value = redact_secret_fragments(value);
+        }
+        _ => {}
+    }
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("authorization")
+        || key.contains("access_token")
+        || key.contains("refresh_token")
+        || key.contains("secret")
+        || key.contains("password")
+        || key.contains("credential")
+}
+
+fn redact_secret_fragments(value: &str) -> String {
+    let mut output = redact_after_marker(value, "Bearer ");
+    output = redact_after_marker(&output, "sk-");
+    output = redact_after_marker(&output, "sk_m");
+    output
+}
+
+fn redact_after_marker(value: &str, marker: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(index) = rest.find(marker) {
+        let (before, after_before) = rest.split_at(index);
+        output.push_str(before);
+        output.push_str(marker);
+
+        let after_marker = &after_before[marker.len()..];
+        let secret_len = after_marker
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            .map(char::len_utf8)
+            .sum::<usize>();
+
+        if secret_len >= 8 {
+            output.push_str("[redacted]");
+            rest = &after_marker[secret_len..];
+        } else {
+            rest = after_marker;
+        }
+    }
+
+    output.push_str(rest);
+    output
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -546,5 +630,24 @@ mod tests {
         );
 
         assert_eq!(raw_body, vec![r#"{"error":"bad key"}"#]);
+    }
+
+    #[test]
+    fn sanitizes_json_error_secrets() {
+        let sanitized = sanitize_error_text(
+            r#"{"error":{"message":"bad key sk-test-secret-value","api_key":"sk-live-secret-value"}}"#,
+        );
+
+        assert!(sanitized.contains("[redacted]"));
+        assert!(!sanitized.contains("sk-test-secret-value"));
+        assert!(!sanitized.contains("sk-live-secret-value"));
+    }
+
+    #[test]
+    fn sanitizes_plain_text_bearer_tokens() {
+        let sanitized = sanitize_error_text("upstream rejected Bearer sk-test-secret-value");
+
+        assert!(sanitized.contains("Bearer [redacted]"));
+        assert!(!sanitized.contains("sk-test-secret-value"));
     }
 }

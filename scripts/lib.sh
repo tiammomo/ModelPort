@@ -46,7 +46,7 @@ curl_local() {
 }
 
 health_ok() {
-  curl_local -fsS -m 3 "$(base_url)/health" >/dev/null 2>&1
+  curl_local -fsS -m 3 "$(base_url)/livez" >/dev/null 2>&1
 }
 
 pid_running() {
@@ -111,7 +111,35 @@ auth_header_args() {
   printf '%s\n' "-H" "x-api-key: $MODELPORT_AUTH_TOKEN"
 }
 
-is_placeholder_key() {
-  local value="${MIMO_OPENAI_API_KEY:-}"
+default_upstream_model() {
+  printf '%s' "${ANTHROPIC_MODEL:-${DEEPSEEK_MODEL:-deepseek-v4-flash}}"
+}
+
+is_placeholder_value() {
+  local value="${1:-}"
   [[ -z "$value" || "$value" == replace-with-* || "$value" == *placeholder* ]]
+}
+
+upstream_key_name() {
+  if ! is_placeholder_value "${DEEPSEEK_ANTHROPIC_AUTH_TOKEN:-}"; then
+    printf '%s' "DEEPSEEK_ANTHROPIC_AUTH_TOKEN"
+  elif [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+    printf '%s' "DEEPSEEK_API_KEY"
+  else
+    printf '%s' "DEEPSEEK_ANTHROPIC_AUTH_TOKEN"
+  fi
+}
+
+upstream_key_value() {
+  if ! is_placeholder_value "${DEEPSEEK_ANTHROPIC_AUTH_TOKEN:-}"; then
+    printf '%s' "$DEEPSEEK_ANTHROPIC_AUTH_TOKEN"
+  else
+    printf '%s' "${DEEPSEEK_API_KEY:-}"
+  fi
+}
+
+is_placeholder_key() {
+  local value
+  value="$(upstream_key_value)"
+  is_placeholder_value "$value"
 }

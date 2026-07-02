@@ -18,7 +18,7 @@ use control::ControlStore;
 use error::AppError;
 use http::HttpTransport;
 use metrics::Metrics;
-use routes::{AppState, TrustedProxyConfig};
+use routes::{AppState, GatewaySecurityPolicy, RateLimiter, TrustedProxyConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use storage::JsonStore;
@@ -48,6 +48,8 @@ async fn main() -> Result<(), AppError> {
         config: Arc::new(RuntimeConfig::new(config)),
         auth,
         control,
+        security: Arc::new(GatewaySecurityPolicy::from_env()),
+        rate_limiter: Arc::new(RateLimiter::from_env()),
         trusted_proxies,
         transport: HttpTransport::new()?,
         metrics: Arc::new(Metrics::new()),

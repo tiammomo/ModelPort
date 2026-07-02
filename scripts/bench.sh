@@ -100,7 +100,7 @@ stats() {
 }
 
 measure_health() {
-  curl_local -sS -m 5 -o /dev/null -w '%{time_total}\n' "$(base_url)/health"
+  curl_local -sS -m 5 -o /dev/null -w '%{time_total}\n' "$(base_url)/livez"
 }
 
 measure_models() {
@@ -110,7 +110,8 @@ measure_models() {
 }
 
 measure_upstream_message() {
-  local model="${MIMO_MODEL:-mimo-v2.5-pro}"
+  local model
+  model="$(default_upstream_model)"
   local payload
   payload="$(printf '{"model":"%s","max_tokens":32,"messages":[{"role":"user","content":"只回复 OK。"}]}' "$model")"
 
@@ -143,7 +144,7 @@ run_series "models" measure_models
 
 if [[ "$upstream" == "1" ]]; then
   if is_placeholder_key; then
-    die "MIMO_OPENAI_API_KEY is missing or placeholder; cannot benchmark upstream"
+    die "$(upstream_key_name) is missing or placeholder; cannot benchmark upstream"
   fi
   run_series "messages upstream" measure_upstream_message
 fi

@@ -27,7 +27,7 @@ Options:
   --timeout SECONDS      Per-request timeout. Default: 120.
   -h, --help             Show this help.
 
-Default model: ANTHROPIC_MODEL, then MIMO_MODEL, then mimo-v2.5-pro.
+Default model: ANTHROPIC_MODEL, then DEEPSEEK_MODEL, then deepseek-v4-flash.
 USAGE
 }
 
@@ -274,7 +274,7 @@ if [[ "$all_models" == "1" ]]; then
 fi
 
 if [[ "${#models[@]}" -eq 0 ]]; then
-  models+=("${ANTHROPIC_MODEL:-${MIMO_MODEL:-mimo-v2.5-pro}}")
+  models+=("$(default_upstream_model)")
 fi
 
 if ! health_ok; then

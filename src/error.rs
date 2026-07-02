@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -18,6 +18,11 @@ pub enum AppError {
     Forbidden(String),
     #[error("quota exceeded: {0}")]
     QuotaExceeded(String),
+    #[error("rate limited: {message}")]
+    RateLimited {
+        message: String,
+        retry_after_secs: u64,
+    },
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("missing secret environment variable: {0}")]
@@ -59,19 +64,32 @@ struct ErrorDetail {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let retry_after_secs = match &self {
+            AppError::RateLimited {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
+        };
         let message = self.to_string();
         let status = status_code(&self);
 
-        let kind = match status {
-            StatusCode::UNAUTHORIZED => "authentication_error",
-            StatusCode::FORBIDDEN => "forbidden_error",
-            StatusCode::TOO_MANY_REQUESTS => "quota_exceeded",
-            StatusCode::BAD_REQUEST => "invalid_request_error",
-            StatusCode::BAD_GATEWAY => "upstream_error",
-            _ => "server_error",
+        let kind = match &self {
+            AppError::Auth => "authentication_error",
+            AppError::Forbidden(_) => "forbidden_error",
+            AppError::QuotaExceeded(_) => "quota_exceeded",
+            AppError::RateLimited { .. } => "rate_limit_error",
+            AppError::InvalidRequest(_) | AppError::ProviderNotFound(_) => "invalid_request_error",
+            AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
+                "upstream_error"
+            }
+            AppError::Config(_)
+            | AppError::Database(_)
+            | AppError::MissingSecret(_)
+            | AppError::Io(_)
+            | AppError::Json(_) => "server_error",
         };
 
-        (
+        let mut response = (
             status,
             Json(ErrorBody {
                 error: ErrorDetail {
@@ -83,7 +101,15 @@ impl IntoResponse for AppError {
                 },
             }),
         )
-            .into_response()
+            .into_response();
+
+        if let Some(retry_after_secs) = retry_after_secs
+            && let Ok(value) = HeaderValue::from_str(&retry_after_secs.max(1).to_string())
+        {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
+
+        response
     }
 }
 
@@ -92,7 +118,7 @@ fn status_code(error: &AppError) -> StatusCode {
         AppError::Auth => StatusCode::UNAUTHORIZED,
         AppError::Config(_) | AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         AppError::Forbidden(_) => StatusCode::FORBIDDEN,
-        AppError::QuotaExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
+        AppError::QuotaExceeded(_) | AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
         AppError::MissingSecret(_) => StatusCode::INTERNAL_SERVER_ERROR,
         AppError::ProviderNotFound(_) => StatusCode::BAD_REQUEST,
@@ -111,6 +137,7 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::Database(_) => "database_error",
         AppError::Forbidden(_) => "forbidden",
         AppError::QuotaExceeded(_) => "quota_exceeded",
+        AppError::RateLimited { .. } => "rate_limited",
         AppError::InvalidRequest(_) => "invalid_request",
         AppError::MissingSecret(_) => "missing_secret",
         AppError::ProviderNotFound(_) => "provider_not_found",
@@ -135,6 +162,7 @@ fn error_hint(error: &AppError) -> &'static str {
         AppError::QuotaExceeded(_) => {
             "检查用户配额或 API Key 的额度限制，必要时提高限额或更换密钥。"
         }
+        AppError::RateLimited { .. } => "请求速度超过本地限流护栏，请按 Retry-After 退避后重试。",
         AppError::InvalidRequest(_) => "检查表单字段、时间戳、IP/CIDR 或模型/provider 名称格式。",
         AppError::ProviderNotFound(_) => "确认该 provider 已在配置文件或环境变量中启用。",
         AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
@@ -143,5 +171,62 @@ fn error_hint(error: &AppError) -> &'static str {
         AppError::Io(_) | AppError::Json(_) => {
             "查看服务日志和控制面数据文件，确认磁盘和 JSON 数据状态正常。"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::to_bytes,
+        http::StatusCode,
+        response::{IntoResponse, Response},
+    };
+    use serde_json::Value;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn rate_limited_response_sets_retry_after() {
+        let response = AppError::RateLimited {
+            message: "API key request rate limit exceeded".to_owned(),
+            retry_after_secs: 7,
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("7")
+        );
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "rate_limit_error");
+        assert_eq!(body["error"]["code"], "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn upstream_response_keeps_status_but_uses_upstream_type() {
+        let response = AppError::Upstream {
+            status: 402,
+            body: "Insufficient Balance".to_owned(),
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "upstream_error");
+        assert_eq!(body["error"]["code"], "upstream_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Insufficient Balance"))
+        );
+    }
+
+    async fn response_json(response: Response) -> Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 }

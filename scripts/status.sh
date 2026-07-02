@@ -37,9 +37,31 @@ else
 fi
 
 if health_ok; then
-  log "health: ok"
-  curl_local -fsS -m 3 "$(base_url)/health"
+  log "liveness: ok"
+  curl_local -fsS -m 3 "$(base_url)/livez"
   printf '\n'
+  if [[ -n "${MODELPORT_AUTH_TOKEN:-}" ]] && command -v node >/dev/null 2>&1; then
+    readyz_file="$(mktemp)"
+    trap 'rm -f "$readyz_file"' EXIT
+    if curl_local -fsS -m 3 \
+      -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+      "$(base_url)/readyz" > "$readyz_file" 2>/dev/null; then
+      recharge_summary="$(
+        node -e '
+const fs = require("node:fs")
+const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+const providers = Object.values(body.providerHealth || {})
+  .filter((provider) => provider && provider.rechargeRequired)
+  .map((provider) => {
+    const badge = provider.rechargeBadge ? `/${provider.rechargeBadge}` : ""
+    return `${provider.providerId}${badge}`
+  })
+console.log(providers.length > 0 ? `pending recharge: ${providers.join(", ")}` : "pending recharge: none")
+        ' "$readyz_file"
+      )"
+      log "$recharge_summary"
+    fi
+  fi
 else
-  log "health: not reachable"
+  log "liveness: not reachable"
 fi

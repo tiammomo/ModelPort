@@ -1,18 +1,19 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State, connect_info::ConnectInfo},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{
         HeaderMap, HeaderValue,
-        header::{CONTENT_TYPE, HeaderName, SET_COOKIE},
+        header::{HeaderName, SET_COOKIE},
     },
+    middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
@@ -23,33 +24,34 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::{
     auth::{AuthStore, CreateUserInput, LoginInput, PublicUser, UpdateUserInput},
     config::{
         AppConfig, ConfigIssueSeverity, FidelityMode, MaxTokensField, ProviderConfig,
-        ProviderProtocol, ResolvedProvider, RuntimeConfig,
+        ProviderProtocol, RuntimeConfig,
     },
     control::{
         ActivityInput, ClientIdentity, ControlStore, CreateApiKeyInput, ProviderCredentialRecord,
         ProviderModelOverrideRecord, ProviderOverrideRecord, UpdateApiKeyInput, UpsertQuotaInput,
-        UpsertTeamInput, UsageEstimate, UsageEventInput, provider_credential_row,
-        provider_credential_rows,
+        UpsertTeamInput, provider_credential_row, provider_credential_rows,
     },
     error::AppError,
     http::{Header, HttpTransport},
     metrics::Metrics,
-    pricing::{self, TokenUsageBreakdown},
-    providers,
-    types::AnthropicRequest,
 };
 
 mod admin_providers;
+mod client_api;
+mod ops;
 
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 const CSRF_HEADER: HeaderName = HeaderName::from_static("x-modelport-csrf");
-const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
+const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
+const REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
+const PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
 const HOUR_MS: u64 = 60 * 60 * 1_000;
 const DAY_MS: u64 = 24 * HOUR_MS;
 const MAX_DASHBOARD_TREND_MS: u64 = 90 * DAY_MS;
@@ -59,9 +61,48 @@ pub struct AppState {
     pub config: Arc<RuntimeConfig>,
     pub auth: Arc<AuthStore>,
     pub control: Arc<ControlStore>,
+    pub security: Arc<GatewaySecurityPolicy>,
+    pub rate_limiter: Arc<RateLimiter>,
     pub trusted_proxies: Arc<TrustedProxyConfig>,
     pub transport: HttpTransport,
     pub metrics: Arc<Metrics>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewaySecurityPolicy {
+    allow_legacy_client_auth: bool,
+    expose_detailed_public_health: bool,
+    allow_private_provider_urls: bool,
+}
+
+#[derive(Debug)]
+pub struct RateLimiter {
+    config: RateLimitConfig,
+    inner: Mutex<RateLimitState>,
+}
+
+#[derive(Debug, Clone)]
+struct RateLimitConfig {
+    enabled: bool,
+    window_ms: u64,
+    global_per_minute: u32,
+    api_key_per_minute: u32,
+    ip_per_minute: u32,
+    provider_per_minute: u32,
+    model_per_minute: u32,
+}
+
+#[derive(Debug, Default)]
+struct RateLimitState {
+    windows: BTreeMap<String, VecDeque<u64>>,
+}
+
+#[derive(Debug)]
+struct RateLimitScope<'a> {
+    identity: &'a ClientIdentity,
+    client_ip: Option<&'a str>,
+    provider_id: Option<&'a str>,
+    model: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,16 +169,211 @@ impl TrustedProxyConfig {
     }
 }
 
+impl GatewaySecurityPolicy {
+    pub fn from_env() -> Self {
+        Self {
+            allow_legacy_client_auth: !env_flag("MODELPORT_REQUIRE_CONTROL_API_KEYS"),
+            expose_detailed_public_health: env_flag("MODELPORT_EXPOSE_DETAILED_HEALTH"),
+            allow_private_provider_urls: env_flag("MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS"),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_tests() -> Self {
+        Self {
+            allow_legacy_client_auth: true,
+            expose_detailed_public_health: false,
+            allow_private_provider_urls: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn require_control_api_keys_for_tests() -> Self {
+        Self {
+            allow_legacy_client_auth: false,
+            expose_detailed_public_health: false,
+            allow_private_provider_urls: true,
+        }
+    }
+}
+
+impl RateLimiter {
+    pub fn from_env() -> Self {
+        Self {
+            config: RateLimitConfig {
+                enabled: !env_flag("MODELPORT_RATE_LIMIT_DISABLED"),
+                window_ms: env_u64("MODELPORT_RATE_LIMIT_WINDOW_SECONDS", 60).saturating_mul(1_000),
+                global_per_minute: env_u32("MODELPORT_RATE_LIMIT_GLOBAL_PER_MINUTE", 6_000),
+                api_key_per_minute: env_u32("MODELPORT_RATE_LIMIT_API_KEY_PER_MINUTE", 600),
+                ip_per_minute: env_u32("MODELPORT_RATE_LIMIT_IP_PER_MINUTE", 1_200),
+                provider_per_minute: env_u32("MODELPORT_RATE_LIMIT_PROVIDER_PER_MINUTE", 3_000),
+                model_per_minute: env_u32("MODELPORT_RATE_LIMIT_MODEL_PER_MINUTE", 1_200),
+            },
+            inner: Mutex::new(RateLimitState::default()),
+        }
+    }
+
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            config: RateLimitConfig {
+                enabled: false,
+                window_ms: 60_000,
+                global_per_minute: 0,
+                api_key_per_minute: 0,
+                ip_per_minute: 0,
+                provider_per_minute: 0,
+                model_per_minute: 0,
+            },
+            inner: Mutex::new(RateLimitState::default()),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_tests(
+        api_key_per_minute: u32,
+        ip_per_minute: u32,
+        provider_per_minute: u32,
+        model_per_minute: u32,
+    ) -> Self {
+        Self {
+            config: RateLimitConfig {
+                enabled: true,
+                window_ms: 60_000,
+                global_per_minute: 0,
+                api_key_per_minute,
+                ip_per_minute,
+                provider_per_minute,
+                model_per_minute,
+            },
+            inner: Mutex::new(RateLimitState::default()),
+        }
+    }
+
+    fn check(&self, scope: RateLimitScope<'_>) -> Result<(), AppError> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        let now = now_millis();
+        let window_start = now.saturating_sub(self.config.window_ms);
+        let mut inner = self.inner.lock().expect("rate limiter lock poisoned");
+        let mut rules = vec![
+            (
+                "global:messages".to_owned(),
+                self.config.global_per_minute,
+                "global request rate limit exceeded",
+            ),
+            (
+                format!(
+                    "api-key:{}",
+                    scope
+                        .identity
+                        .api_key_id
+                        .as_deref()
+                        .unwrap_or("legacy-router-token")
+                ),
+                self.config.api_key_per_minute,
+                "API key request rate limit exceeded",
+            ),
+        ];
+
+        if let Some(client_ip) = scope.client_ip {
+            rules.push((
+                format!("ip:{client_ip}"),
+                self.config.ip_per_minute,
+                "client IP request rate limit exceeded",
+            ));
+        }
+
+        if let Some(provider_id) = scope.provider_id {
+            rules.push((
+                format!("provider:{provider_id}"),
+                self.config.provider_per_minute,
+                "provider request rate limit exceeded",
+            ));
+        }
+
+        if let Some(model) = scope.model {
+            rules.push((
+                format!("model:{model}"),
+                self.config.model_per_minute,
+                "model request rate limit exceeded",
+            ));
+        }
+
+        for (key, limit, message) in &rules {
+            prune_rate_window(&mut inner, key, window_start);
+            if *limit > 0
+                && inner
+                    .windows
+                    .get(key)
+                    .is_some_and(|timestamps| timestamps.len() >= *limit as usize)
+            {
+                let retry_after_secs = inner
+                    .windows
+                    .get(key)
+                    .and_then(|timestamps| timestamps.front().copied())
+                    .map(|oldest| {
+                        oldest
+                            .saturating_add(self.config.window_ms)
+                            .saturating_sub(now)
+                            .div_ceil(1_000)
+                            .max(1)
+                    })
+                    .unwrap_or(1);
+                let window_seconds = self.config.window_ms.div_ceil(1_000).max(1);
+                return Err(AppError::RateLimited {
+                    message: format!("{message}; limit={limit}/{window_seconds}s"),
+                    retry_after_secs,
+                });
+            }
+        }
+
+        for (key, limit, _) in rules {
+            if limit == 0 {
+                continue;
+            }
+            inner.windows.entry(key).or_default().push_back(now);
+        }
+
+        inner.windows.retain(|_, timestamps| {
+            while timestamps
+                .front()
+                .is_some_and(|timestamp| *timestamp < window_start)
+            {
+                timestamps.pop_front();
+            }
+            !timestamps.is_empty()
+        });
+
+        Ok(())
+    }
+}
+
+fn prune_rate_window(state: &mut RateLimitState, key: &str, window_start: u64) {
+    if let Some(timestamps) = state.windows.get_mut(key) {
+        while timestamps
+            .front()
+            .is_some_and(|timestamp| *timestamp < window_start)
+        {
+            timestamps.pop_front();
+        }
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     let config = state.config.snapshot();
     let max_request_body_bytes = config.max_request_body_bytes;
     let max_concurrent_requests = config.max_concurrent_requests;
 
     Router::new()
-        .route("/health", get(health))
-        .route("/metrics", get(metrics))
-        .route("/v1/models", get(models))
-        .route("/v1/messages", post(messages))
+        .route("/livez", get(ops::livez))
+        .route("/readyz", get(ops::readyz))
+        .route("/health", get(ops::health))
+        .route("/metrics", get(ops::metrics))
+        .route("/v1/models", get(client_api::models))
+        .route("/v1/messages", post(client_api::messages))
         .route("/admin/auth/login", post(admin_login))
         .route("/admin/auth/logout", post(admin_logout))
         .route("/admin/auth/me", get(admin_me))
@@ -235,468 +471,28 @@ pub fn router(state: AppState) -> Router {
                 .layer(TraceLayer::new_for_http())
                 .layer(ConcurrencyLimitLayer::new(max_concurrent_requests)),
         )
+        .layer(middleware::from_fn(add_security_headers))
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state)
 }
 
-async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let started = Instant::now();
-    state
-        .metrics
-        .record_route("health", true, started.elapsed());
-    let provider_health = state.control.provider_health_rows();
-    let config = effective_config(&state);
-
-    Json(json!({
-        "status": "ok",
-        "service": "model-port",
-        "providers": config.provider_order,
-        "storage": {
-            "auth": state.auth.data_path(),
-            "control": state.control.data_path(),
-        },
-        "providerHealth": provider_health,
-    }))
-}
-
-async fn metrics(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, AppError> {
-    let started = Instant::now();
-
-    if let Err(err) = state.config.snapshot().validate_client_auth(&headers) {
-        state
-            .metrics
-            .record_route("metrics", false, started.elapsed());
-        return Err(err);
-    }
-
-    state
-        .metrics
-        .record_route("metrics", true, started.elapsed());
-    Ok((
-        [(CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
-        state.metrics.render_prometheus(),
-    ))
-}
-
-async fn models(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let started = Instant::now();
-    let result = (|| {
-        authenticate_client(&state, &headers)?;
-        let config = effective_config(&state);
-        let data = public_model_rows(&config);
-
-        Ok(Json(json!({
-            "data": data,
-            "has_more": false,
-            "first_id": data.first().and_then(|model| model.get("id")).cloned(),
-            "last_id": data.last().and_then(|model| model.get("id")).cloned(),
-        })))
-    })();
-
-    state
-        .metrics
-        .record_route("models", result.is_ok(), started.elapsed());
-    result
-}
-
-fn public_model_rows(config: &AppConfig) -> Vec<Value> {
-    let mut seen = BTreeSet::new();
-    let mut models = Vec::new();
-
-    for id in &config.provider_order {
-        let Some(provider) = config.providers.get(id) else {
-            continue;
-        };
-        if !provider_is_configured(provider) {
-            continue;
-        }
-
-        for model in &provider.models {
-            if seen.insert(model.clone()) {
-                models.push(json!({
-                    "id": model,
-                    "type": "model",
-                    "display_name": public_model_display_name(id, provider, model),
-                }));
-            }
-        }
-    }
-
-    for alias in config.aliases.keys() {
-        if seen.contains(alias) {
-            continue;
-        }
-        let Ok(resolved) = config.resolve(alias) else {
-            continue;
-        };
-        if !provider_is_configured(&resolved.provider) {
-            continue;
-        }
-        if seen.insert(alias.clone()) {
-            models.push(json!({
-                "id": alias,
-                "type": "model",
-                "display_name": public_model_display_name(&resolved.provider_id, &resolved.provider, &resolved.model),
-            }));
-        }
-    }
-
-    models
-}
-
-fn provider_is_configured(provider: &ProviderConfig) -> bool {
-    !provider.api_key_required || provider.api_key().ok().flatten().is_some()
-}
-
-fn public_model_display_name(provider_id: &str, provider: &ProviderConfig, model: &str) -> String {
-    format!(
-        "{} · {}",
-        provider_origin_label(provider_id, provider),
-        model_owner_label(model)
-    )
-}
-
-fn provider_origin_label(provider_id: &str, provider: &ProviderConfig) -> &'static str {
-    let host = provider_host(&provider.base_url);
-    if is_local_provider(provider_id, &host) {
-        return "本地";
-    }
-    if provider_id == "custom" {
-        return "自定义";
-    }
-    if provider_id == "openrouter" {
-        return "聚合平台";
-    }
-    if official_provider_host(provider_id, &host) {
-        return "官方";
-    }
-    "第三方"
-}
-
-fn model_owner_label(model: &str) -> &'static str {
-    let value = model.to_ascii_lowercase();
-    if value.starts_with("gpt-")
-        || value.starts_with("o1")
-        || value.starts_with("o3")
-        || value.starts_with("o4")
-        || value.starts_with("o5")
-        || value.starts_with("chatgpt-")
-        || value.starts_with("codex-")
-        || value.contains("-codex")
-        || value.starts_with("openai/")
-    {
-        return "OpenAI";
-    }
-    if value.contains("mimo") {
-        return "小米 MiMo";
-    }
-    if value.contains("deepseek") {
-        return "DeepSeek";
-    }
-    if value.contains("claude") || value.starts_with("anthropic/") {
-        return "Anthropic Claude";
-    }
-    if value.contains("gemini") || value.starts_with("google/") {
-        return "Google Gemini";
-    }
-    if value.contains("qwen") || value.starts_with("qwq-") || value.starts_with("qvq-") {
-        return "Qwen";
-    }
-    if value.contains("kimi") || value.contains("moonshot") {
-        return "Moonshot Kimi";
-    }
-    if value.starts_with("glm-") || value.contains("z-ai/") {
-        return "智谱 GLM";
-    }
-    if value.contains("grok") || value.contains("x-ai/") {
-        return "xAI Grok";
-    }
-    if value.contains("llama") || value.contains("meta-llama/") {
-        return "Llama";
-    }
-    if value.contains("mistral") || value.contains("codestral") {
-        return "Mistral AI";
-    }
-    if value.contains("doubao") {
-        return "Doubao";
-    }
-    "自定义模型"
-}
-
-fn provider_host(base_url: &str) -> String {
-    let rest = base_url
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(base_url);
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    host_port
-        .trim_matches(['[', ']'])
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches("www.")
-        .to_ascii_lowercase()
-}
-
-fn is_local_provider(provider_id: &str, host: &str) -> bool {
-    matches!(
-        provider_id,
-        "ollama" | "local_sglang" | "local_vllm" | "local_llamacpp"
-    ) || matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
-}
-
-fn official_provider_host(provider_id: &str, host: &str) -> bool {
-    let expected = match provider_id {
-        "deepseek" | "deepseek_openai" => "api.deepseek.com",
-        "mimo" => "api.xiaomimimo.com",
-        "openai" => "api.openai.com",
-        "anthropic" => "api.anthropic.com",
-        "gemini" => "generativelanguage.googleapis.com",
-        "dashscope" => "dashscope.aliyuncs.com",
-        "kimi" => "api.moonshot.cn",
-        "zhipu" => "open.bigmodel.cn",
-        "xai" => "api.x.ai",
-        "groq" => "api.groq.com",
-        "mistral" => "api.mistral.ai",
-        "ark" => "ark.cn-beijing.volces.com",
-        _ => return false,
-    };
-    host == expected || host.ends_with(&format!(".{expected}"))
-}
-
-async fn messages(
-    State(state): State<AppState>,
-    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(request): Json<AnthropicRequest>,
-) -> Result<Response, AppError> {
-    let started = Instant::now();
-    let identity = match authenticate_client(&state, &headers) {
-        Ok(identity) => identity,
-        Err(err) => {
-            state
-                .metrics
-                .record_route("messages", false, started.elapsed());
-            return Err(err);
-        }
-    };
-    let estimate = estimate_usage(&request);
-    let request_client_ip = client_ip(&headers, Some(peer_addr), &state.trusted_proxies);
-    let requested_model = request.model.clone();
-    let config = effective_config(&state);
-    let resolved = match config.resolve(&request.model) {
-        Ok(resolved) => resolved,
-        Err(err) => {
-            state
-                .metrics
-                .record_route("messages", false, started.elapsed());
-            return Err(err);
-        }
-    };
-    let stream = request.stream.unwrap_or(false);
-    info!(
-        request_id = headers
-            .get(&X_REQUEST_ID)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or(""),
-        requested_model = request.model.as_str(),
-        provider = resolved.provider_id.as_str(),
-        upstream_model = resolved.model.as_str(),
-        stream,
-        "routing message request"
+async fn add_security_headers(request: axum::extract::Request, next: middleware::Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        X_CONTENT_TYPE_OPTIONS.clone(),
+        HeaderValue::from_static("nosniff"),
     );
-
-    let attempts = route_attempts(&state, &config, &requested_model, resolved);
-    let mut provider_id = String::new();
-    let mut upstream_model = String::new();
-    let mut protocol = String::new();
-    let mut retry_count = 0u32;
-    let mut fallback_from_provider = None;
-    let mut result = Err(AppError::ProviderNotFound(requested_model.clone()));
-    let mut first_provider = None::<String>;
-
-    for (index, mut attempt) in attempts.into_iter().enumerate() {
-        if index > 0 {
-            retry_count = retry_count.saturating_add(1);
-            fallback_from_provider = first_provider.clone();
-        }
-        if first_provider.is_none() {
-            first_provider = Some(attempt.provider_id.clone());
-        }
-        provider_id = attempt.provider_id.clone();
-        upstream_model = attempt.model.clone();
-        let credential_id = state
-            .control
-            .apply_selected_provider_credential_for_request(&provider_id, &mut attempt.provider);
-        protocol = provider_protocol_value(attempt.provider.protocol).to_owned();
-        if let Err(err) = state.control.check_quotas(
-            &identity,
-            estimate,
-            request_client_ip.as_deref(),
-            &requested_model,
-            &upstream_model,
-            &provider_id,
-        ) {
-            result = Err(err);
-            break;
-        }
-        let attempt_result =
-            send_message_attempt(state.clone(), attempt, request.clone(), &headers).await;
-        let attempt_success = attempt_result.is_ok();
-        let attempt_status = attempt_result
-            .as_ref()
-            .map(|response| response.status().as_u16())
-            .unwrap_or(500);
-        let attempt_error = attempt_result.as_ref().err().map(ToString::to_string);
-        state.control.record_provider_outcome_for_credential(
-            &provider_id,
-            credential_id.as_deref(),
-            attempt_success,
-            attempt_status,
-            attempt_error.as_deref(),
-        )?;
-        result = attempt_result;
-        if result.is_ok() || !is_retryable_message_error(result.as_ref().err()) {
-            break;
-        }
-    }
-    let success = result.is_ok();
-    let duration = started.elapsed();
-    let status_code = result
-        .as_ref()
-        .map(|response| response.status().as_u16())
-        .unwrap_or(500);
-    let error_message = result.as_ref().err().map(ToString::to_string);
-    let actual_estimate = result
-        .as_ref()
-        .ok()
-        .and_then(|response| pricing::usage_from_headers(response.headers()))
-        .map(|charge| UsageEstimate {
-            input_tokens: charge.input_tokens,
-            output_tokens: charge.output_tokens,
-            cache_write_tokens: charge.cache_write_tokens,
-            cache_read_tokens: charge.cache_read_tokens,
-            cost_estimate: charge.cost_estimate,
-        })
-        .unwrap_or(estimate);
-
-    state.metrics.record_route("messages", success, duration);
-    state.metrics.record_message(
-        &provider_id,
-        &upstream_model,
-        stream,
-        success,
-        duration,
-        actual_estimate,
+    headers.insert(X_FRAME_OPTIONS.clone(), HeaderValue::from_static("DENY"));
+    headers.insert(
+        REFERRER_POLICY.clone(),
+        HeaderValue::from_static("no-referrer"),
     );
-    state.control.record_usage(UsageEventInput {
-        identity,
-        model: requested_model,
-        resolved_model: upstream_model,
-        provider: provider_id,
-        protocol,
-        stream,
-        success,
-        status_code,
-        estimate: actual_estimate,
-        latency: duration,
-        first_byte_latency: Some(duration),
-        retry_count,
-        fallback_from_provider,
-        client_ip: request_client_ip,
-        request_path: "/v1/messages".to_owned(),
-        error_message,
-    })?;
-    result
-}
-
-async fn send_message_attempt(
-    state: AppState,
-    resolved: ResolvedProvider,
-    request: AnthropicRequest,
-    headers: &HeaderMap,
-) -> Result<Response, AppError> {
-    match resolved.provider.protocol {
-        ProviderProtocol::Anthropic => {
-            providers::anthropic::messages(state, resolved, request, headers)
-                .await
-                .map(IntoResponse::into_response)
-        }
-        ProviderProtocol::OpenaiCompat => {
-            providers::openai_compat::messages(state, resolved, request)
-                .await
-                .map(IntoResponse::into_response)
-        }
-    }
-}
-
-fn route_attempts(
-    state: &AppState,
-    config: &AppConfig,
-    requested_model: &str,
-    primary: ResolvedProvider,
-) -> Vec<ResolvedProvider> {
-    let mut attempts = Vec::new();
-    if !state.control.provider_in_cooldown(&primary.provider_id) {
-        attempts.push(primary.clone());
-    }
-
-    for provider_id in &config.provider_order {
-        if provider_id == &primary.provider_id || state.control.provider_in_cooldown(provider_id) {
-            continue;
-        }
-        let Some(provider) = config.providers.get(provider_id) else {
-            continue;
-        };
-        let Some(model) = fallback_model_for_provider(provider, requested_model, &primary.model)
-        else {
-            continue;
-        };
-        attempts.push(ResolvedProvider {
-            provider_id: provider_id.clone(),
-            provider: provider.clone(),
-            model,
-        });
-    }
-
-    if attempts.is_empty() {
-        attempts.push(primary);
-    }
-    attempts
-}
-
-fn fallback_model_for_provider(
-    provider: &ProviderConfig,
-    requested_model: &str,
-    primary_model: &str,
-) -> Option<String> {
-    for model in [requested_model, primary_model] {
-        if provider.models.iter().any(|configured| configured == model)
-            || provider
-                .model_prefixes
-                .iter()
-                .any(|prefix| model.starts_with(prefix))
-            || provider.passthrough_unknown_models
-        {
-            return Some(model.to_owned());
-        }
-    }
-    None
-}
-
-fn is_retryable_message_error(error: Option<&AppError>) -> bool {
-    match error {
-        Some(AppError::Transport(_) | AppError::UpstreamProtocol(_)) => true,
-        Some(AppError::Upstream { status, .. }) => *status == 429 || *status >= 500,
-        _ => false,
-    }
+    headers.insert(
+        PERMISSIONS_POLICY.clone(),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    response
 }
 
 async fn admin_login(
@@ -923,6 +719,11 @@ fn authenticate_client(state: &AppState, headers: &HeaderMap) -> Result<ClientId
     if let Some(identity) = state.control.authenticate_headers(headers)? {
         return Ok(identity);
     }
+    if !state.security.allow_legacy_client_auth {
+        return Err(AppError::Forbidden(
+            "control-plane API key is required; legacy router token auth is disabled".to_owned(),
+        ));
+    }
     state.config.snapshot().validate_client_auth(headers)?;
     Ok(ControlStore::legacy_identity())
 }
@@ -962,35 +763,6 @@ fn parse_ip_with_optional_port(value: &str) -> Option<IpAddr> {
     value
         .rsplit_once(':')
         .and_then(|(host, _)| host.parse::<IpAddr>().ok())
-}
-
-fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
-    let input_chars = serde_json::to_string(&request.messages)
-        .map(|value| value.chars().count())
-        .unwrap_or(0)
-        + request
-            .system
-            .as_ref()
-            .and_then(|value| serde_json::to_string(value).ok())
-            .map(|value| value.chars().count())
-            .unwrap_or(0);
-    let input_tokens = u64::try_from(input_chars.div_ceil(4)).unwrap_or(u64::MAX);
-    let output_tokens = request.max_tokens.unwrap_or(0);
-    UsageEstimate {
-        input_tokens,
-        output_tokens,
-        cache_write_tokens: 0,
-        cache_read_tokens: 0,
-        cost_estimate: pricing::cost_for_model(
-            &request.model,
-            TokenUsageBreakdown {
-                input_tokens,
-                output_tokens,
-                cache_write_tokens: 0,
-                cache_read_tokens: 0,
-            },
-        ),
-    }
 }
 
 async fn admin_dashboard(
@@ -1170,6 +942,7 @@ async fn admin_dashboard(
             let success_rate = percent(successes, requests);
             let provider_status = provider.get("status").and_then(Value::as_str).unwrap_or("inactive");
             let runtime_status = provider.get("runtimeStatus").and_then(Value::as_str).unwrap_or("healthy");
+            let provider_health = provider.get("health").unwrap_or(&Value::Null);
             let health_status = if provider_status != "active" {
                 "down"
             } else if runtime_status == "cooldown" {
@@ -1191,6 +964,9 @@ async fn admin_dashboard(
                 "cacheWriteTokensTotal": cache_write_tokens,
                 "cacheReadTokensTotal": cache_read_tokens,
                 "costEstimateUsdTotal": cost_estimate,
+                "accountIssue": provider_health.get("accountIssue").cloned().unwrap_or_else(|| json!("none")),
+                "rechargeRequired": provider_health.get("rechargeRequired").and_then(Value::as_bool).unwrap_or(false),
+                "rechargeBadge": provider_health.get("rechargeBadge").cloned().unwrap_or(Value::Null),
             })
         }).collect::<Vec<_>>(),
         "recentActivity": if recent_activity.is_empty() { fallback_activity } else { recent_activity },
@@ -2765,6 +2541,20 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn env_u32(name: &str, default: u32) -> u32 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
 fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -2777,6 +2567,7 @@ mod tests {
 
     use axum::{
         body::{Body, to_bytes},
+        extract::connect_info::ConnectInfo,
         http::{
             Request, StatusCode,
             header::{CONTENT_TYPE, COOKIE, HOST, HeaderValue, ORIGIN, SET_COOKIE},
@@ -2847,8 +2638,8 @@ mod tests {
             api_key_env: Some("DEEPSEEK_ANTHROPIC_AUTH_TOKEN".to_owned()),
             api_key: None,
             api_key_required: true,
-            default_model: "deepseek-v4-pro".to_owned(),
-            models: vec!["deepseek-v4-pro".to_owned()],
+            default_model: "deepseek-v4-flash".to_owned(),
+            models: vec!["deepseek-v4-flash".to_owned()],
             model_prefixes: vec!["deepseek-".to_owned()],
             passthrough_unknown_models: false,
             max_tokens_field: MaxTokensField::MaxTokens,
@@ -2871,12 +2662,12 @@ mod tests {
                 ("fast-chat".to_owned(), "mimo:mimo-v2.5-pro".to_owned()),
                 (
                     "deepseek-route".to_owned(),
-                    "deepseek:deepseek-v4-pro".to_owned(),
+                    "deepseek:deepseek-v4-flash".to_owned(),
                 ),
             ]),
         };
 
-        let rows = public_model_rows(&config);
+        let rows = client_api::public_model_rows(&config);
         let ids = rows
             .iter()
             .filter_map(|row| row.get("id").and_then(Value::as_str))
@@ -2884,7 +2675,7 @@ mod tests {
 
         assert!(ids.contains(&"mimo-v2.5-pro"));
         assert!(ids.contains(&"fast-chat"));
-        assert!(!ids.contains(&"deepseek-v4-pro"));
+        assert!(!ids.contains(&"deepseek-v4-flash"));
         assert!(!ids.contains(&"deepseek-route"));
     }
 
@@ -2917,7 +2708,7 @@ mod tests {
             aliases: HashMap::new(),
         };
 
-        let rows = public_model_rows(&config);
+        let rows = client_api::public_model_rows(&config);
         let display_name = |id: &str| {
             rows.iter()
                 .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
@@ -3108,6 +2899,83 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn rejects_empty_message_list_before_routing() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+        let mut body = message_body(false);
+        body["messages"] = json!([]);
+
+        let (status, body) = post_message(app, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("messages must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_message_shape_before_routing() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+        let mut body = message_body(false);
+        body["messages"] = json!([
+            {
+                "role": "system",
+                "content": "system content belongs in the top-level system field"
+            }
+        ]);
+
+        let (status, body) = post_message(app, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("messages[0].role must be user or assistant"));
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_message_content_before_routing() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+        let mut body = message_body(false);
+        body["messages"] = json!([
+            {
+                "role": "user",
+                "content": null
+            }
+        ]);
+
+        let (status, body) = post_message(app, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("messages[0].content must be a string or array"));
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_tools_shape_before_routing() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+        let mut body = message_body(false);
+        body["tools"] = json!({
+            "name": "not-an-array"
+        });
+
+        let (status, body) = post_message(app, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("tools must be an array"));
+    }
+
+    #[tokio::test]
+    async fn rejects_zero_max_tokens_before_routing() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+        let mut body = message_body(false);
+        body["max_tokens"] = json!(0);
+
+        let (status, body) = post_message(app, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("max_tokens must be greater than 0"));
+    }
+
+    #[tokio::test]
     async fn metrics_endpoint_requires_auth() {
         let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
         let app = router(test_state(upstream, 1024 * 1024));
@@ -3124,6 +2992,188 @@ data: [DONE]
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn health_is_minimal_without_auth_and_readyz_requires_auth() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+
+        let health_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health_response.status(), StatusCode::OK);
+        assert_eq!(
+            health_response
+                .headers()
+                .get("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+        let health_body = to_bytes(health_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health_body: Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health_body["status"], json!("ok"));
+        assert!(health_body.get("providerHealth").is_none());
+
+        let readyz_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readyz_response.status(), StatusCode::UNAUTHORIZED);
+
+        let detailed_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/readyz")
+                    .header("x-api-key", CLIENT_TOKEN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detailed_response.status(), StatusCode::OK);
+        let detailed_body = to_bytes(detailed_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let detailed_body: Value = serde_json::from_slice(&detailed_body).unwrap();
+        assert!(detailed_body.get("providerHealth").is_some());
+    }
+
+    #[tokio::test]
+    async fn control_api_key_mode_rejects_legacy_token_but_accepts_api_key_records() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+            "application/json",
+        )
+        .await;
+        let mut state = test_state(upstream, 1024 * 1024);
+        state.security = Arc::new(GatewaySecurityPolicy::require_control_api_keys_for_tests());
+        let created = state
+            .control
+            .create_api_key(CreateApiKeyInput {
+                user_id: "usr_test".to_owned(),
+                username: Some("test-user".to_owned()),
+                name: "Claude Code".to_owned(),
+                group: None,
+                team_id: None,
+                allowed_models: None,
+                allowed_providers: None,
+                expires_at: None,
+            })
+            .unwrap();
+        let app = router(state);
+
+        let (legacy_status, _) = post_message(app.clone(), message_body(false)).await;
+        assert_eq!(legacy_status, StatusCode::FORBIDDEN);
+
+        let (api_key_status, body) =
+            post_message_with_key(app, &created.key, message_body(false)).await;
+        assert_eq!(api_key_status, StatusCode::OK);
+        assert!(body.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn message_rate_limiter_rejects_excess_api_key_requests() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+            "application/json",
+        )
+        .await;
+        let mut state = test_state(upstream, 1024 * 1024);
+        state.rate_limiter = Arc::new(RateLimiter::for_tests(1, 0, 0, 0));
+        let app = router(state);
+
+        let (first_status, _) = post_message(app.clone(), message_body(false)).await;
+        let second_response = post_message_response(app, CLIENT_TOKEN, message_body(false)).await;
+        let retry_after = second_response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let second_status = second_response.status();
+        let body = response_body(second_response).await;
+
+        assert_eq!(first_status, StatusCode::OK);
+        assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(body.contains("rate limit"));
+        assert_eq!(retry_after.as_deref(), Some("60"));
+    }
+
+    #[tokio::test]
+    async fn message_rate_limiter_can_limit_by_provider() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+            "application/json",
+        )
+        .await;
+        let mut state = test_state(upstream, 1024 * 1024);
+        state.rate_limiter = Arc::new(RateLimiter::for_tests(0, 0, 1, 0));
+        let app = router(state);
+
+        let (first_status, _) = post_message(app.clone(), message_body(false)).await;
+        let (second_status, body) = post_message(app, message_body(false)).await;
+
+        assert_eq!(first_status, StatusCode::OK);
+        assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(body.contains("provider request rate limit exceeded"));
+    }
+
+    #[test]
+    fn rejected_rate_limit_check_does_not_consume_other_windows() {
+        let limiter = RateLimiter::for_tests(2, 0, 1, 0);
+        let identity = ControlStore::legacy_identity();
+
+        assert!(
+            limiter
+                .check(RateLimitScope {
+                    identity: &identity,
+                    client_ip: None,
+                    provider_id: Some("provider-a"),
+                    model: None,
+                })
+                .is_ok()
+        );
+        assert!(
+            limiter
+                .check(RateLimitScope {
+                    identity: &identity,
+                    client_ip: None,
+                    provider_id: Some("provider-a"),
+                    model: None,
+                })
+                .is_err()
+        );
+        assert!(
+            limiter
+                .check(RateLimitScope {
+                    identity: &identity,
+                    client_ip: None,
+                    provider_id: Some("provider-b"),
+                    model: None,
+                })
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -3406,6 +3456,9 @@ data: [DONE]
         let mut state = test_state_with_admin(upstream, 1024 * 1024);
         let initial_config = state.config.snapshot();
         let mut reloaded_config = initial_config.clone();
+        if let Some(provider) = reloaded_config.providers.get_mut("mimo") {
+            provider.base_url = "https://api.xiaomimimo.com/v1".to_owned();
+        }
         let custom_provider = reloaded_config
             .providers
             .get("mimo")
@@ -3614,7 +3667,7 @@ data: [DONE]
         );
         assert!(provider.models.contains(&"mimo-v2.6-pro".to_owned()));
 
-        let rows = public_model_rows(&config);
+        let rows = client_api::public_model_rows(&config);
         let ids = rows
             .iter()
             .filter_map(|row| row.get("id").and_then(Value::as_str))
@@ -3938,7 +3991,7 @@ data: [DONE]
             "local_custom"
         );
         assert!(
-            public_model_rows(&config)
+            client_api::public_model_rows(&config)
                 .iter()
                 .any(|row| row.get("id").and_then(Value::as_str) == Some("qwen-local"))
         );
@@ -3989,7 +4042,7 @@ data: [DONE]
         let provider = config.providers.get("mimo").unwrap();
         assert!(!provider.models.contains(&"mimo-v2.6-pro".to_owned()));
         assert!(
-            !public_model_rows(&config)
+            !client_api::public_model_rows(&config)
                 .iter()
                 .any(|row| row.get("id").and_then(Value::as_str) == Some("mimo-v2.6-pro"))
         );
@@ -4096,25 +4149,37 @@ data: [DONE]
     }
 
     async fn post_message(app: Router, body: Value) -> (StatusCode, String) {
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/messages")
-                    .extension(ConnectInfo(
-                        "127.0.0.1:48178".parse::<SocketAddr>().unwrap(),
-                    ))
-                    .header("x-api-key", CLIENT_TOKEN)
-                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        post_message_with_key(app, CLIENT_TOKEN, body).await
+    }
+
+    async fn post_message_with_key(app: Router, key: &str, body: Value) -> (StatusCode, String) {
+        let response = post_message_response(app, key, body).await;
 
         let status = response.status();
+        let body = response_body(response).await;
+        (status, body)
+    }
+
+    async fn post_message_response(app: Router, key: &str, body: Value) -> Response {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .extension(ConnectInfo(
+                    "127.0.0.1:48178".parse::<SocketAddr>().unwrap(),
+                ))
+                .header("x-api-key", key)
+                .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn response_body(response: Response) -> String {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        (status, String::from_utf8(body.to_vec()).unwrap())
+        String::from_utf8(body.to_vec()).unwrap()
     }
 
     async fn spawn_openai_upstream(
@@ -4210,6 +4275,8 @@ data: [DONE]
             })),
             auth: Arc::new(AuthStore::for_tests()),
             control: Arc::new(ControlStore::for_tests()),
+            security: Arc::new(GatewaySecurityPolicy::for_tests()),
+            rate_limiter: Arc::new(RateLimiter::disabled()),
             trusted_proxies: Arc::new(TrustedProxyConfig::for_tests()),
             transport: HttpTransport::new().unwrap(),
             metrics: Arc::new(Metrics::new()),
