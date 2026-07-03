@@ -1,4 +1,4 @@
-import { useRef, type CSSProperties, type ElementType, type ReactNode } from 'react'
+import { useRef, type CSSProperties, type ElementType } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { PaginationBar } from '@/components/shared/PaginationBar'
@@ -28,11 +28,11 @@ import {
   shortId,
 } from './log-utils'
 
-const ROW_HEIGHT = 96
+const ROW_HEIGHT = 108
 const OVERSCAN = 10
-const TABLE_MIN_WIDTH = 1320
+const TABLE_MIN_WIDTH = 1420
 const TABLE_GRID_STYLE: CSSProperties = {
-  gridTemplateColumns: '36px 126px 150px minmax(150px,1fr) minmax(170px,1.1fr) 128px 144px 104px 96px minmax(210px,1.2fr)',
+  gridTemplateColumns: '30px 132px 212px 220px minmax(210px,1fr) 128px 144px 104px 96px minmax(220px,1.1fr)',
 }
 
 // ── Cell components ──────────────────────────────────────────────
@@ -41,20 +41,20 @@ function TimeStatusCell({ log }: { log: RequestLog }) {
   const date = parseLogDate(log.timestamp)
 
   return (
-    <div className="space-y-2">
-      <div className="font-mono text-xs leading-5">
+    <div className="min-w-0 space-y-2">
+      <div className="font-mono leading-5">
         {date ? (
           <>
-            <div>{date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}</div>
-            <div className="text-muted-foreground">{date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</div>
+            <div className="text-[13px] font-medium">{date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</div>
+            <div className="text-xs text-muted-foreground">{date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}</div>
           </>
         ) : (
-          <div className="text-muted-foreground">{log.timestamp}</div>
+          <div className="text-xs text-muted-foreground">{log.timestamp}</div>
         )}
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        <StatusBadge status={log.status} className="rounded-md" />
-        <Badge variant="outline" className="font-mono text-[11px]">
+        <StatusBadge status={log.status} className="rounded-md px-2 py-0.5" />
+        <Badge variant="outline" className="rounded-md px-2 font-mono text-[11px]">
           {log.statusCode}
         </Badge>
       </div>
@@ -64,10 +64,12 @@ function TimeStatusCell({ log }: { log: RequestLog }) {
 
 function RouteCell({ log }: { log: RequestLog }) {
   return (
-    <div className="space-y-1.5">
+    <div className="min-w-0 space-y-1.5">
       <ProviderBadge log={log} />
-      <div className="space-y-0.5 text-xs text-muted-foreground">
-        <div className="font-mono">{log.channelId || log.provider}</div>
+      <div className="min-w-0 space-y-0.5 text-xs text-muted-foreground">
+        <div className="truncate font-mono" title={log.channelId || log.provider}>
+          {log.channelId || log.provider}
+        </div>
         <div>{protocolLabel(log.protocol)}</div>
       </div>
     </div>
@@ -75,17 +77,22 @@ function RouteCell({ log }: { log: RequestLog }) {
 }
 
 function IdentityCell({ log }: { log: RequestLog }) {
+  const tokenName = log.tokenName || log.apiKeyName || 'legacy'
+  const groupName = log.group || log.apiKeyGroup || 'default'
+
   return (
-    <div className="space-y-2">
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+    <div className="min-w-0 space-y-1.5">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
           <UserRound className="h-3.5 w-3.5" />
         </div>
-        <span className="truncate text-sm font-medium">{log.username}</span>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium" title={log.username}>{log.username}</div>
+          <div className="truncate font-mono text-[11px] text-muted-foreground" title={log.userId}>{shortId(log.userId)}</div>
+        </div>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        <CodePill>{log.tokenName || log.apiKeyName || 'legacy'}</CodePill>
-        <CodePill>{log.group || log.apiKeyGroup || 'default'}</CodePill>
+      <div className="ml-10 min-w-0 truncate text-xs text-muted-foreground" title={`令牌 ${tokenName} / 分组 ${groupName}`}>
+        分组 <span className="font-mono">{groupName}</span>
       </div>
     </div>
   )
@@ -93,8 +100,8 @@ function IdentityCell({ log }: { log: RequestLog }) {
 
 function ModelCell({ log }: { log: RequestLog }) {
   return (
-    <div className="space-y-1">
-      <div className="break-all font-mono text-xs font-medium">{log.resolvedModel || log.model}</div>
+    <div className="min-w-0 space-y-1.5">
+      <div className="break-all font-mono text-xs font-medium leading-5">{log.resolvedModel || log.model}</div>
       {log.model !== log.resolvedModel && (
         <div className="break-all text-xs text-muted-foreground">{log.model}</div>
       )}
@@ -184,7 +191,11 @@ function DetailPreview({ log }: { log: RequestLog }) {
 
 function ProviderBadge({ log }: { log: RequestLog }) {
   return (
-    <Badge variant="outline" className={cn('max-w-[132px] gap-1.5 px-2 py-1', providerTone(log.provider))}>
+    <Badge
+      variant="outline"
+      className={cn('max-w-full gap-1.5 bg-background px-2 py-1 shadow-none', providerTone(log.provider))}
+      title={log.channelName || log.provider}
+    >
       <Server className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{log.channelName || log.provider}</span>
     </Badge>
@@ -222,14 +233,6 @@ function TokenValue({
   )
 }
 
-function CodePill({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex max-w-full items-center rounded-md border bg-muted/50 px-2 py-0.5 font-mono text-xs">
-      <span className="truncate">{children}</span>
-    </span>
-  )
-}
-
 // ── Table header (grid-based to match virtual rows) ──────────────
 
 function TableHeaderRow() {
@@ -240,8 +243,8 @@ function TableHeaderRow() {
     >
       <div />
       <div className="py-3">时间 / 状态</div>
-      <div className="py-3">渠道</div>
-      <div className="py-3">身份</div>
+      <div className="py-3">路由渠道</div>
+      <div className="py-3">调用身份</div>
       <div className="py-3">模型</div>
       <div className="py-3 text-center">延迟</div>
       <div className="py-3 text-center">Tokens</div>
@@ -264,7 +267,7 @@ function VirtualRow({
   return (
     <div
       className={cn(
-        'grid min-h-[96px] cursor-pointer items-start border-b border-l-4 px-4 transition-colors hover:bg-muted/30',
+        'grid min-h-[108px] cursor-pointer items-start border-b border-l-4 px-4 transition-colors hover:bg-muted/30',
         rowTone(log.status),
       )}
       style={TABLE_GRID_STYLE}
@@ -275,7 +278,7 @@ function VirtualRow({
         if (e.key === 'Enter' || e.key === ' ') onSelect(log)
       }}
     >
-      <div className="flex items-center justify-center">
+      <div className="flex justify-center pt-5">
         <div className="h-2 w-2 rounded-full bg-muted-foreground/30" />
       </div>
       <div className="py-3">
