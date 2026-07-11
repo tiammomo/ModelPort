@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env,
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -38,28 +41,48 @@ use crate::{
     },
     storage::JsonStore,
     usage::{
-        DAY_MS, UsageCostRecord, current_period, day_start, quota_increment,
-        usage_cost_for_api_key, usage_cost_for_team, usage_record_cost,
+        DAY_MS, UsageCostRecord, current_period, day_start, quota_increment, usage_record_cost,
     },
 };
 
 pub use crate::usage::UsageEstimate;
 
 const DEFAULT_USAGE_LIMIT: usize = 5_000;
+const HOUR_MS: u64 = 60 * 60 * 1_000;
+const SPEND_LEDGER_RETENTION_MS: u64 = 31 * DAY_MS;
 
-#[derive(Debug)]
+pub(crate) fn validate_backup_document(value: &serde_json::Value) -> Result<(), AppError> {
+    serde_json::from_value::<ControlFile>(value.clone())
+        .map(|_| ())
+        .map_err(|error| {
+            AppError::InvalidRequest(format!("backup control document is invalid: {error}"))
+        })
+}
+
 pub struct ControlStore {
     store: Option<JsonStore>,
     inner: Mutex<ControlInner>,
+    persistence_degraded: AtomicBool,
     usage_limit: usize,
 }
 
-#[derive(Debug, Default)]
+impl std::fmt::Debug for ControlStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ControlStore")
+            .field("data_path", &self.data_path())
+            .field("usage_limit", &self.usage_limit)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 struct ControlInner {
     teams: BTreeMap<String, TeamRecord>,
     api_keys: BTreeMap<String, ApiKeyRecord>,
     quotas: BTreeMap<String, QuotaRecord>,
     usage: Vec<UsageRecord>,
+    spend_ledger: SpendLedger,
     route_config: RouteConfigRecord,
     activities: Vec<ActivityRecord>,
     provider_tests: BTreeMap<String, ProviderTestRecord>,
@@ -86,6 +109,8 @@ struct ControlFile {
     #[serde(default)]
     usage: Vec<UsageRecord>,
     #[serde(default)]
+    spend_ledger: SpendLedger,
+    #[serde(default)]
     route_config: RouteConfigRecord,
     #[serde(default)]
     activities: Vec<ActivityRecord>,
@@ -109,6 +134,106 @@ struct ControlFile {
     provider_credential_pool_modes: BTreeMap<String, String>,
     #[serde(default)]
     provider_credential_health: Vec<ProviderCredentialHealthRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpendLedger {
+    #[serde(default)]
+    api_key_all_time: BTreeMap<String, f64>,
+    #[serde(default)]
+    team_all_time: BTreeMap<String, f64>,
+    #[serde(default)]
+    api_key_hourly: BTreeMap<String, BTreeMap<u64, f64>>,
+    #[serde(default)]
+    team_hourly: BTreeMap<String, BTreeMap<u64, f64>>,
+}
+
+impl SpendLedger {
+    fn is_empty(&self) -> bool {
+        self.api_key_all_time.is_empty()
+            && self.team_all_time.is_empty()
+            && self.api_key_hourly.is_empty()
+            && self.team_hourly.is_empty()
+    }
+
+    fn record(
+        &mut self,
+        timestamp_ms: u64,
+        api_key_id: Option<&str>,
+        team_id: Option<&str>,
+        cost: f64,
+    ) {
+        let cost = cost.max(0.0);
+        if !cost.is_finite() || cost == 0.0 {
+            return;
+        }
+        let hour = (timestamp_ms / HOUR_MS) * HOUR_MS;
+        if let Some(api_key_id) = api_key_id {
+            *self
+                .api_key_all_time
+                .entry(api_key_id.to_owned())
+                .or_default() += cost;
+            *self
+                .api_key_hourly
+                .entry(api_key_id.to_owned())
+                .or_default()
+                .entry(hour)
+                .or_default() += cost;
+        }
+        if let Some(team_id) = team_id {
+            *self.team_all_time.entry(team_id.to_owned()).or_default() += cost;
+            *self
+                .team_hourly
+                .entry(team_id.to_owned())
+                .or_default()
+                .entry(hour)
+                .or_default() += cost;
+        }
+        self.prune(timestamp_ms);
+    }
+
+    fn api_key_cost(&self, api_key_id: &str, since: Option<u64>) -> f64 {
+        since.map_or_else(
+            || {
+                self.api_key_all_time
+                    .get(api_key_id)
+                    .copied()
+                    .unwrap_or(0.0)
+            },
+            |since| hourly_cost(&self.api_key_hourly, api_key_id, since),
+        )
+    }
+
+    fn team_cost(&self, team_id: &str, since: Option<u64>) -> f64 {
+        since.map_or_else(
+            || self.team_all_time.get(team_id).copied().unwrap_or(0.0),
+            |since| hourly_cost(&self.team_hourly, team_id, since),
+        )
+    }
+
+    fn prune(&mut self, now_ms: u64) {
+        let cutoff = now_ms.saturating_sub(SPEND_LEDGER_RETENTION_MS);
+        prune_hourly_costs(&mut self.api_key_hourly, cutoff);
+        prune_hourly_costs(&mut self.team_hourly, cutoff);
+    }
+}
+
+fn hourly_cost(ledger: &BTreeMap<String, BTreeMap<u64, f64>>, subject_id: &str, since: u64) -> f64 {
+    ledger
+        .get(subject_id)
+        .into_iter()
+        .flat_map(|buckets| buckets.range(since.saturating_sub(HOUR_MS)..))
+        .filter(|(hour, _)| hour.saturating_add(HOUR_MS) > since)
+        .map(|(_, cost)| cost.max(0.0))
+        .sum()
+}
+
+fn prune_hourly_costs(ledger: &mut BTreeMap<String, BTreeMap<u64, f64>>, cutoff: u64) {
+    ledger.retain(|_, buckets| {
+        buckets.retain(|hour, _| hour.saturating_add(HOUR_MS) > cutoff);
+        !buckets.is_empty()
+    });
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -672,6 +797,8 @@ impl QuotaViewRecord for QuotaRecord {
 #[serde(rename_all = "camelCase")]
 struct UsageRecord {
     id: String,
+    #[serde(default)]
+    request_id: Option<String>,
     timestamp_ms: u64,
     user_id: String,
     username: String,
@@ -698,6 +825,8 @@ struct UsageRecord {
     #[serde(default)]
     cache_read_tokens: u64,
     cost_estimate: f64,
+    #[serde(default = "default_billing_mode")]
+    billing_mode: String,
     latency_ms: u64,
     #[serde(default)]
     first_byte_latency_ms: Option<u64>,
@@ -791,12 +920,22 @@ pub struct PublicApiKey {
     pub monthly_limit_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedApiKey {
     #[serde(flatten)]
     pub public: PublicApiKey,
     pub key: String,
+}
+
+impl std::fmt::Debug for CreatedApiKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CreatedApiKey")
+            .field("public", &self.public)
+            .field("key", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -893,14 +1032,21 @@ pub struct ApiKeyPolicy {
 #[derive(Debug, Clone)]
 pub struct UsageEventInput {
     pub identity: ClientIdentity,
+    pub request_id: Option<String>,
     pub model: String,
     pub resolved_model: String,
     pub provider: String,
     pub protocol: String,
     pub stream: bool,
     pub success: bool,
+    pub timed_out: bool,
     pub status_code: u16,
     pub estimate: UsageEstimate,
+    pub billing_mode: String,
+    /// Whether this request reached an upstream provider and can therefore
+    /// consume quota or spend. Locally rejected requests are still logged,
+    /// but must never move billing counters.
+    pub chargeable: bool,
     pub latency: Duration,
     pub first_byte_latency: Option<Duration>,
     pub retry_count: u32,
@@ -966,6 +1112,7 @@ impl ControlStore {
             "apiKeys": [],
             "quotas": [],
             "usage": [],
+            "spendLedger": {},
             "routeConfig": {},
             "activities": [],
             "providerTests": [],
@@ -1007,6 +1154,18 @@ impl ControlStore {
                 .or_default()
                 .insert(record.credential_id.clone(), record);
         }
+        let mut spend_ledger = file.spend_ledger;
+        if spend_ledger.is_empty() {
+            for record in &file.usage {
+                spend_ledger.record(
+                    record.timestamp_ms,
+                    record.api_key_id.as_deref(),
+                    record.team_id.as_deref(),
+                    usage_record_cost(record),
+                );
+            }
+        }
+        spend_ledger.prune(now_millis());
 
         Ok(Self {
             store: Some(store),
@@ -1027,6 +1186,7 @@ impl ControlStore {
                     .map(|record| (record.id.clone(), record))
                     .collect(),
                 usage: file.usage,
+                spend_ledger,
                 route_config: file.route_config,
                 activities: file.activities,
                 provider_tests: file
@@ -1052,6 +1212,7 @@ impl ControlStore {
                 provider_credential_pool_modes: file.provider_credential_pool_modes,
                 provider_credential_health,
             }),
+            persistence_degraded: AtomicBool::new(false),
             usage_limit,
         })
     }
@@ -1061,6 +1222,7 @@ impl ControlStore {
         Self {
             store: None,
             inner: Mutex::new(ControlInner::default()),
+            persistence_degraded: AtomicBool::new(false),
             usage_limit: DEFAULT_USAGE_LIMIT,
         }
     }
@@ -1114,12 +1276,13 @@ impl ControlStore {
         }
 
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner
             .route_config
             .aliases
             .insert(alias.to_owned(), target.to_owned());
         inner.route_config.deleted_aliases.remove(alias);
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn delete_alias(&self, alias: &str, tombstone: bool) -> Result<(), AppError> {
@@ -1129,13 +1292,14 @@ impl ControlStore {
         }
 
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner.route_config.aliases.remove(alias);
         if tombstone {
             inner.route_config.deleted_aliases.insert(alias.to_owned());
         } else {
             inner.route_config.deleted_aliases.remove(alias);
         }
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn set_default_provider(&self, provider_id: String) -> Result<(), AppError> {
@@ -1146,8 +1310,9 @@ impl ControlStore {
             ));
         }
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner.route_config.default_provider = Some(provider_id.to_owned());
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn set_provider_order(&self, provider_order: Vec<String>) -> Result<(), AppError> {
@@ -1157,8 +1322,9 @@ impl ControlStore {
             ));
         }
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner.route_config.provider_order = Some(provider_order);
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn upsert_provider_override(
@@ -1182,11 +1348,12 @@ impl ControlStore {
         record.model_prefixes = normalize_policy_list(record.model_prefixes)?;
         record.api_key_env = record
             .api_key_env
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
+            .map(|value| validate_env_name(&value))
+            .transpose()?;
         let now = now_millis();
 
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         let created_at_ms = inner
             .provider_overrides
             .get(&id)
@@ -1201,24 +1368,26 @@ impl ControlStore {
         {
             order.push(id.clone());
         }
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(record)
     }
 
     pub fn set_provider_disabled(&self, provider_id: &str, disabled: bool) -> Result<(), AppError> {
         let provider_id = validate_provider_id(provider_id)?;
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         if disabled {
             inner.disabled_providers.insert(provider_id);
         } else {
             inner.disabled_providers.remove(&provider_id);
         }
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn delete_provider(&self, provider_id: &str, tombstone: bool) -> Result<(), AppError> {
         let provider_id = validate_provider_id(provider_id)?;
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner.provider_overrides.remove(&provider_id);
         inner.disabled_providers.remove(&provider_id);
         inner.provider_model_overrides.remove(&provider_id);
@@ -1239,7 +1408,7 @@ impl ControlStore {
         if inner.route_config.default_provider.as_deref() == Some(provider_id.as_str()) {
             inner.route_config.default_provider = None;
         }
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn upsert_provider_model_override(
@@ -1260,6 +1429,7 @@ impl ControlStore {
         let now = now_millis();
 
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         let models = inner
             .provider_model_overrides
             .entry(record.provider_id.clone())
@@ -1271,7 +1441,7 @@ impl ControlStore {
         record.created_at_ms = created_at_ms;
         record.updated_at_ms = now;
         models.insert(record.model.clone(), record.clone());
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(record)
     }
 
@@ -1284,6 +1454,7 @@ impl ControlStore {
         let model = validate_non_empty("model", model, 240)?;
         let now = now_millis();
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         let models = inner
             .provider_model_overrides
             .entry(provider_id.clone())
@@ -1303,7 +1474,7 @@ impl ControlStore {
             updated_at_ms: now,
         };
         models.insert(model, record.clone());
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(record)
     }
 
@@ -1326,6 +1497,7 @@ impl ControlStore {
         let provider_id = record.provider_id.clone();
         let credential_id = record.id.clone();
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         let active_id = inner.active_provider_credentials.get(&provider_id).cloned();
         let next_active_id = {
             let credentials = inner
@@ -1357,7 +1529,7 @@ impl ControlStore {
         } else {
             inner.active_provider_credentials.remove(&provider_id);
         }
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(record)
     }
 
@@ -1369,6 +1541,7 @@ impl ControlStore {
         let provider_id = validate_provider_id(provider_id)?;
         let mode = validate_credential_pool_mode(mode)?;
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         if mode == default_credential_pool_mode() {
             inner.provider_credential_pool_modes.remove(&provider_id);
         } else {
@@ -1376,7 +1549,7 @@ impl ControlStore {
                 .provider_credential_pool_modes
                 .insert(provider_id, mode.clone());
         }
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(mode)
     }
 
@@ -1403,10 +1576,11 @@ impl ControlStore {
                 "disabled credential cannot be selected".to_owned(),
             ));
         }
+        let previous = inner.clone();
         inner
             .active_provider_credentials
             .insert(provider_id.clone(), credential_id);
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(record)
     }
 
@@ -1418,6 +1592,7 @@ impl ControlStore {
         let provider_id = validate_provider_id(provider_id)?;
         let credential_id = validate_provider_credential_id(credential_id)?;
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         let was_active =
             inner.active_provider_credentials.get(&provider_id) == Some(&credential_id);
         let (record, next_id, is_empty) = {
@@ -1460,7 +1635,7 @@ impl ControlStore {
                 inner.provider_credential_health.remove(&provider_id);
             }
         }
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(record)
     }
 
@@ -1546,6 +1721,19 @@ impl ControlStore {
         self.store.as_ref().map(JsonStore::location)
     }
 
+    pub fn health_check(&self) -> Result<(), AppError> {
+        if self.persistence_degraded.load(Ordering::Acquire) {
+            return Err(AppError::NotReady(
+                "control persistence is degraded after a failed write".to_owned(),
+            ));
+        }
+        self.store
+            .as_ref()
+            .map(JsonStore::read_value)
+            .transpose()
+            .map(|_| ())
+    }
+
     pub fn default_data_path() -> PathBuf {
         control_store_path()
     }
@@ -1557,7 +1745,7 @@ impl ControlStore {
             "teams": inner
                 .teams
                 .values()
-                .map(|record| public_team(record, &inner.api_keys, &inner.usage, now))
+                .map(|record| public_team_with_ledger(&inner, record, now))
                 .collect::<Vec<_>>(),
             "apiKeys": inner
                 .api_keys
@@ -1588,6 +1776,7 @@ impl ControlStore {
     ) -> Result<u64, AppError> {
         let tested_at_ms = now_millis();
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner.provider_tests.insert(
             provider_id.clone(),
             ProviderTestRecord {
@@ -1598,7 +1787,7 @@ impl ControlStore {
                 discovered_models,
             },
         );
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(tested_at_ms)
     }
 
@@ -1638,7 +1827,7 @@ impl ControlStore {
         inner
             .teams
             .values()
-            .map(|team| public_team(team, &inner.api_keys, &inner.usage, now))
+            .map(|team| public_team_with_ledger(&inner, team, now))
             .collect()
     }
 
@@ -1705,28 +1894,35 @@ impl ControlStore {
             created_at_ms,
             updated_at_ms: now,
         };
+        let previous = inner.clone();
         inner.teams.insert(id.clone(), team.clone());
         for key in inner.api_keys.values_mut() {
             if key.team_id.as_deref() == Some(&id) {
                 key.team_name = Some(team.name.clone());
             }
         }
-        self.save_locked(&inner)?;
-        Ok(public_team(&team, &inner.api_keys, &inner.usage, now))
+        self.save_or_restore_locked(&mut inner, previous)?;
+        Ok(public_team_with_ledger(&inner, &team, now))
     }
 
     pub fn delete_team(&self, team_id: &str) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
-        if inner.teams.remove(team_id).is_none() {
+        let referencing_keys = inner
+            .api_keys
+            .values()
+            .filter(|key| key.team_id.as_deref() == Some(team_id))
+            .count();
+        if referencing_keys > 0 {
+            return Err(AppError::InvalidRequest(format!(
+                "team is still referenced by {referencing_keys} API key(s); reassign or delete those keys first"
+            )));
+        }
+        if !inner.teams.contains_key(team_id) {
             return Ok(());
         }
-        for key in inner.api_keys.values_mut() {
-            if key.team_id.as_deref() == Some(team_id) {
-                key.team_id = None;
-                key.team_name = None;
-            }
-        }
-        self.save_locked(&inner)
+        let previous = inner.clone();
+        inner.teams.remove(team_id);
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn provider_health_rows(&self) -> BTreeMap<String, serde_json::Value> {
@@ -1761,8 +1957,25 @@ impl ControlStore {
         &self,
         provider_id: &str,
         provider: &mut ProviderConfig,
-    ) -> Option<String> {
-        let record = self.select_provider_credential_for_request(provider_id)?;
+    ) -> Result<Option<String>, AppError> {
+        let (record, has_pool, pool_mode) = {
+            let mut inner = self.inner.lock().expect("control lock poisoned");
+            let has_pool = inner
+                .provider_credentials
+                .get(provider_id)
+                .is_some_and(|credentials| !credentials.is_empty());
+            let pool_mode = provider_credential_pool_mode_locked(&inner, provider_id);
+            let record = select_provider_credential_locked(&mut inner, provider_id, now_millis());
+            (record, has_pool, pool_mode)
+        };
+        let Some(record) = record else {
+            if has_pool && pool_mode != "manual" {
+                return Err(AppError::NotReady(format!(
+                    "provider {provider_id} has no usable credential in {pool_mode} pool mode"
+                )));
+            }
+            return Ok(None);
+        };
         provider.api_key_env = Some(record.api_key_env.clone());
         provider.api_key = env::var(&record.api_key_env)
             .ok()
@@ -1770,9 +1983,10 @@ impl ControlStore {
         if let Some(base_url) = record.base_url.clone() {
             provider.base_url = base_url;
         }
-        Some(record.id)
+        Ok(Some(record.id))
     }
 
+    #[cfg(test)]
     pub fn select_provider_credential_for_request(
         &self,
         provider_id: &str,
@@ -1788,8 +2002,10 @@ impl ControlStore {
         success: bool,
         status_code: u16,
         error_message: Option<&str>,
+        persist_immediately: bool,
     ) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = persist_immediately.then(|| inner.clone());
         let now = now_millis();
         let previous_provider_issue = inner
             .provider_health
@@ -1868,7 +2084,9 @@ impl ControlStore {
                 trim_activities_locked(&mut inner);
             }
         }
-        self.save_locked(&inner)
+        previous.map_or(Ok(()), |previous| {
+            self.save_or_restore_locked(&mut inner, previous)
+        })
     }
 
     pub fn provider_credential_health_rows(
@@ -1988,7 +2206,6 @@ impl ControlStore {
                 monthly_limit_usd: record_snapshot.monthly_limit_usd,
             },
         };
-        self.save_locked(&inner)?;
         Ok(Some(identity))
     }
 
@@ -2058,8 +2275,24 @@ impl ControlStore {
         let username = input.username.unwrap_or_else(|| user_id.to_owned());
         let allowed_models = normalize_policy_list(input.allowed_models.unwrap_or_default())?;
         let allowed_providers = normalize_policy_list(input.allowed_providers.unwrap_or_default())?;
-        let key = new_api_key();
         let now = now_millis();
+        let expires_at_ms = input
+            .expires_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    AppError::InvalidRequest("expiresAt must be a millisecond timestamp".to_owned())
+                })
+            })
+            .transpose()?;
+        if expires_at_ms.is_some_and(|expires_at| expires_at <= now) {
+            return Err(AppError::InvalidRequest(
+                "cannot create an expired API key".to_owned(),
+            ));
+        }
+        let key = new_api_key();
         let mut inner = self.inner.lock().expect("control lock poisoned");
         let (team_id, team_name) = resolve_team_ref(&inner, input.team_id)?;
         let record = ApiKeyRecord {
@@ -2077,7 +2310,7 @@ impl ControlStore {
             allowed_providers,
             created_at_ms: now,
             last_used_at_ms: None,
-            expires_at_ms: input.expires_at.and_then(|value| value.parse::<u64>().ok()),
+            expires_at_ms,
             status: "active".to_owned(),
             ip_restricted: false,
             allowed_ips: Vec::new(),
@@ -2089,8 +2322,9 @@ impl ControlStore {
             monthly_limit_usd: 0.0,
         };
 
+        let previous = inner.clone();
         inner.api_keys.insert(record.id.clone(), record.clone());
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(CreatedApiKey {
             public: public_api_key(&record, &inner.usage, now),
             key,
@@ -2099,11 +2333,16 @@ impl ControlStore {
 
     pub fn revoke_api_key(&self, key_id: &str) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
-        let Some(record) = inner.api_keys.get_mut(key_id) else {
+        if !inner.api_keys.contains_key(key_id) {
             return Err(AppError::InvalidRequest("API key not found".to_owned()));
-        };
-        record.status = "revoked".to_owned();
-        self.save_locked(&inner)
+        }
+        let previous = inner.clone();
+        inner
+            .api_keys
+            .get_mut(key_id)
+            .expect("API key existence checked above")
+            .status = "revoked".to_owned();
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn update_api_key(
@@ -2200,34 +2439,39 @@ impl ControlStore {
             ));
         }
 
+        let previous = inner.clone();
         inner.api_keys.insert(updated.id.clone(), updated.clone());
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(public_api_key(&updated, &inner.usage, now_millis()))
     }
 
     pub fn delete_api_key(&self, key_id: &str) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
-        if inner.api_keys.remove(key_id).is_none() {
+        if !inner.api_keys.contains_key(key_id) {
             return Err(AppError::InvalidRequest("API key not found".to_owned()));
         }
-        self.save_locked(&inner)
+        let previous = inner.clone();
+        inner.api_keys.remove(key_id);
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn delete_user_resources(&self, user_id: &str) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         for record in inner.api_keys.values_mut() {
             if record.user_id == user_id {
                 record.status = "revoked".to_owned();
             }
         }
         inner.quotas.retain(|_, quota| quota.user_id != user_id);
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn list_quotas(&self) -> Result<Vec<PublicQuota>, AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         reset_expired_quotas_locked(&mut inner, now_millis());
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(inner.quotas.values().map(public_quota).collect())
     }
 
@@ -2269,15 +2513,17 @@ impl ControlStore {
             period_end_ms,
             reset_at_ms: period_end_ms,
         };
+        let previous = inner.clone();
         inner.quotas.insert(id, quota.clone());
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(public_quota(&quota))
     }
 
     pub fn delete_quota(&self, quota_id: &str) -> Result<(), AppError> {
         let mut inner = self.inner.lock().expect("control lock poisoned");
+        let previous = inner.clone();
         inner.quotas.remove(quota_id);
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn check_quotas(
@@ -2298,7 +2544,7 @@ impl ControlStore {
         if let Some(api_key_id) = &identity.api_key_id {
             enforce_api_key_policy(ApiKeyPolicyCheck {
                 policy: &identity.api_key_policy,
-                usage: &inner.usage,
+                spend_ledger: &inner.spend_ledger,
                 api_key_id,
                 estimate,
                 client_ip,
@@ -2328,7 +2574,7 @@ impl ControlStore {
         let mut inner = self.inner.lock().expect("control lock poisoned");
         let now = now_millis();
         reset_expired_quotas_locked(&mut inner, now);
-        if input.identity.enforce_quotas {
+        if input.chargeable && input.identity.enforce_quotas {
             for quota in inner
                 .quotas
                 .values_mut()
@@ -2337,8 +2583,9 @@ impl ControlStore {
                 quota.used += quota_increment(&quota.quota_type, input.estimate);
             }
         }
-        inner.usage.push(UsageRecord {
+        let record = UsageRecord {
             id: format!("log_{}", Uuid::new_v4().simple()),
+            request_id: input.request_id,
             timestamp_ms: now,
             user_id: input.identity.user_id,
             username: input.identity.username,
@@ -2352,13 +2599,14 @@ impl ControlStore {
             provider: input.provider,
             protocol: input.protocol,
             stream: input.stream,
-            status: if input.success { "success" } else { "error" }.to_owned(),
+            status: usage_status(input.success, input.timed_out).to_owned(),
             status_code: input.status_code,
             input_tokens: input.estimate.input_tokens,
             output_tokens: input.estimate.output_tokens,
             cache_write_tokens: input.estimate.cache_write_tokens,
             cache_read_tokens: input.estimate.cache_read_tokens,
             cost_estimate: input.estimate.cost_estimate,
+            billing_mode: input.billing_mode,
             latency_ms: duration_ms(input.latency),
             first_byte_latency_ms: input.first_byte_latency.map(duration_ms),
             retry_count: input.retry_count,
@@ -2366,7 +2614,16 @@ impl ControlStore {
             client_ip: input.client_ip,
             request_path: Some(input.request_path),
             error_message: input.error_message,
-        });
+        };
+        if input.chargeable {
+            inner.spend_ledger.record(
+                record.timestamp_ms,
+                record.api_key_id.as_deref(),
+                record.team_id.as_deref(),
+                usage_record_cost(&record),
+            );
+        }
+        inner.usage.push(record);
         let overflow = inner.usage.len().saturating_sub(self.usage_limit);
         if overflow > 0 {
             inner.usage.drain(0..overflow);
@@ -2416,6 +2673,7 @@ impl ControlStore {
                     .unwrap_or_else(|| "/v1/messages".to_owned());
                 json!({
                     "id": record.id,
+                    "requestId": record.request_id,
                     "timestamp": record.timestamp_ms.to_string(),
                     "userId": record.user_id,
                     "username": record.username,
@@ -2458,7 +2716,7 @@ impl ControlStore {
                     "fallbackFromProvider": record.fallback_from_provider,
                     "clientIp": record.client_ip,
                     "requestPath": request_path,
-                    "billingMode": "upstream-returned",
+                    "billingMode": record.billing_mode,
                     "detail": format!(
                         "模型: {} · 缓存创建: ${:.6}/1M · 缓存命中: ${:.6}/1M · 分组: {}",
                         record.resolved_model,
@@ -2472,98 +2730,9 @@ impl ControlStore {
             .collect()
     }
 
-    pub fn usage_time_series(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        bucket_ms: u64,
-    ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    pub fn usage_retention_at_capacity(&self) -> bool {
         let inner = self.inner.lock().expect("control lock poisoned");
-        let bucket_ms = bucket_ms.max(1);
-        let bucket_count = if end_ms <= start_ms {
-            1
-        } else {
-            usize::try_from(end_ms.saturating_sub(start_ms) / bucket_ms + 1).unwrap_or(usize::MAX)
-        };
-        let mut requests = vec![0u64; bucket_count];
-        let mut errors = vec![0u64; bucket_count];
-
-        for record in inner
-            .usage
-            .iter()
-            .filter(|record| record.timestamp_ms >= start_ms && record.timestamp_ms <= end_ms)
-        {
-            let offset = record.timestamp_ms.saturating_sub(start_ms) / bucket_ms;
-            let index = usize::try_from(offset)
-                .unwrap_or(bucket_count.saturating_sub(1))
-                .min(bucket_count.saturating_sub(1));
-            requests[index] = requests[index].saturating_add(1);
-            if record.status != "success" {
-                errors[index] = errors[index].saturating_add(1);
-            }
-        }
-
-        let request_series = requests
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                json!({
-                    "timestamp": start_ms.saturating_add(u64::try_from(index).unwrap_or(0) * bucket_ms).to_string(),
-                    "value": value,
-                })
-            })
-            .collect();
-        let error_series = errors
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                json!({
-                    "timestamp": start_ms.saturating_add(u64::try_from(index).unwrap_or(0) * bucket_ms).to_string(),
-                    "value": value,
-                })
-            })
-            .collect();
-        (request_series, error_series)
-    }
-
-    pub fn usage_top_models_today(&self, limit: usize) -> Vec<serde_json::Value> {
-        let inner = self.inner.lock().expect("control lock poisoned");
-        let today_start = day_start(now_millis());
-        let mut models: BTreeMap<(String, String), u64> = BTreeMap::new();
-
-        for record in inner
-            .usage
-            .iter()
-            .filter(|record| record.timestamp_ms >= today_start)
-        {
-            let key = (record.resolved_model.clone(), record.provider.clone());
-            let count = models.entry(key).or_insert(0);
-            *count = count.saturating_add(1);
-        }
-
-        let mut rows = models
-            .into_iter()
-            .map(|((model, provider), requests)| {
-                json!({
-                    "model": model,
-                    "provider": provider,
-                    "requests": requests,
-                })
-            })
-            .collect::<Vec<_>>();
-        rows.sort_by(|left, right| {
-            let left_count = left
-                .get("requests")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let right_count = right
-                .get("requests")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            right_count.cmp(&left_count)
-        });
-        rows.truncate(limit);
-        rows
+        inner.usage.len() >= self.usage_limit
     }
 
     pub fn provider_usage_today(&self) -> BTreeMap<String, ProviderUsageStats> {
@@ -2648,15 +2817,36 @@ impl ControlStore {
         summary
     }
 
+    fn save_or_restore_locked(
+        &self,
+        inner: &mut ControlInner,
+        previous: ControlInner,
+    ) -> Result<(), AppError> {
+        if let Err(error) = self.save_locked(inner) {
+            *inner = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn save_locked(&self, inner: &ControlInner) -> Result<(), AppError> {
-        let Some(store) = &self.store else {
-            return Ok(());
+        let result = if let Some(store) = &self.store {
+            self.write_locked(store, inner)
+        } else {
+            Ok(())
         };
+        self.persistence_degraded
+            .store(result.is_err(), Ordering::Release);
+        result
+    }
+
+    fn write_locked(&self, store: &JsonStore, inner: &ControlInner) -> Result<(), AppError> {
         let file = ControlFile {
             teams: inner.teams.values().cloned().collect(),
             api_keys: inner.api_keys.values().cloned().collect(),
             quotas: inner.quotas.values().cloned().collect(),
             usage: inner.usage.clone(),
+            spend_ledger: inner.spend_ledger.clone(),
             route_config: inner.route_config.clone(),
             activities: inner.activities.clone(),
             provider_tests: inner.provider_tests.values().cloned().collect(),
@@ -2686,6 +2876,25 @@ impl ControlStore {
     }
 }
 
+fn public_team_with_ledger(inner: &ControlInner, team: &TeamRecord, now: u64) -> serde_json::Value {
+    let mut row = public_team(team, &inner.api_keys, &inner.usage, now);
+    if let Some(object) = row.as_object_mut() {
+        object.insert(
+            "dailySpendUsd".to_owned(),
+            json!(inner.spend_ledger.team_cost(&team.id, Some(day_start(now)))),
+        );
+        object.insert(
+            "monthlySpendUsd".to_owned(),
+            json!(
+                inner
+                    .spend_ledger
+                    .team_cost(&team.id, Some(now.saturating_sub(30 * DAY_MS)))
+            ),
+        );
+    }
+    row
+}
+
 fn record_provider_health_locked(
     inner: &mut ControlInner,
     provider_id: &str,
@@ -2694,6 +2903,7 @@ fn record_provider_health_locked(
     error_message: Option<&str>,
     now: u64,
 ) -> &'static str {
+    let failure_kind = provider_failure_guidance(Some(status_code), error_message).0;
     let health = inner
         .provider_health
         .entry(provider_id.to_owned())
@@ -2711,16 +2921,22 @@ fn record_provider_health_locked(
         health.last_status_code = Some(status_code);
     } else {
         health.failures_total = health.failures_total.saturating_add(1);
-        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        if provider_failure_can_trigger_cooldown(failure_kind) {
+            health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        } else {
+            health.consecutive_failures = 0;
+        }
         health.last_failure_at_ms = Some(now);
         health.last_status_code = Some(status_code);
         health.last_error = truncated_error(error_message, status_code);
-        if health.consecutive_failures >= 3 || status_code == 429 || status_code >= 500 {
+        if provider_failure_can_trigger_cooldown(failure_kind)
+            && (health.consecutive_failures >= 3 || status_code == 429 || status_code >= 500)
+        {
             let seconds = cooldown_seconds(health.consecutive_failures);
             health.cooldown_until_ms = Some(now.saturating_add(seconds.saturating_mul(1_000)));
         }
     }
-    provider_failure_guidance(health.last_status_code, health.last_error.as_deref()).0
+    failure_kind
 }
 
 struct ProviderHealthUpdate<'a> {
@@ -2768,12 +2984,17 @@ fn record_provider_credential_health_locked(
         health.last_status_code = Some(update.status_code);
     } else {
         health.failures_total = health.failures_total.saturating_add(1);
-        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        if provider_failure_can_trigger_cooldown(update.failure_kind) {
+            health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        } else {
+            health.consecutive_failures = 0;
+        }
         health.last_failure_at_ms = Some(update.now);
         health.last_status_code = Some(update.status_code);
         health.last_error = truncated_error(update.error_message, update.status_code);
-        if should_rotate_provider_credential(update.failure_kind)
-            || health.consecutive_failures >= 3
+        if provider_failure_can_trigger_cooldown(update.failure_kind)
+            && (should_rotate_provider_credential(update.failure_kind)
+                || health.consecutive_failures >= 3)
         {
             let seconds =
                 credential_cooldown_seconds(update.failure_kind, health.consecutive_failures);
@@ -2820,14 +3041,12 @@ fn select_provider_credential_locked(
     let selected = match mode.as_str() {
         "manual" => fallback,
         "round_robin" => round_robin_provider_credential(&available, active_id.as_deref())
-            .or_else(|| available.first().cloned())
-            .or(fallback),
+            .or_else(|| available.first().cloned()),
         _ => active_id
             .as_deref()
             .and_then(|id| available.iter().find(|credential| credential.id == id))
             .cloned()
-            .or_else(|| available.first().cloned())
-            .or(fallback),
+            .or_else(|| available.first().cloned()),
     };
 
     if let Some(selected) = selected.as_ref()
@@ -2838,6 +3057,13 @@ fn select_provider_credential_locked(
             .insert(provider_id.to_owned(), selected.id.clone());
     }
     selected
+}
+
+fn provider_failure_can_trigger_cooldown(failure_kind: &str) -> bool {
+    matches!(
+        failure_kind,
+        "account" | "rate_limit" | "config" | "upstream_unavailable"
+    )
 }
 
 fn round_robin_provider_credential(
@@ -2931,11 +3157,11 @@ fn record_recharge_required_activity_locked(
         .credential_id
         .map(|credential_id| {
             format!(
-                "供应商 {} 账号 {credential_id} 余额不足，已标记为待代充值",
+                "供应商 {} 账号 {credential_id} 余额不足，已标记为等待充值",
                 input.provider_id
             )
         })
-        .unwrap_or_else(|| format!("供应商 {} 余额不足，已标记为待代充值", input.provider_id));
+        .unwrap_or_else(|| format!("供应商 {} 余额不足，已标记为等待充值", input.provider_id));
     inner.activities.push(ActivityRecord {
         id: format!("act_{}", Uuid::new_v4().simple()),
         timestamp_ms: input.now,
@@ -3120,7 +3346,7 @@ fn resolve_team_ref(
 
 struct ApiKeyPolicyCheck<'a> {
     policy: &'a ApiKeyPolicy,
-    usage: &'a [UsageRecord],
+    spend_ledger: &'a SpendLedger,
     api_key_id: &'a str,
     estimate: UsageEstimate,
     client_ip: Option<&'a str>,
@@ -3133,7 +3359,7 @@ struct ApiKeyPolicyCheck<'a> {
 fn enforce_api_key_policy(check: ApiKeyPolicyCheck<'_>) -> Result<(), AppError> {
     let ApiKeyPolicyCheck {
         policy,
-        usage,
+        spend_ledger,
         api_key_id,
         estimate,
         client_ip,
@@ -3161,7 +3387,7 @@ fn enforce_api_key_policy(check: ApiKeyPolicyCheck<'_>) -> Result<(), AppError> 
     enforce_spend_limit(
         "total spend",
         policy.spend_limit_usd,
-        usage_cost_for_api_key(usage, api_key_id, None),
+        spend_ledger.api_key_cost(api_key_id, None),
         estimate.cost_estimate,
     )?;
 
@@ -3169,29 +3395,25 @@ fn enforce_api_key_policy(check: ApiKeyPolicyCheck<'_>) -> Result<(), AppError> 
         enforce_spend_limit(
             "5 hour spend",
             policy.five_hour_limit_usd,
-            usage_cost_for_api_key(
-                usage,
-                api_key_id,
-                Some(now.saturating_sub(5 * 60 * 60 * 1_000)),
-            ),
+            spend_ledger.api_key_cost(api_key_id, Some(now.saturating_sub(5 * 60 * 60 * 1_000))),
             estimate.cost_estimate,
         )?;
         enforce_spend_limit(
             "daily spend",
             policy.daily_limit_usd,
-            usage_cost_for_api_key(usage, api_key_id, Some(now.saturating_sub(DAY_MS))),
+            spend_ledger.api_key_cost(api_key_id, Some(now.saturating_sub(DAY_MS))),
             estimate.cost_estimate,
         )?;
         enforce_spend_limit(
             "7 day spend",
             policy.weekly_limit_usd,
-            usage_cost_for_api_key(usage, api_key_id, Some(now.saturating_sub(7 * DAY_MS))),
+            spend_ledger.api_key_cost(api_key_id, Some(now.saturating_sub(7 * DAY_MS))),
             estimate.cost_estimate,
         )?;
         enforce_spend_limit(
             "monthly spend",
             policy.monthly_limit_usd,
-            usage_cost_for_api_key(usage, api_key_id, Some(now.saturating_sub(30 * DAY_MS))),
+            spend_ledger.api_key_cost(api_key_id, Some(now.saturating_sub(30 * DAY_MS))),
             estimate.cost_estimate,
         )?;
     }
@@ -3200,13 +3422,13 @@ fn enforce_api_key_policy(check: ApiKeyPolicyCheck<'_>) -> Result<(), AppError> 
         enforce_spend_limit(
             "team daily spend",
             policy.team_daily_limit_usd,
-            usage_cost_for_team(usage, team_id, Some(now.saturating_sub(DAY_MS))),
+            spend_ledger.team_cost(team_id, Some(now.saturating_sub(DAY_MS))),
             estimate.cost_estimate,
         )?;
         enforce_spend_limit(
             "team monthly spend",
             policy.team_monthly_limit_usd,
-            usage_cost_for_team(usage, team_id, Some(now.saturating_sub(30 * DAY_MS))),
+            spend_ledger.team_cost(team_id, Some(now.saturating_sub(30 * DAY_MS))),
             estimate.cost_estimate,
         )?;
     }
@@ -3230,6 +3452,10 @@ fn effective_aliases_locked(
 
 fn default_protocol() -> String {
     "openai-compat".to_owned()
+}
+
+fn default_billing_mode() -> String {
+    "local-estimate".to_owned()
 }
 
 fn reset_expired_quotas_locked(inner: &mut ControlInner, now: u64) {
@@ -3321,6 +3547,16 @@ fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+fn usage_status(success: bool, timed_out: bool) -> &'static str {
+    if success {
+        "success"
+    } else if timed_out {
+        "timeout"
+    } else {
+        "error"
+    }
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3333,6 +3569,103 @@ mod tests {
     use axum::http::HeaderValue;
 
     use super::*;
+
+    fn failing_store_path(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "modelport-{label}-{}-{}",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    fn team_input(id: Option<String>, name: &str) -> UpsertTeamInput {
+        UpsertTeamInput {
+            id,
+            name: name.to_owned(),
+            slug: None,
+            description: None,
+            status: None,
+            daily_limit_usd: None,
+            monthly_limit_usd: None,
+            allowed_models: None,
+            allowed_providers: None,
+        }
+    }
+
+    fn api_key_input(team_id: Option<String>) -> CreateApiKeyInput {
+        CreateApiKeyInput {
+            user_id: "usr_test".to_owned(),
+            username: Some("test-user".to_owned()),
+            name: "local".to_owned(),
+            group: None,
+            team_id,
+            allowed_models: None,
+            allowed_providers: None,
+            expires_at: None,
+        }
+    }
+
+    fn provider_override(id: &str, display_name: &str) -> ProviderOverrideRecord {
+        ProviderOverrideRecord {
+            id: id.to_owned(),
+            display_name: display_name.to_owned(),
+            protocol: "openai-compat".to_owned(),
+            base_url: "https://api.example.com/v1".to_owned(),
+            api_key_env: Some("TEST_PROVIDER_API_KEY".to_owned()),
+            api_key_required: true,
+            default_model: "test-model".to_owned(),
+            models: vec!["test-model".to_owned()],
+            model_prefixes: vec!["test-".to_owned()],
+            passthrough_unknown_models: false,
+            max_tokens_field: "max_tokens".to_owned(),
+            deduplicate_stream_text: false,
+            buffer_stream_text: false,
+            fidelity_mode: "strict".to_owned(),
+            tool_use: ToolUseConfig::default(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    fn provider_credential(provider_id: &str, id: &str) -> ProviderCredentialRecord {
+        ProviderCredentialRecord {
+            id: id.to_owned(),
+            provider_id: provider_id.to_owned(),
+            name: id.to_owned(),
+            api_key_env: format!("TEST_{}_API_KEY", id.replace('-', "_").to_uppercase()),
+            base_url: None,
+            status: "active".to_owned(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    fn provider_routing_state(store: &ControlStore) -> serde_json::Value {
+        let inner = store.inner.lock().expect("control lock poisoned");
+        json!({
+            "routeConfig": &inner.route_config,
+            "providerTests": &inner.provider_tests,
+            "providerHealth": &inner.provider_health,
+            "providerOverrides": &inner.provider_overrides,
+            "disabledProviders": &inner.disabled_providers,
+            "deletedProviders": &inner.deleted_providers,
+            "providerModelOverrides": &inner.provider_model_overrides,
+            "providerCredentials": &inner.provider_credentials,
+            "activeProviderCredentials": &inner.active_provider_credentials,
+            "providerCredentialPoolModes": &inner.provider_credential_pool_modes,
+            "providerCredentialHealth": &inner.provider_credential_health,
+            "activities": &inner.activities,
+        })
+    }
+
+    #[test]
+    fn timeout_usage_has_a_distinct_status() {
+        assert_eq!(usage_status(true, true), "success");
+        assert_eq!(usage_status(false, true), "timeout");
+        assert_eq!(usage_status(false, false), "error");
+    }
 
     #[test]
     fn creates_and_authenticates_api_key() {
@@ -3349,11 +3682,74 @@ mod tests {
                 expires_at: None,
             })
             .unwrap();
+        assert!(!format!("{created:?}").contains(&created.key));
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", HeaderValue::from_str(&created.key).unwrap());
         let identity = store.authenticate_headers(&headers).unwrap().unwrap();
         assert_eq!(identity.user_id, "usr_test");
         assert_eq!(store.active_api_key_count("usr_test"), 1);
+    }
+
+    #[test]
+    fn api_key_creation_rejects_invalid_or_expired_timestamps() {
+        let store = ControlStore::for_tests();
+        let create = |expires_at: String| CreateApiKeyInput {
+            user_id: "usr_test".to_owned(),
+            username: Some("test-user".to_owned()),
+            name: "local".to_owned(),
+            group: None,
+            team_id: None,
+            allowed_models: None,
+            allowed_providers: None,
+            expires_at: Some(expires_at),
+        };
+
+        assert!(matches!(
+            store.create_api_key(create("not-a-timestamp".to_owned())),
+            Err(AppError::InvalidRequest(message)) if message.contains("millisecond timestamp")
+        ));
+        assert!(matches!(
+            store.create_api_key(create(now_millis().saturating_sub(1).to_string())),
+            Err(AppError::InvalidRequest(message)) if message.contains("expired")
+        ));
+    }
+
+    #[test]
+    fn deleting_user_resources_revokes_keys_and_removes_quotas() {
+        let store = ControlStore::for_tests();
+        let created = store
+            .create_api_key(CreateApiKeyInput {
+                user_id: "usr_test".to_owned(),
+                username: Some("test-user".to_owned()),
+                name: "local".to_owned(),
+                group: None,
+                team_id: None,
+                allowed_models: None,
+                allowed_providers: None,
+                expires_at: None,
+            })
+            .unwrap();
+        store
+            .upsert_quota(UpsertQuotaInput {
+                id: None,
+                user_id: "usr_test".to_owned(),
+                username: "test-user".to_owned(),
+                quota_type: "tokens".to_owned(),
+                limit: 1_000.0,
+                period: "monthly".to_owned(),
+            })
+            .unwrap();
+
+        store.delete_user_resources("usr_test").unwrap();
+
+        assert_eq!(store.active_api_key_count("usr_test"), 0);
+        assert!(store.list_quotas().unwrap().is_empty());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_str(&created.key).unwrap());
+        assert!(matches!(
+            store.authenticate_headers(&headers),
+            Err(AppError::Auth)
+        ));
     }
 
     #[test]
@@ -3435,6 +3831,37 @@ mod tests {
             .unwrap();
 
         store
+            .record_usage(UsageEventInput {
+                identity: identity.clone(),
+                request_id: Some("req_rejected_locally".to_owned()),
+                model: "mimo-v2.5-pro".to_owned(),
+                resolved_model: "mimo-v2.5-pro".to_owned(),
+                provider: "mimo".to_owned(),
+                protocol: "openai-compat".to_owned(),
+                stream: false,
+                success: false,
+                timed_out: false,
+                status_code: 429,
+                estimate: UsageEstimate {
+                    input_tokens: 100,
+                    output_tokens: 100,
+                    cost_estimate: 10.0,
+                    ..UsageEstimate::default()
+                },
+                billing_mode: "local-estimate".to_owned(),
+                chargeable: false,
+                latency: Duration::from_millis(1),
+                first_byte_latency: None,
+                retry_count: 0,
+                fallback_from_provider: None,
+                client_ip: Some("127.0.0.1".to_owned()),
+                request_path: "/v1/messages".to_owned(),
+                error_message: Some("rejected before upstream".to_owned()),
+            })
+            .unwrap();
+        assert_eq!(store.list_quotas().unwrap()[0].used, 0.0);
+
+        store
             .check_quotas(
                 &identity,
                 UsageEstimate::default(),
@@ -3447,14 +3874,18 @@ mod tests {
         store
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
+                request_id: Some("req_test".to_owned()),
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 stream: false,
                 success: true,
+                timed_out: false,
                 status_code: 200,
                 estimate: UsageEstimate::default(),
+                billing_mode: "local-estimate".to_owned(),
+                chargeable: true,
                 latency: Duration::from_millis(10),
                 first_byte_latency: Some(Duration::from_millis(10)),
                 retry_count: 0,
@@ -3464,6 +3895,8 @@ mod tests {
                 error_message: None,
             })
             .unwrap();
+
+        assert_eq!(store.usage_rows()[0]["requestId"], "req_test");
 
         assert!(
             store
@@ -3545,17 +3978,21 @@ mod tests {
         store
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
+                request_id: None,
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 stream: false,
                 success: true,
+                timed_out: false,
                 status_code: 200,
                 estimate: UsageEstimate {
                     cost_estimate: 0.015,
                     ..UsageEstimate::default()
                 },
+                billing_mode: "local-estimate".to_owned(),
+                chargeable: true,
                 latency: Duration::from_millis(10),
                 first_byte_latency: Some(Duration::from_millis(10)),
                 retry_count: 0,
@@ -3581,6 +4018,83 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn spend_limit_survives_usage_log_truncation() {
+        let store = ControlStore {
+            store: None,
+            inner: Mutex::new(ControlInner::default()),
+            persistence_degraded: AtomicBool::new(false),
+            usage_limit: 1,
+        };
+        let identity = ClientIdentity {
+            user_id: "usr_test".to_owned(),
+            username: "test-user".to_owned(),
+            api_key_id: Some("key_test".to_owned()),
+            api_key_name: Some("local".to_owned()),
+            api_key_group: Some("test".to_owned()),
+            team_id: None,
+            team_name: None,
+            enforce_quotas: true,
+            api_key_policy: ApiKeyPolicy {
+                spend_limit_usd: 0.02,
+                ..ApiKeyPolicy::default()
+            },
+        };
+
+        for _ in 0..2 {
+            store
+                .record_usage(UsageEventInput {
+                    identity: identity.clone(),
+                    request_id: None,
+                    model: "mimo-v2.5-pro".to_owned(),
+                    resolved_model: "mimo-v2.5-pro".to_owned(),
+                    provider: "mimo".to_owned(),
+                    protocol: "openai-compat".to_owned(),
+                    stream: false,
+                    success: true,
+                    timed_out: false,
+                    status_code: 200,
+                    estimate: UsageEstimate {
+                        cost_estimate: 0.015,
+                        ..UsageEstimate::default()
+                    },
+                    billing_mode: "local-estimate".to_owned(),
+                    chargeable: true,
+                    latency: Duration::from_millis(10),
+                    first_byte_latency: Some(Duration::from_millis(10)),
+                    retry_count: 0,
+                    fallback_from_provider: None,
+                    client_ip: None,
+                    request_path: "/v1/messages".to_owned(),
+                    error_message: None,
+                })
+                .unwrap();
+        }
+
+        assert_eq!(store.usage_rows().len(), 1);
+        assert!(
+            store
+                .check_quotas(
+                    &identity,
+                    UsageEstimate::default(),
+                    None,
+                    "mimo-v2.5-pro",
+                    "mimo-v2.5-pro",
+                    "mimo",
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn backup_validation_rejects_malformed_control_records() {
+        let malformed = json!({
+            "apiKeys": [{ "id": "key_incomplete" }]
+        });
+
+        assert!(validate_backup_document(&malformed).is_err());
     }
 
     #[test]
@@ -3641,6 +4155,41 @@ mod tests {
     }
 
     #[test]
+    fn team_with_referencing_api_keys_cannot_be_deleted() {
+        let store = ControlStore::for_tests();
+        store
+            .upsert_team(UpsertTeamInput {
+                id: Some("team_safe".to_owned()),
+                name: "Safe".to_owned(),
+                slug: Some("safe".to_owned()),
+                description: None,
+                status: Some("active".to_owned()),
+                daily_limit_usd: Some(1.0),
+                monthly_limit_usd: Some(10.0),
+                allowed_models: Some(vec!["mimo*".to_owned()]),
+                allowed_providers: Some(vec!["mimo".to_owned()]),
+            })
+            .unwrap();
+        let key = store
+            .create_api_key(CreateApiKeyInput {
+                user_id: "usr_test".to_owned(),
+                username: Some("test-user".to_owned()),
+                name: "team key".to_owned(),
+                group: None,
+                team_id: Some("team_safe".to_owned()),
+                allowed_models: None,
+                allowed_providers: None,
+                expires_at: None,
+            })
+            .unwrap();
+
+        assert!(store.delete_team("team_safe").is_err());
+        store.delete_api_key(&key.public.id).unwrap();
+        store.delete_team("team_safe").unwrap();
+        assert!(store.list_teams().is_empty());
+    }
+
+    #[test]
     fn team_daily_budget_is_enforced() {
         let store = ControlStore::for_tests();
         store
@@ -3674,17 +4223,21 @@ mod tests {
         store
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
+                request_id: None,
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 stream: false,
                 success: true,
+                timed_out: false,
                 status_code: 200,
                 estimate: UsageEstimate {
                     cost_estimate: 0.015,
                     ..UsageEstimate::default()
                 },
+                billing_mode: "local-estimate".to_owned(),
+                chargeable: true,
                 latency: Duration::from_millis(10),
                 first_byte_latency: Some(Duration::from_millis(10)),
                 retry_count: 0,
@@ -3733,11 +4286,11 @@ mod tests {
         assert_eq!(row["failureKind"], "account");
         assert_eq!(row["accountIssue"], "insufficient_balance");
         assert_eq!(row["rechargeRequired"], true);
-        assert_eq!(row["rechargeBadge"], "代充值");
+        assert_eq!(row["rechargeBadge"], "等待充值");
         assert!(
             row["recommendedAction"]
                 .as_str()
-                .is_some_and(|value| value.contains("代充值"))
+                .is_some_and(|value| value.contains("充值后重试"))
         );
     }
 
@@ -3780,7 +4333,7 @@ mod tests {
 
         assert_eq!(row["accountIssue"], "insufficient_balance");
         assert_eq!(row["rechargeRequired"], true);
-        assert_eq!(row["rechargeBadge"], "代充值");
+        assert_eq!(row["rechargeBadge"], "等待充值");
     }
 
     #[test]
@@ -3797,6 +4350,7 @@ mod tests {
                     Some(
                         r#"upstream returned HTTP 402: {"error":{"message":"Insufficient Balance"}}"#,
                     ),
+                    true,
                 )
                 .unwrap();
         }
@@ -3820,7 +4374,7 @@ mod tests {
         assert!(
             recharge_activities[0]["message"]
                 .as_str()
-                .is_some_and(|value| value.contains("待代充值"))
+                .is_some_and(|value| value.contains("等待充值"))
         );
     }
 
@@ -3854,6 +4408,51 @@ mod tests {
     }
 
     #[test]
+    fn client_request_errors_do_not_open_provider_or_credential_circuit() {
+        let mut inner = ControlInner::default();
+        for now in 1_000..1_003 {
+            let failure_kind = record_provider_health_locked(
+                &mut inner,
+                "provider-a",
+                false,
+                400,
+                Some("invalid request payload"),
+                now,
+            );
+            record_provider_credential_health_locked(
+                &mut inner,
+                "provider-a",
+                "credential-a",
+                ProviderHealthUpdate {
+                    success: false,
+                    status_code: 400,
+                    error_message: Some("invalid request payload"),
+                    failure_kind,
+                    now,
+                },
+            );
+        }
+
+        assert!(
+            inner
+                .provider_health
+                .get("provider-a")
+                .is_some_and(
+                    |health| health.cooldown_until_ms.is_none() && health.consecutive_failures == 0
+                )
+        );
+        assert!(
+            inner
+                .provider_credential_health
+                .get("provider-a")
+                .and_then(|items| items.get("credential-a"))
+                .is_some_and(
+                    |health| health.cooldown_until_ms.is_none() && health.consecutive_failures == 0
+                )
+        );
+    }
+
+    #[test]
     fn route_alias_overrides_are_persistent_in_control_store() {
         let store = ControlStore::for_tests();
         let base_aliases = HashMap::from([("base".to_owned(), "mimo".to_owned())]);
@@ -3875,5 +4474,257 @@ mod tests {
             aliases.get("fast").map(String::as_str),
             Some("mimo:mimo-v2.5-pro")
         );
+    }
+
+    #[test]
+    fn failed_provider_control_writes_restore_all_routing_state() {
+        let seed = ControlStore::for_tests();
+        seed.upsert_alias("fast".to_owned(), "provider-a:test-model".to_owned())
+            .unwrap();
+        seed.set_default_provider("provider-a".to_owned()).unwrap();
+        seed.set_provider_order(vec!["provider-a".to_owned(), "provider-b".to_owned()])
+            .unwrap();
+        seed.upsert_provider_override(provider_override("provider-a", "Provider A"))
+            .unwrap();
+        seed.upsert_provider_model_override(ProviderModelOverrideRecord {
+            provider_id: "provider-a".to_owned(),
+            model: "test-model".to_owned(),
+            status: "active".to_owned(),
+            display_name: Some("Test Model".to_owned()),
+            family: Some("test".to_owned()),
+            context_window: Some(8_192),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        })
+        .unwrap();
+        seed.upsert_provider_credential(provider_credential("provider-a", "credential-a"))
+            .unwrap();
+        seed.upsert_provider_credential(provider_credential("provider-a", "credential-b"))
+            .unwrap();
+        seed.set_active_provider_credential("provider-a", "credential-a")
+            .unwrap();
+        seed.set_provider_credential_pool_mode("provider-a", "round_robin")
+            .unwrap();
+        seed.record_provider_test(
+            "provider-a".to_owned(),
+            true,
+            "reachable".to_owned(),
+            vec!["test-model".to_owned()],
+        )
+        .unwrap();
+
+        let path = failing_store_path("provider-control-write-failure");
+        let store = ControlStore {
+            store: Some(JsonStore::File(path.clone())),
+            inner: Mutex::new(seed.inner.lock().unwrap().clone()),
+            persistence_degraded: AtomicBool::new(false),
+            usage_limit: DEFAULT_USAGE_LIMIT,
+        };
+        let expected = provider_routing_state(&store);
+
+        macro_rules! assert_write_rolled_back {
+            ($operation:expr) => {{
+                assert!(matches!($operation, Err(AppError::Io(_))));
+                assert_eq!(provider_routing_state(&store), expected);
+            }};
+        }
+
+        assert_write_rolled_back!(
+            store.upsert_alias("new-alias".to_owned(), "provider-b:model".to_owned())
+        );
+        assert!(matches!(store.health_check(), Err(AppError::NotReady(_))));
+        assert_write_rolled_back!(store.delete_alias("fast", true));
+        assert_write_rolled_back!(store.set_default_provider("provider-b".to_owned()));
+        assert_write_rolled_back!(store.set_provider_order(vec!["provider-b".to_owned()]));
+        assert_write_rolled_back!(
+            store.upsert_provider_override(provider_override("provider-a", "Changed Provider"))
+        );
+        assert_write_rolled_back!(store.set_provider_disabled("provider-a", true));
+        assert_write_rolled_back!(store.delete_provider("provider-a", true));
+        assert_write_rolled_back!(store.upsert_provider_model_override(
+            ProviderModelOverrideRecord {
+                provider_id: "provider-a".to_owned(),
+                model: "second-model".to_owned(),
+                status: "active".to_owned(),
+                display_name: None,
+                family: None,
+                context_window: None,
+                created_at_ms: 0,
+                updated_at_ms: 0,
+            }
+        ));
+        assert_write_rolled_back!(store.delete_provider_model_override("provider-a", "test-model"));
+        assert_write_rolled_back!(
+            store.upsert_provider_credential(provider_credential("provider-a", "credential-c",))
+        );
+        assert_write_rolled_back!(store.set_provider_credential_pool_mode("provider-a", "manual"));
+        assert_write_rolled_back!(
+            store.set_active_provider_credential("provider-a", "credential-b")
+        );
+        assert_write_rolled_back!(store.delete_provider_credential("provider-a", "credential-a"));
+        assert_write_rolled_back!(store.record_provider_test(
+            "provider-a".to_owned(),
+            false,
+            "failed".to_owned(),
+            Vec::new(),
+        ));
+        assert_write_rolled_back!(store.record_provider_outcome_for_credential(
+            "provider-a",
+            Some("credential-a"),
+            false,
+            401,
+            Some("invalid API key"),
+            true,
+        ));
+        assert!(matches!(store.health_check(), Err(AppError::NotReady(_))));
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn failed_control_writes_restore_all_security_mutations() {
+        let path = failing_store_path("control-write-failure");
+        let store = ControlStore {
+            store: Some(JsonStore::File(path.clone())),
+            inner: Mutex::new(ControlInner::default()),
+            persistence_degraded: AtomicBool::new(false),
+            usage_limit: DEFAULT_USAGE_LIMIT,
+        };
+
+        assert!(matches!(
+            store.create_api_key(api_key_input(None)),
+            Err(AppError::Io(_))
+        ));
+        assert!(store.inner.lock().unwrap().api_keys.is_empty());
+
+        let seed = ControlStore::for_tests();
+        let team_a = seed.upsert_team(team_input(None, "Alpha Team")).unwrap();
+        let team_b = seed.upsert_team(team_input(None, "Beta Team")).unwrap();
+        let team_a_id = team_a["id"].as_str().unwrap().to_owned();
+        let team_b_id = team_b["id"].as_str().unwrap().to_owned();
+        let key_id = seed
+            .create_api_key(api_key_input(Some(team_a_id.clone())))
+            .unwrap()
+            .public
+            .id;
+        let quota_id = seed
+            .upsert_quota(UpsertQuotaInput {
+                id: None,
+                user_id: "usr_test".to_owned(),
+                username: "test-user".to_owned(),
+                quota_type: "tokens".to_owned(),
+                limit: 1_000.0,
+                period: "monthly".to_owned(),
+            })
+            .unwrap()
+            .id;
+        *store.inner.lock().unwrap() = seed.inner.lock().unwrap().clone();
+
+        assert!(matches!(
+            store.upsert_team(team_input(Some(team_a_id.clone()), "Renamed Team")),
+            Err(AppError::Io(_))
+        ));
+        {
+            let inner = store.inner.lock().unwrap();
+            assert_eq!(inner.teams[&team_a_id].name, "Alpha Team");
+            assert_eq!(
+                inner.api_keys[&key_id].team_name.as_deref(),
+                Some("Alpha Team")
+            );
+        }
+
+        assert!(matches!(
+            store.delete_team(&team_b_id),
+            Err(AppError::Io(_))
+        ));
+        assert!(store.inner.lock().unwrap().teams.contains_key(&team_b_id));
+
+        assert!(matches!(
+            store.revoke_api_key(&key_id),
+            Err(AppError::Io(_))
+        ));
+        assert_eq!(
+            store.inner.lock().unwrap().api_keys[&key_id].status,
+            "active"
+        );
+
+        assert!(matches!(
+            store.update_api_key(
+                &key_id,
+                UpdateApiKeyInput {
+                    name: Some("renamed-key".to_owned()),
+                    group: None,
+                    team_id: None,
+                    allowed_models: None,
+                    allowed_providers: None,
+                    expires_at: None,
+                    status: None,
+                    ip_restricted: None,
+                    allowed_ips: None,
+                    spend_limit_usd: None,
+                    rate_limited: None,
+                    five_hour_limit_usd: None,
+                    daily_limit_usd: None,
+                    weekly_limit_usd: None,
+                    monthly_limit_usd: None,
+                },
+            ),
+            Err(AppError::Io(_))
+        ));
+        assert_eq!(store.inner.lock().unwrap().api_keys[&key_id].name, "local");
+
+        assert!(matches!(
+            store.delete_api_key(&key_id),
+            Err(AppError::Io(_))
+        ));
+        assert!(store.inner.lock().unwrap().api_keys.contains_key(&key_id));
+
+        assert!(matches!(
+            store.delete_user_resources("usr_test"),
+            Err(AppError::Io(_))
+        ));
+        {
+            let inner = store.inner.lock().unwrap();
+            assert_eq!(inner.api_keys[&key_id].status, "active");
+            assert!(inner.quotas.contains_key(&quota_id));
+        }
+
+        assert!(matches!(
+            store.upsert_quota(UpsertQuotaInput {
+                id: Some(quota_id.clone()),
+                user_id: "usr_test".to_owned(),
+                username: "test-user".to_owned(),
+                quota_type: "tokens".to_owned(),
+                limit: 2_000.0,
+                period: "monthly".to_owned(),
+            }),
+            Err(AppError::Io(_))
+        ));
+        assert_eq!(store.inner.lock().unwrap().quotas[&quota_id].limit, 1_000.0);
+
+        assert!(matches!(
+            store.delete_quota(&quota_id),
+            Err(AppError::Io(_))
+        ));
+        assert!(store.inner.lock().unwrap().quotas.contains_key(&quota_id));
+
+        {
+            let mut inner = store.inner.lock().unwrap();
+            let quota = inner.quotas.get_mut(&quota_id).unwrap();
+            quota.used = 42.0;
+            quota.period_end_ms = 0;
+            quota.reset_at_ms = 0;
+        }
+        assert!(matches!(store.list_quotas(), Err(AppError::Io(_))));
+        {
+            let inner = store.inner.lock().unwrap();
+            let quota = &inner.quotas[&quota_id];
+            assert_eq!(quota.used, 42.0);
+            assert_eq!(quota.period_end_ms, 0);
+            assert_eq!(quota.reset_at_ms, 0);
+        }
+        assert!(matches!(store.health_check(), Err(AppError::NotReady(_))));
+
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

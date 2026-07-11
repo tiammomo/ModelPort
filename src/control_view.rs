@@ -225,7 +225,7 @@ pub(crate) fn provider_health_row<R: ProviderHealthViewRecord>(record: &R, now: 
         "failureKind": failure_kind,
         "accountIssue": account_issue,
         "rechargeRequired": recharge_required,
-        "rechargeBadge": if recharge_required { Some("代充值") } else { None },
+        "rechargeBadge": if recharge_required { Some("等待充值") } else { None },
         "recommendedAction": recommended_action,
     })
 }
@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(row["status"], "degraded");
         assert_eq!(row["failureKind"], "account");
         assert_eq!(row["accountIssue"], "insufficient_balance");
-        assert_eq!(row["rechargeBadge"], "代充值");
+        assert_eq!(row["rechargeBadge"], "等待充值");
     }
 
     #[test]

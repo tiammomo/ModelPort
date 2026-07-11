@@ -2,9 +2,15 @@
 name = "model-port"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
 description = "A local model routing gateway for Claude Code and Anthropic-compatible developer workflows."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/tiammomo/ModelPort"
+homepage = "https://github.com/tiammomo/ModelPort"
 keywords = ["claude-code", "anthropic", "openai-compatible", "llm", "gateway"]
 categories = ["command-line-utilities", "development-tools"]
+publish = false
 
 [dependencies]
 async-stream = "0.3"

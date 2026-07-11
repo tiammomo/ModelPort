@@ -1,25 +1,11 @@
+# Minimal, self-contained ModelPort configuration.
+#
+# Copy this file to `config.toml`, set the referenced secrets in the process
+# environment, then run `model-port config validate`. Optional providers are
+# enabled through their environment variables; see docs/CONFIGURATION.md.
+
 default_provider = "deepseek"
-provider_order = [
-  "deepseek",
-  "deepseek_openai",
-  "mimo",
-  "openrouter",
-  "openai",
-  "anthropic",
-  "gemini",
-  "xai",
-  "groq",
-  "dashscope",
-  "kimi",
-  "zhipu",
-  "mistral",
-  "ark",
-  "ollama",
-  "custom",
-  # "local_sglang",
-  # "local_vllm",
-  # "local_llamacpp",
-]
+provider_order = ["deepseek"]
 
 [server]
 bind = "127.0.0.1:17878"
@@ -29,8 +15,7 @@ max_concurrent_requests = 64
 [auth]
 token_env = "MODELPORT_AUTH_TOKEN"
 
-# Anthropic-compatible provider. DeepSeek documents both OpenAI and Anthropic
-# formats; this route is a direct Anthropic Messages pass-through.
+# DeepSeek's Anthropic-compatible endpoint keeps the client contract intact.
 [providers.deepseek]
 display_name = "DeepSeek Official Anthropic"
 protocol = "anthropic"
@@ -46,6 +31,7 @@ models = [
 ]
 model_prefixes = ["deepseek-"]
 passthrough_unknown_models = false
+deduplicate_stream_text = true
 
 [providers.deepseek.tool_use]
 supported = true
@@ -53,284 +39,6 @@ tool_choice = true
 parallel_tool_calls = true
 streaming_arguments = "native"
 
-[providers.mimo]
-display_name = "Xiaomi Mimo OpenAI-Compatible"
-protocol = "openai-compat"
-base_url_env = "MIMO_OPENAI_BASE_URL"
-base_url_env_fallbacks = ["BASE_URL"]
-base_url = "https://api.xiaomimimo.com/v1"
-api_key_env = "MIMO_OPENAI_API_KEY"
-default_model = "mimo-v2.5-pro"
-models = [
-  "mimo-v2.5-pro",
-]
-model_prefixes = ["mimo-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_completion_tokens"
-
-[providers.mimo.tool_use]
-supported = true
-tool_choice = true
-parallel_tool_calls = true
-streaming_arguments = "delta"
-
-[providers.deepseek_openai]
-display_name = "DeepSeek Official OpenAI-Compatible"
-protocol = "openai-compat"
-base_url_env = "DEEPSEEK_OPENAI_BASE_URL"
-base_url = "https://api.deepseek.com"
-api_key_env = "DEEPSEEK_OPENAI_API_KEY"
-default_model = "deepseek-v4-flash"
-models = [
-  "deepseek-v4-pro",
-  "deepseek-v4-flash",
-  "deepseek-chat",
-  "deepseek-reasoner",
-]
-model_prefixes = ["deepseek-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_tokens"
-
-[providers.openrouter]
-display_name = "OpenRouter"
-protocol = "openai-compat"
-base_url_env = "OPENROUTER_BASE_URL"
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-default_model = "openrouter/auto"
-models = ["openrouter/auto"]
-model_prefixes = [
-  "anthropic/",
-  "deepseek/",
-  "google/",
-  "meta-llama/",
-  "mistralai/",
-  "moonshotai/",
-  "openai/",
-  "qwen/",
-  "x-ai/",
-  "z-ai/",
-]
-passthrough_unknown_models = true
-max_tokens_field = "max_completion_tokens"
-
-[providers.openai]
-display_name = "OpenAI"
-protocol = "openai-compat"
-base_url_env = "OPENAI_BASE_URL"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-default_model = "gpt-5.5"
-models = [
-  "gpt-5.5",
-  "gpt-5.5-pro",
-  "gpt-5.4",
-  "gpt-5.4-pro",
-  "gpt-5.4-mini",
-  "gpt-5.4-nano",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-4.1",
-  "gpt-4.1-mini",
-]
-model_prefixes = ["gpt-", "o1", "o3", "o4", "o5", "chatgpt-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_completion_tokens"
-
-[providers.anthropic]
-display_name = "Anthropic Claude"
-protocol = "anthropic"
-base_url_env = "ANTHROPIC_UPSTREAM_BASE_URL"
-base_url = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-fable-5"
-models = [
-  "claude-fable-5",
-  "claude-mythos-5",
-  "claude-opus-4-8",
-  "claude-opus-4-7",
-  "claude-sonnet-4-6",
-  "claude-sonnet-4-5",
-  "claude-haiku-4-5",
-  "claude-opus-4-20250514",
-  "claude-sonnet-4-20250514",
-  "claude-3-5-haiku-20241022",
-]
-model_prefixes = ["claude-"]
-passthrough_unknown_models = false
-
-[providers.gemini]
-display_name = "Google Gemini OpenAI-Compatible"
-protocol = "openai-compat"
-base_url_env = "GEMINI_OPENAI_BASE_URL"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-api_key_env = "GEMINI_API_KEY"
-default_model = "gemini-3.5-flash"
-models = [
-  "gemini-3.5-flash",
-  "gemini-3.5-pro",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-]
-model_prefixes = ["gemini-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_completion_tokens"
-
-[providers.xai]
-display_name = "xAI Grok"
-protocol = "openai-compat"
-base_url_env = "XAI_BASE_URL"
-base_url = "https://api.x.ai/v1"
-api_key_env = "XAI_API_KEY"
-default_model = "grok-3"
-models = ["grok-3", "grok-3-mini"]
-model_prefixes = ["grok-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_completion_tokens"
-
-[providers.groq]
-display_name = "Groq"
-protocol = "openai-compat"
-base_url_env = "GROQ_BASE_URL"
-base_url = "https://api.groq.com/openai/v1"
-api_key_env = "GROQ_API_KEY"
-default_model = "llama-3.3-70b-versatile"
-models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-model_prefixes = ["llama-", "mixtral-", "gemma-", "openai/"]
-passthrough_unknown_models = false
-max_tokens_field = "max_completion_tokens"
-
-[providers.dashscope]
-display_name = "Alibaba DashScope Qwen"
-protocol = "openai-compat"
-base_url_env = "DASHSCOPE_BASE_URL"
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-api_key_env = "DASHSCOPE_API_KEY"
-default_model = "qwen-plus"
-models = ["qwen-plus", "qwen-max", "qwen-turbo", "qwen3-plus", "qwen3-max", "qwq-plus", "qvq-max"]
-model_prefixes = ["qwen-", "qwq-", "qvq-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_tokens"
-
-[providers.kimi]
-display_name = "Moonshot Kimi"
-protocol = "openai-compat"
-base_url_env = "KIMI_BASE_URL"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "MOONSHOT_API_KEY"
-default_model = "kimi-k2.6"
-models = ["kimi-k2.6", "kimi-k2", "moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"]
-model_prefixes = ["kimi-", "moonshot-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_completion_tokens"
-
-[providers.zhipu]
-display_name = "Zhipu GLM"
-protocol = "openai-compat"
-base_url_env = "ZHIPU_BASE_URL"
-base_url = "https://open.bigmodel.cn/api/paas/v4"
-api_key_env = "ZHIPU_API_KEY"
-default_model = "glm-4.7"
-models = ["glm-4.7", "glm-4.6", "glm-4-flash", "glm-z1-flash"]
-model_prefixes = ["glm-", "charglm-", "codegeex-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_tokens"
-
-[providers.mistral]
-display_name = "Mistral AI"
-protocol = "openai-compat"
-base_url_env = "MISTRAL_BASE_URL"
-base_url = "https://api.mistral.ai/v1"
-api_key_env = "MISTRAL_API_KEY"
-default_model = "mistral-large-latest"
-models = ["mistral-large-latest", "codestral-latest"]
-model_prefixes = ["codestral-", "devstral-", "ministral-", "mistral-", "pixtral-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_tokens"
-
-[providers.ark]
-display_name = "Volcengine Ark Doubao"
-protocol = "openai-compat"
-base_url_env = "ARK_BASE_URL"
-base_url = "https://ark.cn-beijing.volces.com/api/v3"
-api_key_env = "ARK_API_KEY"
-default_model = "doubao-seed-1-6-250615"
-models = ["doubao-seed-1-6-250615", "doubao-seed-1-6-flash-250615"]
-model_prefixes = ["doubao-"]
-passthrough_unknown_models = false
-max_tokens_field = "max_tokens"
-
-[providers.ollama]
-display_name = "Ollama Local OpenAI-Compatible"
-protocol = "openai-compat"
-base_url_env = "OLLAMA_BASE_URL"
-base_url = "http://127.0.0.1:11434/v1"
-api_key_env = "OLLAMA_API_KEY"
-api_key_required = false
-default_model = "llama3.1"
-models = ["llama3.1", "qwen2.5-coder"]
-passthrough_unknown_models = true
-max_tokens_field = "max_tokens"
-fidelity_mode = "best_effort"
-
-[providers.custom]
-display_name = "Custom OpenAI-Compatible"
-protocol = "openai-compat"
-base_url_env = "CUSTOM_OPENAI_BASE_URL"
-base_url = "http://127.0.0.1:8000/v1"
-api_key_env = "CUSTOM_OPENAI_API_KEY"
-api_key_required = false
-default_model = "default"
-models = ["default"]
-passthrough_unknown_models = true
-max_tokens_field = "max_completion_tokens"
-fidelity_mode = "best_effort"
-
-# Local OpenAI-compatible runtimes can be added by uncommenting one of these
-# provider blocks and adding the provider id to provider_order if desired.
-#
-# [providers.local_sglang]
-# display_name = "Local SGLang"
-# protocol = "openai-compat"
-# base_url = "http://127.0.0.1:30000/v1"
-# api_key_required = false
-# default_model = "qwen2.5-coder"
-# models = ["qwen2.5-coder"]
-# passthrough_unknown_models = true
-# max_tokens_field = "max_tokens"
-# fidelity_mode = "best_effort"
-#
-# [providers.local_vllm]
-# display_name = "Local vLLM"
-# protocol = "openai-compat"
-# base_url = "http://127.0.0.1:8000/v1"
-# api_key_required = false
-# default_model = "local-model"
-# models = ["local-model"]
-# passthrough_unknown_models = true
-# max_tokens_field = "max_tokens"
-# fidelity_mode = "best_effort"
-#
-# [providers.local_llamacpp]
-# display_name = "Local llama.cpp"
-# protocol = "openai-compat"
-# base_url = "http://127.0.0.1:8080/v1"
-# api_key_required = false
-# default_model = "local-model"
-# models = ["local-model"]
-# passthrough_unknown_models = true
-# max_tokens_field = "max_tokens"
-# fidelity_mode = "best_effort"
-
 [aliases]
-"mimo-v2.5-pro" = "mimo"
-gpt = "openai:gpt-5.5"
-deepseek-v4-pro = "deepseek"
-deepseek-v4-flash = "deepseek"
-sonnet-router = "openrouter:anthropic/claude-sonnet-4"
-qwen = "dashscope:qwen-plus"
-kimi = "kimi:kimi-k2.6"
-glm = "zhipu:glm-4.7"
+deepseek-v4-pro = "deepseek:deepseek-v4-pro"
+deepseek-v4-flash = "deepseek:deepseek-v4-flash"

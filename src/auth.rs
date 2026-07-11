@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap},
     env,
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -13,6 +16,7 @@ use argon2::{
 use axum::http::HeaderMap;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -23,16 +27,19 @@ pub const ADMIN_SESSION_COOKIE: &str = "modelport_admin_session";
 const DEFAULT_SESSION_TTL_SECONDS: u64 = 12 * 60 * 60;
 const MAX_FAILED_ATTEMPTS: u32 = 5;
 const LOCKOUT_SECONDS: u64 = 15 * 60;
+const MAX_PASSWORD_BYTES: usize = 1_024;
+const LOGIN_ATTEMPT_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_LOGIN_ATTEMPT_RECORDS: usize = 10_000;
 
-#[derive(Debug)]
 pub struct AuthStore {
     store: Option<JsonStore>,
     inner: Mutex<AuthInner>,
+    persistence_degraded: AtomicBool,
     session_ttl_seconds: u64,
     cookie_secure: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct AuthInner {
     users: BTreeMap<String, AdminUserRecord>,
     sessions: HashMap<String, AdminSession>,
@@ -67,6 +74,7 @@ struct AdminSession {
 struct LoginAttempt {
     failed_count: u32,
     locked_until_ms: u64,
+    last_attempt_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,21 +91,42 @@ pub struct PublicUser {
     pub request_count_24h: u64,
 }
 
-#[derive(Debug)]
 pub struct LoginResult {
     pub session_token: String,
     pub expires_at_ms: u64,
     pub user: PublicUser,
 }
 
-#[derive(Debug, Deserialize)]
+impl std::fmt::Debug for AuthStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthStore")
+            .field("data_path", &self.data_path())
+            .field("session_ttl_seconds", &self.session_ttl_seconds)
+            .field("cookie_secure", &self.cookie_secure)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for LoginResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoginResult")
+            .field("session_token", &"[redacted]")
+            .field("expires_at_ms", &self.expires_at_ms)
+            .field("user", &self.user)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginInput {
     pub username: String,
     pub password: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateUserInput {
     pub username: String,
@@ -107,13 +136,48 @@ pub struct CreateUserInput {
     pub status: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateUserInput {
     pub email: Option<String>,
     pub password: Option<String>,
     pub role: Option<String>,
     pub status: Option<String>,
+}
+
+impl std::fmt::Debug for LoginInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoginInput")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CreateUserInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CreateUserInput")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &"[redacted]")
+            .field("role", &self.role)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for UpdateUserInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UpdateUserInput")
+            .field("email", &self.email)
+            .field("password_present", &self.password.is_some())
+            .field("role", &self.role)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl AuthStore {
@@ -139,6 +203,7 @@ impl AuthStore {
                 sessions: HashMap::new(),
                 attempts: HashMap::new(),
             }),
+            persistence_degraded: AtomicBool::new(false),
             session_ttl_seconds,
             cookie_secure,
         };
@@ -152,6 +217,7 @@ impl AuthStore {
         Self {
             store: None,
             inner: Mutex::new(AuthInner::default()),
+            persistence_degraded: AtomicBool::new(false),
             session_ttl_seconds: DEFAULT_SESSION_TTL_SECONDS,
             cookie_secure: false,
         }
@@ -159,39 +225,67 @@ impl AuthStore {
 
     pub fn login(&self, input: LoginInput) -> Result<LoginResult, AppError> {
         let username = normalize_username(&input.username)?;
-        if input.password.is_empty() {
+        if input.password.is_empty() || input.password.len() > MAX_PASSWORD_BYTES {
             return Err(AppError::Auth);
         }
 
         let now_ms = now_millis();
+        let candidate = {
+            let mut inner = self.inner.lock().expect("auth lock poisoned");
+            self.prune_expired_sessions_locked(&mut inner, now_ms);
+            prune_login_attempts(&mut inner.attempts, now_ms);
+
+            if inner
+                .attempts
+                .get(&username)
+                .is_some_and(|attempt| attempt.locked_until_ms > now_ms)
+            {
+                return Err(AppError::Auth);
+            }
+
+            inner
+                .users
+                .iter()
+                .find(|(_, user)| user.username.eq_ignore_ascii_case(&username))
+                .map(|(id, user)| (id.clone(), user.clone()))
+        };
+
+        // Argon2 is intentionally expensive. Do not hold the auth-state mutex while
+        // verifying a password, otherwise one login can stall every session lookup.
+        let verified = match candidate.as_ref() {
+            Some((_, user)) => {
+                let password_valid = verify_password(&input.password, &user.password_hash);
+                user.status == "active" && password_valid
+            }
+            None => {
+                // Keep unknown-user attempts in the same expensive class as a
+                // real password check so response timing does not enumerate users.
+                let _ = hash_password(&input.password);
+                false
+            }
+        };
+
         let mut inner = self.inner.lock().expect("auth lock poisoned");
         self.prune_expired_sessions_locked(&mut inner, now_ms);
+        let Some((user_id, candidate_user)) = candidate else {
+            record_failed_login(&mut inner.attempts, &username, now_ms);
+            return Err(AppError::Auth);
+        };
+        let candidate_is_current = inner.users.get(&user_id).is_some_and(|user| {
+            user.status == "active"
+                && user.username.eq_ignore_ascii_case(&username)
+                && user.password_hash == candidate_user.password_hash
+        });
+        if !verified || !candidate_is_current {
+            record_failed_login(&mut inner.attempts, &username, now_ms);
+            return Err(AppError::Auth);
+        }
 
         if inner
             .attempts
             .get(&username)
             .is_some_and(|attempt| attempt.locked_until_ms > now_ms)
         {
-            return Err(AppError::Auth);
-        }
-
-        let user_id = inner
-            .users
-            .iter()
-            .find(|(_, user)| user.username.eq_ignore_ascii_case(&username))
-            .map(|(id, _)| id.clone());
-        let Some(user_id) = user_id else {
-            record_failed_attempt(inner.attempts.entry(username.clone()).or_default(), now_ms);
-            return Err(AppError::Auth);
-        };
-
-        let Some(user) = inner.users.get(&user_id).cloned() else {
-            record_failed_attempt(inner.attempts.entry(username.clone()).or_default(), now_ms);
-            return Err(AppError::Auth);
-        };
-
-        if user.status != "active" || !verify_password(&input.password, &user.password_hash) {
-            record_failed_attempt(inner.attempts.entry(username.clone()).or_default(), now_ms);
             return Err(AppError::Auth);
         }
 
@@ -272,6 +366,22 @@ impl AuthStore {
             .collect()
     }
 
+    pub fn user_by_id(&self, user_id: &str) -> Option<PublicUser> {
+        let inner = self.inner.lock().expect("auth lock poisoned");
+        inner
+            .users
+            .get(user_id.trim())
+            .map(|user| public_user(user, 0, 0))
+    }
+
+    pub fn is_user_active(&self, user_id: &str) -> bool {
+        let inner = self.inner.lock().expect("auth lock poisoned");
+        inner
+            .users
+            .get(user_id.trim())
+            .is_some_and(|user| user.status == "active")
+    }
+
     pub fn active_admin_count(&self) -> usize {
         let inner = self.inner.lock().expect("auth lock poisoned");
         inner
@@ -283,6 +393,19 @@ impl AuthStore {
 
     pub fn data_path(&self) -> Option<String> {
         self.store.as_ref().map(JsonStore::location)
+    }
+
+    pub fn health_check(&self) -> Result<(), AppError> {
+        if self.persistence_degraded.load(Ordering::Acquire) {
+            return Err(AppError::NotReady(
+                "auth persistence is degraded after a failed write".to_owned(),
+            ));
+        }
+        self.store
+            .as_ref()
+            .map(JsonStore::read_value)
+            .transpose()
+            .map(|_| ())
     }
 
     pub fn default_data_path() -> PathBuf {
@@ -322,8 +445,9 @@ impl AuthStore {
         }
 
         let public = public_user(&user, 1, 0);
+        let previous = inner.clone();
         inner.users.insert(user.id.clone(), user);
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(public)
     }
 
@@ -379,8 +503,8 @@ impl AuthStore {
             ));
         }
 
-        let should_clear_sessions =
-            (password_hash.is_some() && user_id != current_user_id) || next_status != "active";
+        let previous = inner.clone();
+        let should_clear_sessions = password_hash.is_some() || next_status != "active";
         let public = {
             let Some(user) = inner.users.get_mut(user_id) else {
                 return Err(AppError::InvalidRequest("user not found".to_owned()));
@@ -401,7 +525,7 @@ impl AuthStore {
                 .sessions
                 .retain(|_, session| session.user_id.as_str() != user_id);
         }
-        self.save_locked(&inner)?;
+        self.save_or_restore_locked(&mut inner, previous)?;
         Ok(public)
     }
 
@@ -430,11 +554,12 @@ impl AuthStore {
             }
         }
 
+        let previous = inner.clone();
         inner.users.remove(user_id);
         inner
             .sessions
             .retain(|_, session| session.user_id.as_str() != user_id);
-        self.save_locked(&inner)
+        self.save_or_restore_locked(&mut inner, previous)
     }
 
     pub fn active_user_count(&self) -> usize {
@@ -507,14 +632,30 @@ impl AuthStore {
         self.save_locked(&inner)
     }
 
+    fn save_or_restore_locked(
+        &self,
+        inner: &mut AuthInner,
+        previous: AuthInner,
+    ) -> Result<(), AppError> {
+        if let Err(error) = self.save_locked(inner) {
+            *inner = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn save_locked(&self, inner: &AuthInner) -> Result<(), AppError> {
-        let Some(store) = &self.store else {
-            return Ok(());
+        let result = if let Some(store) = &self.store {
+            let file = AuthFile {
+                users: inner.users.values().cloned().collect(),
+            };
+            store.write_json(&file)
+        } else {
+            Ok(())
         };
-        let file = AuthFile {
-            users: inner.users.values().cloned().collect(),
-        };
-        store.write_json(&file)
+        self.persistence_degraded
+            .store(result.is_err(), Ordering::Release);
+        result
     }
 
     fn prune_expired_sessions_locked(&self, inner: &mut AuthInner, now_ms: u64) {
@@ -536,6 +677,55 @@ fn public_user(user: &AdminUserRecord, api_key_count: u32, request_count_24h: u6
         api_key_count,
         request_count_24h,
     }
+}
+
+pub(crate) fn validate_backup_document(value: &Value) -> Result<(), AppError> {
+    let file: AuthFile = serde_json::from_value(value.clone()).map_err(|error| {
+        AppError::InvalidRequest(format!("backup auth document is invalid: {error}"))
+    })?;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut usernames = std::collections::BTreeSet::new();
+    let mut active_admins = 0usize;
+
+    for user in &file.users {
+        if user.id.trim().is_empty() || !ids.insert(user.id.clone()) {
+            return Err(AppError::InvalidRequest(
+                "backup auth document contains an empty or duplicate user id".to_owned(),
+            ));
+        }
+        let username = normalize_username(&user.username)?;
+        if !usernames.insert(username.to_ascii_lowercase()) {
+            return Err(AppError::InvalidRequest(
+                "backup auth document contains duplicate usernames".to_owned(),
+            ));
+        }
+        validate_email(&user.email)?;
+        validate_role(&user.role)?;
+        validate_status(&user.status)?;
+        let password_hash = PasswordHash::new(&user.password_hash).map_err(|_| {
+            AppError::InvalidRequest(
+                "backup auth document contains an invalid password hash".to_owned(),
+            )
+        })?;
+        if !matches!(
+            password_hash.algorithm.as_str(),
+            "argon2id" | "argon2i" | "argon2d"
+        ) {
+            return Err(AppError::InvalidRequest(
+                "backup auth document contains an unsupported password hash".to_owned(),
+            ));
+        }
+        if user.role == "admin" && user.status == "active" {
+            active_admins += 1;
+        }
+    }
+
+    if !file.users.is_empty() && active_admins == 0 {
+        return Err(AppError::InvalidRequest(
+            "backup auth document must retain at least one active admin".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_username(value: &str) -> Result<String, AppError> {
@@ -579,18 +769,64 @@ fn validate_status(value: &str) -> Result<String, AppError> {
 }
 
 fn validate_password_strength(password: &str) -> Result<(), AppError> {
-    if password.len() < 12 {
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::InvalidRequest(format!(
+            "password must be at most {MAX_PASSWORD_BYTES} bytes"
+        )));
+    }
+    if password.chars().count() < 12 {
         return Err(AppError::InvalidRequest(
             "password must be at least 12 characters".to_owned(),
         ));
     }
+
+    let normalized = password.trim().to_ascii_lowercase();
+    let has_common_prefix = [
+        "admin",
+        "password",
+        "modelport",
+        "letmein",
+        "qwerty",
+        "example-password",
+    ]
+    .iter()
+    .any(|prefix| normalized.starts_with(prefix));
+    let is_placeholder = matches!(
+        normalized.as_str(),
+        "administrator"
+            | "password123"
+            | "password1234"
+            | "modelport123"
+            | "modelport-admin"
+            | "letmein12345"
+            | "change-me-now"
+    ) || normalized.starts_with("replace-with-")
+        || normalized.starts_with("your-password")
+        || normalized.contains("placeholder")
+        || normalized.contains("change-me")
+        || normalized.contains("changeme");
+    let only_digits = normalized
+        .chars()
+        .all(|character| character.is_ascii_digit());
+    let distinct_characters = password
+        .chars()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    if normalized.is_empty()
+        || has_common_prefix
+        || is_placeholder
+        || only_digits
+        || distinct_characters < 6
+    {
+        return Err(AppError::InvalidRequest(
+            "password is a common placeholder or is too weak".to_owned(),
+        ));
+    }
+
     Ok(())
 }
 
 fn validate_bootstrap_password(password: &str) -> Result<(), AppError> {
-    if password == "admin" {
-        return Ok(());
-    }
     validate_password_strength(password)
 }
 
@@ -612,11 +848,35 @@ fn verify_password(password: &str, password_hash: &str) -> bool {
 }
 
 fn record_failed_attempt(attempt: &mut LoginAttempt, now_ms: u64) {
+    attempt.last_attempt_ms = now_ms;
     attempt.failed_count = attempt.failed_count.saturating_add(1);
     if attempt.failed_count >= MAX_FAILED_ATTEMPTS {
         attempt.locked_until_ms = now_ms.saturating_add(LOCKOUT_SECONDS.saturating_mul(1_000));
         attempt.failed_count = 0;
     }
+}
+
+fn record_failed_login(attempts: &mut HashMap<String, LoginAttempt>, username: &str, now_ms: u64) {
+    if !attempts.contains_key(username)
+        && attempts.len() >= MAX_LOGIN_ATTEMPT_RECORDS
+        && let Some(oldest) = attempts
+            .iter()
+            .min_by_key(|(_, attempt)| attempt.last_attempt_ms)
+            .map(|(username, _)| username.clone())
+    {
+        attempts.remove(&oldest);
+    }
+    record_failed_attempt(attempts.entry(username.to_owned()).or_default(), now_ms);
+}
+
+fn prune_login_attempts(attempts: &mut HashMap<String, LoginAttempt>, now_ms: u64) {
+    attempts.retain(|_, attempt| {
+        attempt.locked_until_ms > now_ms
+            || attempt
+                .last_attempt_ms
+                .saturating_add(LOGIN_ATTEMPT_RETENTION_MS)
+                > now_ms
+    });
 }
 
 fn session_token_from_headers(headers: &HeaderMap) -> Option<&str> {
@@ -686,6 +946,16 @@ fn now_millis() -> u64 {
 mod tests {
     use super::*;
 
+    fn failing_store_path(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "modelport-{label}-{}-{}",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
     #[test]
     fn login_sets_and_validates_session_cookie() {
         let store = AuthStore::for_tests();
@@ -707,12 +977,13 @@ mod tests {
             .users
             .insert(user.id.clone(), user);
 
-        let login = store
-            .login(LoginInput {
-                username: "admin".to_owned(),
-                password: "strong-password-123".to_owned(),
-            })
-            .unwrap();
+        let input = LoginInput {
+            username: "admin".to_owned(),
+            password: "strong-password-123".to_owned(),
+        };
+        assert!(!format!("{input:?}").contains("strong-password-123"));
+        let login = store.login(input).unwrap();
+        assert!(!format!("{login:?}").contains(&login.session_token));
         let cookie = store.session_cookie(&login.session_token);
         let mut headers = HeaderMap::new();
         headers.insert("cookie", cookie.parse().unwrap());
@@ -722,13 +993,81 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_accepts_local_admin_password() {
-        validate_bootstrap_password("admin").unwrap();
+    fn bootstrap_rejects_weak_and_placeholder_passwords() {
+        for password in [
+            "admin",
+            "password1234",
+            "123456789012",
+            "aaaaaaaaaaaa",
+            "replace-with-a-long-random-admin-password",
+            "this-is-a-placeholder-password",
+        ] {
+            assert!(
+                validate_bootstrap_password(password).is_err(),
+                "password should be rejected: {password}"
+            );
+        }
     }
 
     #[test]
-    fn normal_user_passwords_still_require_minimum_length() {
+    fn backup_validation_rejects_invalid_hashes_and_missing_active_admin() {
+        let invalid_hash = serde_json::json!({
+            "users": [{
+                "id": "usr_admin",
+                "username": "operator",
+                "email": "operator@example.com",
+                "role": "admin",
+                "status": "active",
+                "password_hash": "not-a-password-hash",
+                "created_at_ms": 1,
+                "updated_at_ms": 1,
+                "last_login_at_ms": null
+            }]
+        });
+        assert!(validate_backup_document(&invalid_hash).is_err());
+
+        let no_active_admin = serde_json::json!({
+            "users": [{
+                "id": "usr_viewer",
+                "username": "viewer",
+                "email": "viewer@example.com",
+                "role": "viewer",
+                "status": "active",
+                "password_hash": hash_password("strong-password-123").unwrap(),
+                "created_at_ms": 1,
+                "updated_at_ms": 1,
+                "last_login_at_ms": null
+            }]
+        });
+        assert!(validate_backup_document(&no_active_admin).is_err());
+    }
+
+    #[test]
+    fn strong_passwords_are_accepted_and_short_passwords_are_rejected() {
+        validate_bootstrap_password("strong-password-123").unwrap();
         assert!(validate_password_strength("admin").is_err());
+    }
+
+    #[test]
+    fn user_lookup_reports_the_current_status() {
+        let store = AuthStore::for_tests();
+        let user = store
+            .create_user(CreateUserInput {
+                username: "disabled-user".to_owned(),
+                email: "disabled@example.com".to_owned(),
+                password: "strong-disabled-password-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("disabled".to_owned()),
+            })
+            .unwrap();
+
+        assert_eq!(
+            store.user_by_id(&user.id).map(|user| user.username),
+            Some("disabled-user".to_owned())
+        );
+        assert!(!store.is_user_active(&user.id));
+        assert!(store.user_by_id("usr_missing").is_none());
+        assert!(!store.is_user_active("usr_missing"));
     }
 
     #[test]
@@ -820,5 +1159,105 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, AppError::Forbidden(_)));
+    }
+
+    #[test]
+    fn failed_user_writes_restore_memory_and_degrade_health() {
+        let path = failing_store_path("auth-write-failure");
+        let store = AuthStore {
+            store: Some(JsonStore::File(path.clone())),
+            inner: Mutex::new(AuthInner::default()),
+            persistence_degraded: AtomicBool::new(false),
+            session_ttl_seconds: DEFAULT_SESSION_TTL_SECONDS,
+            cookie_secure: false,
+        };
+
+        assert!(matches!(
+            store.create_user(CreateUserInput {
+                username: "new-user".to_owned(),
+                email: "new-user@example.com".to_owned(),
+                password: "strong-new-user-password-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("active".to_owned()),
+            }),
+            Err(AppError::Io(_))
+        ));
+        assert!(store.inner.lock().unwrap().users.is_empty());
+
+        let now = now_millis();
+        let admin = AdminUserRecord {
+            id: "usr_admin".to_owned(),
+            username: "admin".to_owned(),
+            email: "admin@example.com".to_owned(),
+            role: "admin".to_owned(),
+            status: "active".to_owned(),
+            password_hash: "unused".to_owned(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+        };
+        let user = AdminUserRecord {
+            id: "usr_user".to_owned(),
+            username: "user".to_owned(),
+            email: "user@example.com".to_owned(),
+            role: "user".to_owned(),
+            status: "active".to_owned(),
+            password_hash: "unused".to_owned(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+        };
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.users.insert(admin.id.clone(), admin);
+            inner.users.insert(user.id.clone(), user);
+            inner.sessions.insert(
+                "session-user".to_owned(),
+                AdminSession {
+                    user_id: "usr_user".to_owned(),
+                    expires_at_ms: now.saturating_add(60_000),
+                },
+            );
+        }
+
+        assert!(matches!(
+            store.update_user(
+                "usr_user",
+                "usr_admin",
+                UpdateUserInput {
+                    email: Some("changed@example.com".to_owned()),
+                    password: None,
+                    role: Some("viewer".to_owned()),
+                    status: Some("disabled".to_owned()),
+                },
+            ),
+            Err(AppError::Io(_))
+        ));
+        {
+            let inner = store.inner.lock().unwrap();
+            let user = inner.users.get("usr_user").unwrap();
+            assert_eq!(user.email, "user@example.com");
+            assert_eq!(user.role, "user");
+            assert_eq!(user.status, "active");
+            assert!(inner.sessions.contains_key("session-user"));
+        }
+
+        assert!(matches!(
+            store.delete_user("usr_user", "usr_admin"),
+            Err(AppError::Io(_))
+        ));
+        {
+            let inner = store.inner.lock().unwrap();
+            assert!(inner.users.contains_key("usr_user"));
+            assert!(inner.sessions.contains_key("session-user"));
+        }
+        assert!(matches!(store.health_check(), Err(AppError::NotReady(_))));
+
+        std::fs::remove_dir_all(path).unwrap();
+
+        let healthy = AuthStore::for_tests();
+        healthy.persistence_degraded.store(true, Ordering::Release);
+        healthy.save_locked(&AuthInner::default()).unwrap();
+        assert!(healthy.health_check().is_ok());
     }
 }

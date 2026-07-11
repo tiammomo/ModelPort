@@ -36,8 +36,11 @@ pub(super) async fn admin_create_user(
     headers: HeaderMap,
     Json(body): Json<CreateUserInput>,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
-    let user = state.auth.create_user(body)?;
+    let actor = require_admin_write_user(&state, &headers)?;
+    let auth = state.auth.clone();
+    let user = tokio::task::spawn_blocking(move || auth.create_user(body))
+        .await
+        .map_err(|error| AppError::Config(format!("password worker failed: {error}")))??;
     record_admin_activity(
         &state,
         &actor,
@@ -56,7 +59,27 @@ pub(super) async fn admin_update_user(
     Json(body): Json<UpdateUserInput>,
 ) -> Result<Json<Value>, AppError> {
     let current_user = require_admin_write_user(&state, &headers)?;
-    let user = state.auth.update_user(&user_id, &current_user.id, body)?;
+    let was_inactive = state
+        .auth
+        .user_by_id(&user_id)
+        .is_some_and(|user| user.status != "active");
+    let reactivating = was_inactive && body.status.as_deref() == Some("active");
+    if reactivating {
+        // Re-enabling an account must not resurrect keys that were revoked
+        // when it was disabled. Commit the fail-closed control mutation first.
+        state.control.delete_user_resources(&user_id)?;
+    }
+    let auth = state.auth.clone();
+    let update_user_id = user_id.clone();
+    let current_user_id = current_user.id.clone();
+    let user = tokio::task::spawn_blocking(move || {
+        auth.update_user(&update_user_id, &current_user_id, body)
+    })
+    .await
+    .map_err(|error| AppError::Config(format!("password worker failed: {error}")))??;
+    if user.status != "active" {
+        state.control.delete_user_resources(&user.id)?;
+    }
     record_admin_activity(
         &state,
         &current_user,

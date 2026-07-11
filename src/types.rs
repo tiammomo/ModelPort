@@ -209,11 +209,16 @@ pub fn anthropic_event(event: &str, data: Value) -> Result<Event, AppError> {
 
 pub fn anthropic_error_event(error: &AppError) -> Result<Event, AppError> {
     let kind = match error {
-        AppError::InvalidRequest(_) | AppError::ProviderNotFound(_) => "invalid_request_error",
+        AppError::InvalidRequest(_) | AppError::NotFound(_) | AppError::ProviderNotFound(_) => {
+            "invalid_request_error"
+        }
         AppError::Auth => "authentication_error",
         AppError::Forbidden(_) => "permission_error",
         AppError::QuotaExceeded(_) | AppError::RateLimited { .. } => "rate_limit_error",
-        AppError::MissingSecret(_) | AppError::Config(_) | AppError::Database(_) => "server_error",
+        AppError::MissingSecret(_)
+        | AppError::Config(_)
+        | AppError::Database(_)
+        | AppError::NotReady(_) => "server_error",
         AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
             "api_error"
         }

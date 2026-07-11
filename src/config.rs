@@ -15,7 +15,7 @@ use crate::error::AppError;
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 64;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppConfig {
     pub bind_addr: SocketAddr,
     pub max_request_body_bytes: usize,
@@ -32,7 +32,7 @@ pub struct RuntimeConfig {
     loader: Arc<dyn Fn() -> Result<AppConfig, AppError> + Send + Sync>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderConfig {
     pub display_name: String,
     pub protocol: ProviderProtocol,
@@ -118,11 +118,64 @@ impl ToolUseConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedProvider {
     pub provider_id: String,
     pub provider: ProviderConfig,
     pub model: String,
+}
+
+impl fmt::Debug for AppConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppConfig")
+            .field("bind_addr", &self.bind_addr)
+            .field("max_request_body_bytes", &self.max_request_body_bytes)
+            .field("max_concurrent_requests", &self.max_concurrent_requests)
+            .field("auth_enabled", &self.auth_token.is_some())
+            .field("default_provider", &self.default_provider)
+            .field("provider_order", &self.provider_order)
+            .field("providers", &self.providers)
+            .field("aliases", &self.aliases)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderConfig")
+            .field("display_name", &self.display_name)
+            .field("protocol", &self.protocol)
+            .field("base_url", &self.base_url)
+            .field("api_key_env", &self.api_key_env)
+            .field("has_api_key", &self.api_key.is_some())
+            .field("api_key_required", &self.api_key_required)
+            .field("default_model", &self.default_model)
+            .field("models", &self.models)
+            .field("model_prefixes", &self.model_prefixes)
+            .field(
+                "passthrough_unknown_models",
+                &self.passthrough_unknown_models,
+            )
+            .field("max_tokens_field", &self.max_tokens_field)
+            .field("deduplicate_stream_text", &self.deduplicate_stream_text)
+            .field("buffer_stream_text", &self.buffer_stream_text)
+            .field("fidelity_mode", &self.fidelity_mode)
+            .field("tool_use", &self.tool_use)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ResolvedProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedProvider")
+            .field("provider_id", &self.provider_id)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1452,12 +1505,36 @@ fn env_list(name: &str, defaults: &[&str]) -> Vec<String> {
 }
 
 fn env_value(name: &str) -> Option<String> {
+    let process_value = env::var(name).ok();
+    if process_value.is_some() {
+        return process_value;
+    }
     let mut file_values = env_file_values();
-    file_values.remove(name).or_else(|| env::var(name).ok())
+    select_env_value(process_value, file_values.remove(name))
+}
+
+fn select_env_value(process_value: Option<String>, file_value: Option<String>) -> Option<String> {
+    process_value.or(file_value)
 }
 
 fn validate_runtime_guardrail_env(issues: &mut Vec<ConfigIssue>) {
     for (name, requirement) in [
+        (
+            "MODELPORT_MAX_REQUEST_BODY_BYTES",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_MAX_CONCURRENT_REQUESTS",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_MAX_CONCURRENT_STREAMS",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_USAGE_LOG_LIMIT",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
         (
             "MODELPORT_RATE_LIMIT_WINDOW_SECONDS",
             NumericEnvRequirement::NonZeroU64,
@@ -1507,6 +1584,38 @@ fn validate_runtime_guardrail_env(issues: &mut Vec<ConfigIssue>) {
             "MODELPORT_MAX_OUTPUT_TOKENS",
             NumericEnvRequirement::NonZeroU64,
         ),
+        (
+            "MODELPORT_HTTP_CONNECT_TIMEOUT_SECS",
+            NumericEnvRequirement::NonZeroU64,
+        ),
+        (
+            "MODELPORT_HTTP_REQUEST_TIMEOUT_SECS",
+            NumericEnvRequirement::NonZeroU64,
+        ),
+        (
+            "MODELPORT_HTTP_STREAM_IDLE_TIMEOUT_SECS",
+            NumericEnvRequirement::NonZeroU64,
+        ),
+        (
+            "MODELPORT_HTTP_MAX_RESPONSE_BYTES",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_HTTP_SSE_MAX_LINE_BYTES",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_HTTP_SSE_MAX_EVENT_BYTES",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_HTTP_SSE_MAX_STREAM_BYTES",
+            NumericEnvRequirement::NonZeroUsize,
+        ),
+        (
+            "MODELPORT_ADMIN_SESSION_TTL_SECONDS",
+            NumericEnvRequirement::NonZeroU64,
+        ),
     ] {
         if let Some(value) = env_value(name) {
             validate_numeric_env_value(name, &value, requirement, issues);
@@ -1552,10 +1661,7 @@ fn validate_numeric_env_value(
 }
 
 fn service_env_value(name: &str) -> Option<String> {
-    env::var(name).ok().or_else(|| {
-        let mut file_values = env_file_values();
-        file_values.remove(name)
-    })
+    env_value(name)
 }
 
 fn env_file_values() -> HashMap<String, String> {
@@ -1831,6 +1937,12 @@ fn validate_provider_base_url_policy(
     if url.fragment().is_some() {
         return Err("URL fragments are not allowed".to_owned());
     }
+    if url.query().is_some() {
+        return Err(
+            "URL query parameters are not allowed; provider credentials must use headers"
+                .to_owned(),
+        );
+    }
 
     let Some(host) = url.host_str() else {
         return Err("URL host is required".to_owned());
@@ -1838,6 +1950,19 @@ fn validate_provider_base_url_policy(
     let host = host.trim_matches(['[', ']']).trim_end_matches('.');
     if host.is_empty() {
         return Err("URL host is required".to_owned());
+    }
+
+    let private_literal_host = host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(private_or_metadata_ip);
+    if url.scheme() == "http"
+        && !provider_allows_loopback_base_url(provider_id)
+        && (!allow_private_provider_urls || !private_literal_host)
+        && !env_flag("MODELPORT_ALLOW_INSECURE_PROVIDER_HTTP")
+    {
+        return Err(
+            "remote provider URLs must use https; set MODELPORT_ALLOW_INSECURE_PROVIDER_HTTP=1 only for a trusted internal HTTP upstream"
+                .to_owned(),
+        );
     }
 
     if allow_private_provider_urls {
@@ -1875,20 +2000,25 @@ fn provider_allows_loopback_base_url(provider_id: &str) -> bool {
 
 fn private_or_metadata_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.octets() == [169, 254, 169, 254]
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ipv6_is_unique_local(ip)
-                || ipv6_is_unicast_link_local(ip)
-        }
+        IpAddr::V4(ip) => private_or_metadata_ipv4(ip),
+        IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or_else(
+            || {
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ipv6_is_unique_local(ip)
+                    || ipv6_is_unicast_link_local(ip)
+            },
+            private_or_metadata_ipv4,
+        ),
     }
+}
+
+fn private_or_metadata_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.octets() == [169, 254, 169, 254]
 }
 
 fn ipv6_is_unique_local(ip: std::net::Ipv6Addr) -> bool {
@@ -2084,12 +2214,46 @@ mod tests {
     fn provider_url_policy_blocks_metadata_ip_for_remote_provider() {
         let err = validate_provider_base_url_for_request(
             "deepseek",
-            "http://169.254.169.254/latest/meta-data",
+            "https://169.254.169.254/latest/meta-data",
             false,
         )
         .unwrap_err();
 
         assert!(err.to_string().contains("private"));
+    }
+
+    #[test]
+    fn provider_url_policy_blocks_ipv4_mapped_loopback_for_remote_provider() {
+        let err = validate_provider_base_url_for_request(
+            "deepseek",
+            "https://[::ffff:127.0.0.1]:8443/v1",
+            false,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("private"));
+    }
+
+    #[test]
+    fn provider_url_policy_allows_ipv4_mapped_public_address() {
+        validate_provider_base_url_for_request(
+            "deepseek",
+            "https://[::ffff:8.8.8.8]:8443/v1",
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn provider_url_policy_rejects_plain_http_for_remote_provider() {
+        let err = validate_provider_base_url_for_request(
+            "deepseek",
+            "http://api.deepseek.com/anthropic",
+            false,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must use https"));
     }
 
     #[test]
@@ -2108,6 +2272,18 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("userinfo"));
+    }
+
+    #[test]
+    fn provider_url_policy_blocks_query_credentials() {
+        let err = validate_provider_base_url_for_request(
+            "deepseek",
+            "https://api.deepseek.com/anthropic?api_key=secret",
+            false,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("query parameters"));
     }
 
     #[test]
@@ -2152,6 +2328,22 @@ mod tests {
             Some(("DEEPSEEK_API_KEY".to_owned(), "sk-test".to_owned()))
         );
         assert_eq!(parse_env_line("# comment"), None);
+    }
+
+    #[test]
+    fn process_environment_overrides_provider_env_file_value() {
+        assert_eq!(
+            select_env_value(
+                Some("process-provider-key".to_owned()),
+                Some("env-file-provider-key".to_owned()),
+            )
+            .as_deref(),
+            Some("process-provider-key")
+        );
+        assert_eq!(
+            select_env_value(None, Some("env-file-provider-key".to_owned())).as_deref(),
+            Some("env-file-provider-key")
+        );
     }
 
     #[test]
@@ -2205,6 +2397,21 @@ mod tests {
                 .all(|issue| issue.severity != ConfigIssueSeverity::Error),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn debug_output_redacts_loaded_secrets() {
+        let mut config = test_config();
+        config.auth_token = Some("router-secret-never-log".to_owned());
+        config.providers.get_mut("mimo").unwrap().api_key =
+            Some("provider-secret-never-log".to_owned());
+
+        let output = format!("{config:?}");
+
+        assert!(!output.contains("router-secret-never-log"));
+        assert!(!output.contains("provider-secret-never-log"));
+        assert!(output.contains("auth_enabled"));
+        assert!(output.contains("has_api_key"));
     }
 
     #[test]

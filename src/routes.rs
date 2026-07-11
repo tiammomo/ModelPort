@@ -52,7 +52,7 @@ mod provider_view;
 mod settings_view;
 
 use dashboard_view::{DashboardQuery, dashboard_body};
-use logs_view::{latency_body, logs_body};
+use logs_view::{LogsQuery, latency_body, log_body, logs_body};
 use provider_view::{provider_model_row, provider_row_by_id, provider_rows};
 use settings_view::{alias_row, alias_rows, config_issues_json, settings_row};
 
@@ -62,6 +62,7 @@ const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-ty
 const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
 const REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
 const PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
+static ADMIN_LOGIN_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RuntimeConfig>,
@@ -69,6 +70,7 @@ pub struct AppState {
     pub control: Arc<ControlStore>,
     pub security: Arc<GatewaySecurityPolicy>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub stream_permits: Arc<tokio::sync::Semaphore>,
     pub trusted_proxies: Arc<TrustedProxyConfig>,
     pub transport: HttpTransport,
     pub metrics: Arc<Metrics>,
@@ -245,9 +247,6 @@ impl RateLimiter {
             return Ok(());
         }
 
-        let now = now_millis();
-        let window_start = now.saturating_sub(self.config.window_ms);
-        let mut inner = self.inner.lock().expect("rate limiter lock poisoned");
         let mut rules = vec![
             (
                 "global:messages".to_owned(),
@@ -291,6 +290,32 @@ impl RateLimiter {
                 "model request rate limit exceeded",
             ));
         }
+
+        self.check_rules(rules)
+    }
+
+    fn check_provider_attempt(&self, provider_id: &str, model: &str) -> Result<(), AppError> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        self.check_rules(vec![
+            (
+                format!("provider:{provider_id}"),
+                self.config.provider_per_minute,
+                "provider request rate limit exceeded",
+            ),
+            (
+                format!("model:{model}"),
+                self.config.model_per_minute,
+                "model request rate limit exceeded",
+            ),
+        ])
+    }
+
+    fn check_rules(&self, rules: Vec<(String, u32, &'static str)>) -> Result<(), AppError> {
+        let now = now_millis();
+        let window_start = now.saturating_sub(self.config.window_ms);
+        let mut inner = self.inner.lock().expect("rate limiter lock poisoned");
 
         for (key, limit, message) in &rules {
             prune_rate_window(&mut inner, key, window_start);
@@ -364,7 +389,10 @@ pub fn router(state: AppState) -> Router {
         .route("/metrics", get(ops::metrics))
         .route("/v1/models", get(client_api::models))
         .route("/v1/messages", post(client_api::messages))
-        .route("/admin/auth/login", post(admin_login))
+        .route(
+            "/admin/auth/login",
+            post(admin_login).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/admin/auth/logout", post(admin_logout))
         .route("/admin/auth/me", get(admin_me))
         .route("/admin/dashboard", get(admin_dashboard))
@@ -383,8 +411,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/admin/providers/{provider_id}/models",
-            get(admin_providers::admin_provider_models)
-                .post(admin_providers::admin_provider_models)
+            post(admin_providers::admin_provider_models)
                 .put(admin_providers::admin_upsert_provider_model)
                 .delete(admin_providers::admin_delete_provider_model),
         )
@@ -417,8 +444,9 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/settings/reload-config", post(admin_reload_config))
         .route("/admin/settings/test-provider", post(admin_test_provider))
         .route("/admin/audit", get(admin_audit))
-        .route("/admin/backup", get(admin_backup))
+        .route("/admin/backup", post(admin_backup))
         .route("/admin/logs", get(admin_logs))
+        .route("/admin/logs/{log_id}", get(admin_log_by_id))
         .route("/admin/latency", get(admin_latency))
         .route("/admin/teams", get(admin_teams).post(admin_upsert_team))
         .route(
@@ -492,7 +520,20 @@ async fn admin_login(
     State(state): State<AppState>,
     Json(input): Json<LoginInput>,
 ) -> Result<Response, AppError> {
-    let login = state.auth.login(input)?;
+    let _permit = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ADMIN_LOGIN_WORKERS.acquire(),
+    )
+    .await
+    .map_err(|_| AppError::RateLimited {
+        message: "too many concurrent admin login attempts".to_owned(),
+        retry_after_secs: 1,
+    })?
+    .map_err(|_| AppError::Config("admin login worker limiter closed".to_owned()))?;
+    let auth = state.auth.clone();
+    let login = tokio::task::spawn_blocking(move || auth.login(input))
+        .await
+        .map_err(|error| AppError::Config(format!("authentication worker failed: {error}")))??;
     record_admin_activity(
         &state,
         &login.user,
@@ -710,6 +751,9 @@ fn record_admin_activity(
 
 fn authenticate_client(state: &AppState, headers: &HeaderMap) -> Result<ClientIdentity, AppError> {
     if let Some(identity) = state.control.authenticate_headers(headers)? {
+        if !state.auth.is_user_active(&identity.user_id) {
+            return Err(AppError::Auth);
+        }
         return Ok(identity);
     }
     if !state.security.allow_legacy_client_auth {
@@ -726,8 +770,9 @@ fn client_ip(
     peer_addr: Option<SocketAddr>,
     trusted_proxies: &TrustedProxyConfig,
 ) -> Option<String> {
-    if peer_addr.is_some_and(|peer| trusted_proxies.is_trusted(peer.ip()))
-        && let Some(ip) = forwarded_client_ip(headers)
+    if let Some(peer) = peer_addr
+        && trusted_proxies.is_trusted(peer.ip())
+        && let Some(ip) = forwarded_client_ip(headers, peer.ip(), trusted_proxies)
     {
         return Some(ip.to_string());
     }
@@ -735,13 +780,43 @@ fn client_ip(
     peer_addr.map(|peer| peer.ip().to_string())
 }
 
-fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
-    for name in ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"] {
-        let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) else {
-            continue;
-        };
-        let candidate = value.split(',').next().unwrap_or(value).trim();
-        if let Some(ip) = parse_ip_with_optional_port(candidate) {
+fn forwarded_client_ip(
+    headers: &HeaderMap,
+    peer_ip: IpAddr,
+    trusted_proxies: &TrustedProxyConfig,
+) -> Option<IpAddr> {
+    if let Some(value) = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+    {
+        let mut chain = value
+            .split(',')
+            .filter_map(parse_ip_with_optional_port)
+            .collect::<Vec<_>>();
+        if !chain.is_empty() {
+            // Walk from the connected peer towards the client and discard only
+            // explicitly trusted proxy hops. A caller-controlled leftmost XFF
+            // value can therefore never override the address appended by the
+            // nearest trusted proxy.
+            chain.push(peer_ip);
+            if let Some(client) = chain
+                .iter()
+                .rev()
+                .copied()
+                .find(|ip| !trusted_proxies.is_trusted(*ip))
+            {
+                return Some(client);
+            }
+            return Some(peer_ip);
+        }
+    }
+
+    for name in ["x-real-ip", "cf-connecting-ip"] {
+        if let Some(ip) = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_ip_with_optional_port)
+        {
             return Some(ip);
         }
     }
@@ -859,8 +934,8 @@ async fn admin_reload_config(
         "providerOrder": config.provider_order,
         "issues": issues,
         "reloadScope": {
-            "applied": ["providers", "provider credentials", "base urls", "model lists", "aliases", "legacy client auth token"],
-            "requiresRestart": ["bind address", "request body limit", "concurrency layer", "HTTP client timeouts", "trusted proxies", "admin bootstrap account"],
+            "applied": ["provider catalog", "base provider keys", "base urls", "model lists", "aliases", "legacy client auth token"],
+            "requiresRestart": ["bind address", "request body limit", "concurrency layer", "rate limits", "HTTP client timeouts", "trusted proxies", "security flags", "admin session and cookie settings", "storage", "new credential-profile environment variables"],
         },
     })))
 }
@@ -871,6 +946,7 @@ async fn admin_update_settings(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let actor = require_admin_write_user(&state, &headers)?;
+    validate_settings_update_body(&body)?;
     let mut changes = Vec::new();
     if let Some(gateway) = body.get("gateway") {
         let config = effective_config(&state);
@@ -902,6 +978,32 @@ async fn admin_update_settings(
     }
 
     Ok(Json(settings_row(&state)))
+}
+
+fn validate_settings_update_body(body: &Value) -> Result<(), AppError> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| AppError::InvalidRequest("settings body must be an object".to_owned()))?;
+    if let Some(field) = object.keys().find(|field| field.as_str() != "gateway") {
+        return Err(AppError::InvalidRequest(format!(
+            "settings field `{field}` is read-only; change the deployment configuration and restart"
+        )));
+    }
+    let Some(gateway) = object.get("gateway") else {
+        return Ok(());
+    };
+    let gateway = gateway
+        .as_object()
+        .ok_or_else(|| AppError::InvalidRequest("settings.gateway must be an object".to_owned()))?;
+    if let Some(field) = gateway
+        .keys()
+        .find(|field| !matches!(field.as_str(), "defaultProvider" | "providerOrder"))
+    {
+        return Err(AppError::InvalidRequest(format!(
+            "settings.gateway field `{field}` is not supported"
+        )));
+    }
+    Ok(())
 }
 
 async fn admin_test_provider(
@@ -973,13 +1075,13 @@ async fn admin_backup(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    let actor = require_admin_user(&state, &headers)?;
+    let actor = require_admin_write_user(&state, &headers)?;
     record_admin_activity(
         &state,
         &actor,
         "config_change",
         "backup",
-        "导出控制面备份",
+        "导出控制面诊断快照",
         "info",
     );
 
@@ -1092,9 +1194,22 @@ fn push_model_id(id: &str, models: &mut Vec<String>, seen: &mut BTreeSet<String>
 async fn admin_logs(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<LogsQuery>,
 ) -> Result<Json<Value>, AppError> {
     require_console_user(&state, &headers)?;
-    Ok(Json(logs_body(&state)))
+    query.validate()?;
+    Ok(Json(logs_body(&state, &query)))
+}
+
+async fn admin_log_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(log_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_console_user(&state, &headers)?;
+    log_body(&state, &log_id)
+        .map(Json)
+        .ok_or_else(|| AppError::NotFound(format!("request log {log_id}")))
 }
 
 async fn admin_latency(
@@ -1188,9 +1303,10 @@ async fn admin_quotas(
 async fn admin_create_quota(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<UpsertQuotaInput>,
+    Json(mut body): Json<UpsertQuotaInput>,
 ) -> Result<Json<Value>, AppError> {
     let actor = require_admin_write_user(&state, &headers)?;
+    populate_quota_user(state.auth.as_ref(), &mut body)?;
     let quota = state.control.upsert_quota(body)?;
     record_admin_activity(
         &state,
@@ -1214,6 +1330,7 @@ async fn admin_update_quota(
 ) -> Result<Json<Value>, AppError> {
     let actor = require_admin_write_user(&state, &headers)?;
     body.id = Some(quota_id);
+    populate_quota_user(state.auth.as_ref(), &mut body)?;
     let quota = state.control.upsert_quota(body)?;
     record_admin_activity(
         &state,
@@ -1245,6 +1362,15 @@ async fn admin_delete_quota(
         "warning",
     );
     Ok(Json(json!({ "ok": true })))
+}
+
+fn populate_quota_user(auth: &AuthStore, body: &mut UpsertQuotaInput) -> Result<(), AppError> {
+    let user = auth
+        .user_by_id(&body.user_id)
+        .ok_or_else(|| AppError::InvalidRequest("quota user not found".to_owned()))?;
+    body.user_id = user.id;
+    body.username = user.username;
+    Ok(())
 }
 
 fn parse_ip_rule(value: &str) -> Result<IpRule, ()> {
@@ -1681,6 +1807,35 @@ mod tests {
     const CLIENT_TOKEN: &str = "client-token";
 
     #[test]
+    fn quota_owner_is_loaded_from_the_auth_store() {
+        let auth = AuthStore::for_tests();
+        let user = auth
+            .create_user(CreateUserInput {
+                username: "quota-user".to_owned(),
+                email: "quota@example.com".to_owned(),
+                password: "strong-quota-password-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("active".to_owned()),
+            })
+            .unwrap();
+        let mut input = UpsertQuotaInput {
+            id: None,
+            user_id: user.id.clone(),
+            username: "forged-name".to_owned(),
+            quota_type: "tokens".to_owned(),
+            limit: 1_000.0,
+            period: "monthly".to_owned(),
+        };
+
+        populate_quota_user(&auth, &mut input).unwrap();
+        assert_eq!(input.user_id, user.id);
+        assert_eq!(input.username, "quota-user");
+
+        input.user_id = "usr_missing".to_owned();
+        assert!(populate_quota_user(&auth, &mut input).is_err());
+    }
+
+    #[test]
     fn console_origin_allows_loopback_dev_ports() {
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("127.0.0.1:17878"));
@@ -1910,21 +2065,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_stream_upstream_status_to_anthropic_error_event() {
+    async fn rejects_stream_upstream_status_during_handshake() {
         let upstream = spawn_openai_upstream(
             StatusCode::UNAUTHORIZED,
             r#"{"code":"INVALID_API_KEY","message":"Invalid API key"}"#,
             "application/json",
         )
         .await;
-        let app = router(test_state(upstream, 1024 * 1024));
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let app = router(state);
 
         let (status, body) = post_message(app, message_body(true)).await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("event: error"));
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(body.contains("upstream returned HTTP 401"));
         assert!(body.contains("INVALID_API_KEY"));
+        let logs = control.usage_rows();
+        assert_eq!(logs[0]["status"], "error");
+        assert_eq!(logs[0]["statusCode"], 401);
     }
 
     #[tokio::test]
@@ -1974,7 +2133,16 @@ data: [DONE]
             "text/event-stream",
         )
         .await;
-        let app = router(test_state(upstream, 1024 * 1024));
+        let mut state = test_state_with_flags(upstream, 1024 * 1024, false, false);
+        let mut config = state.config.snapshot();
+        config
+            .providers
+            .get_mut("mimo")
+            .expect("mimo provider")
+            .tool_use
+            .streaming_arguments = crate::config::ToolArgumentMode::Cumulative;
+        state.config = Arc::new(RuntimeConfig::new(config));
+        let app = router(state);
 
         let (status, body) = post_message(app, message_body(true)).await;
 
@@ -2048,6 +2216,23 @@ data: [DONE]
         assert!(body.contains(r#""text":"| 前端 | 正常 |""#));
         assert!(body.contains(r#""output_tokens":4"#));
         assert!(body.contains("event: message_stop"));
+        assert!(!body.contains("event: error"));
+    }
+
+    #[tokio::test]
+    async fn buffered_stream_rejects_upstream_status_before_sse_response() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":{"message":"invalid credential"}}"#,
+            "application/json",
+        )
+        .await;
+        let app = router(test_state_with_flags(upstream, 1024 * 1024, true, true));
+
+        let (status, body) = post_message(app, message_body(true)).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.contains("invalid credential"));
         assert!(!body.contains("event: error"));
     }
 
@@ -2245,6 +2430,19 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn rejects_missing_max_tokens_before_routing() {
+        let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
+        let app = router(test_state(upstream, 1024 * 1024));
+        let mut body = message_body(false);
+        body.as_object_mut().unwrap().remove("max_tokens");
+
+        let (status, body) = post_message(app, body).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("max_tokens is required"));
+    }
+
+    #[tokio::test]
     async fn metrics_endpoint_requires_auth() {
         let upstream = spawn_openai_upstream(StatusCode::OK, "{}", "application/json").await;
         let app = router(test_state(upstream, 1024 * 1024));
@@ -2336,11 +2534,21 @@ data: [DONE]
         .await;
         let mut state = test_state(upstream, 1024 * 1024);
         state.security = Arc::new(GatewaySecurityPolicy::require_control_api_keys_for_tests());
+        let owner = state
+            .auth
+            .create_user(CreateUserInput {
+                username: "test-user".to_owned(),
+                email: "test-user@example.com".to_owned(),
+                password: "strong-test-user-password-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("active".to_owned()),
+            })
+            .unwrap();
         let created = state
             .control
             .create_api_key(CreateApiKeyInput {
-                user_id: "usr_test".to_owned(),
-                username: Some("test-user".to_owned()),
+                user_id: owner.id,
+                username: Some(owner.username),
                 name: "Claude Code".to_owned(),
                 group: None,
                 team_id: None,
@@ -2358,6 +2566,45 @@ data: [DONE]
             post_message_with_key(app, &created.key, message_body(false)).await;
         assert_eq!(api_key_status, StatusCode::OK);
         assert!(body.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn control_api_key_rejects_an_inactive_owner() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+            "application/json",
+        )
+        .await;
+        let mut state = test_state(upstream, 1024 * 1024);
+        state.security = Arc::new(GatewaySecurityPolicy::require_control_api_keys_for_tests());
+        let owner = state
+            .auth
+            .create_user(CreateUserInput {
+                username: "disabled-owner".to_owned(),
+                email: "disabled-owner@example.com".to_owned(),
+                password: "strong-disabled-owner-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("disabled".to_owned()),
+            })
+            .unwrap();
+        let created = state
+            .control
+            .create_api_key(CreateApiKeyInput {
+                user_id: owner.id,
+                username: Some(owner.username),
+                name: "disabled owner key".to_owned(),
+                group: None,
+                team_id: None,
+                allowed_models: None,
+                allowed_providers: None,
+                expires_at: None,
+            })
+            .unwrap();
+
+        let (status, _) =
+            post_message_with_key(router(state), &created.key, message_body(false)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -2959,7 +3206,7 @@ data: [DONE]
                 provider_id: "mimo".to_owned(),
                 name: "Account A".to_owned(),
                 api_key_env: "MIMO_TEST_ACCOUNT_A".to_owned(),
-                base_url: Some("http://account-a.local/v1".to_owned()),
+                base_url: Some("https://account-a.local/v1".to_owned()),
                 status: "active".to_owned(),
                 created_at_ms: 0,
                 updated_at_ms: 0,
@@ -2972,7 +3219,7 @@ data: [DONE]
                 provider_id: "mimo".to_owned(),
                 name: "Account B".to_owned(),
                 api_key_env: "MIMO_TEST_ACCOUNT_B".to_owned(),
-                base_url: Some("http://account-b.local/v1".to_owned()),
+                base_url: Some("https://account-b.local/v1".to_owned()),
                 status: "active".to_owned(),
                 created_at_ms: 0,
                 updated_at_ms: 0,
@@ -2987,7 +3234,7 @@ data: [DONE]
         let provider = config.providers.get("mimo").unwrap();
         assert_eq!(provider.api_key_env.as_deref(), Some("MIMO_TEST_ACCOUNT_B"));
         assert_eq!(provider.api_key().unwrap(), Some("account-b-key"));
-        assert_eq!(provider.base_url, "http://account-b.local/v1");
+        assert_eq!(provider.base_url, "https://account-b.local/v1");
 
         unsafe {
             env::remove_var("MIMO_TEST_ACCOUNT_A");
@@ -3037,6 +3284,7 @@ data: [DONE]
                 false,
                 429,
                 Some("rate limit"),
+                true,
             )
             .unwrap();
 
@@ -3165,6 +3413,38 @@ data: [DONE]
     }
 
     #[test]
+    fn automatic_credential_pool_fails_closed_when_no_account_is_usable() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        state
+            .control
+            .upsert_provider_credential(ProviderCredentialRecord {
+                id: "missing-account".to_owned(),
+                provider_id: "mimo".to_owned(),
+                name: "Missing Account".to_owned(),
+                api_key_env: "MIMO_POOL_MISSING_ACCOUNT".to_owned(),
+                base_url: None,
+                status: "active".to_owned(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+            })
+            .unwrap();
+        state
+            .control
+            .set_provider_credential_pool_mode("mimo", "round_robin")
+            .unwrap();
+        let mut provider = state.config.snapshot().providers["mimo"].clone();
+
+        let error = state
+            .control
+            .apply_selected_provider_credential_for_request("mimo", &mut provider)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppError::NotReady(message) if message.contains("no usable credential"))
+        );
+    }
+
+    #[test]
     fn manual_provider_credential_pool_does_not_auto_rotate() {
         let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
         unsafe {
@@ -3210,6 +3490,7 @@ data: [DONE]
                 false,
                 429,
                 Some("rate limit"),
+                true,
             )
             .unwrap();
 
@@ -3395,6 +3676,21 @@ data: [DONE]
         );
     }
 
+    #[test]
+    fn client_ip_ignores_spoofed_leftmost_forwarded_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("10.0.0.7, 198.51.100.9"),
+        );
+        let trusted = TrustedProxyConfig::for_tests();
+
+        assert_eq!(
+            client_ip(&headers, Some("127.0.0.1:48178".parse().unwrap()), &trusted,),
+            Some("198.51.100.9".to_owned())
+        );
+    }
+
     #[tokio::test]
     async fn discover_anthropic_models_checks_required_api_key() {
         let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
@@ -3425,6 +3721,50 @@ data: [DONE]
             .unwrap_err();
 
         assert!(matches!(err, AppError::MissingSecret(name) if name == "ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn settings_update_rejects_read_only_runtime_fields() {
+        assert!(
+            validate_settings_update_body(&json!({
+                "gateway": { "defaultProvider": "deepseek" }
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate_settings_update_body(&json!({
+                "server": { "bindAddress": "0.0.0.0:17878" }
+            }))
+            .is_err()
+        );
+        assert!(
+            validate_settings_update_body(&json!({
+                "gateway": { "requestTimeoutSecs": 1 }
+            }))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn generated_request_id_is_persisted_with_usage() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+            "application/json",
+        )
+        .await;
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let (status, _) = post_message(router(state), message_body(false)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let rows = control.usage_rows();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0]["requestId"]
+                .as_str()
+                .is_some_and(|request_id| !request_id.is_empty())
+        );
     }
 
     async fn post_message(app: Router, body: Value) -> (StatusCode, String) {
@@ -3561,6 +3901,7 @@ data: [DONE]
             control: Arc::new(ControlStore::for_tests()),
             security: Arc::new(GatewaySecurityPolicy::for_tests()),
             rate_limiter: Arc::new(RateLimiter::disabled()),
+            stream_permits: Arc::new(tokio::sync::Semaphore::new(16)),
             trusted_proxies: Arc::new(TrustedProxyConfig::for_tests()),
             transport: HttpTransport::new().unwrap(),
             metrics: Arc::new(Metrics::new()),

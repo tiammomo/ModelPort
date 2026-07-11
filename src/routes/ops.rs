@@ -26,6 +26,14 @@ pub(super) async fn readyz(
     let started = Instant::now();
     let result = (|| {
         authenticate_client(&state, &headers)?;
+        state
+            .auth
+            .health_check()
+            .map_err(|error| AppError::NotReady(format!("auth storage: {error}")))?;
+        state
+            .control
+            .health_check()
+            .map_err(|error| AppError::NotReady(format!("control storage: {error}")))?;
         Ok(Json(detailed_health_body(&state)))
     })();
     state
@@ -65,6 +73,7 @@ fn detailed_health_body(state: &AppState) -> serde_json::Value {
         "storage": {
             "auth": state.auth.data_path(),
             "control": state.control.data_path(),
+            "status": "ready",
         },
         "providerHealth": provider_health,
     })

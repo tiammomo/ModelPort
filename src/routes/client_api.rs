@@ -2,12 +2,14 @@ use std::{collections::BTreeSet, net::SocketAddr};
 
 use axum::{
     Json,
+    body::Body,
     extract::{State, connect_info::ConnectInfo},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
+use futures_util::StreamExt;
 use serde_json::{Value, json};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::{
     config::{AppConfig, ProviderConfig, ProviderProtocol, ResolvedProvider},
@@ -168,17 +170,11 @@ fn model_owner_label(model: &str) -> &'static str {
 }
 
 fn provider_host(base_url: &str) -> String {
-    let rest = base_url
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(base_url);
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    host_port
-        .trim_matches(['[', ']'])
-        .split(':')
-        .next()
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_default()
+        .trim_matches(['[', ']'])
         .trim_start_matches("www.")
         .to_ascii_lowercase()
 }
@@ -231,7 +227,6 @@ pub(super) async fn messages(
             .record_route("messages", false, started.elapsed());
         return Err(err);
     }
-    let estimate = estimate_usage(&request);
     let request_client_ip = client_ip(&headers, Some(peer_addr), &state.trusted_proxies);
     let requested_model = request.model.clone();
     let config = effective_config(&state);
@@ -247,8 +242,8 @@ pub(super) async fn messages(
     if let Err(err) = state.rate_limiter.check(RateLimitScope {
         identity: &identity,
         client_ip: request_client_ip.as_deref(),
-        provider_id: Some(resolved.provider_id.as_str()),
-        model: Some(resolved.model.as_str()),
+        provider_id: None,
+        model: None,
     }) {
         state
             .metrics
@@ -256,6 +251,22 @@ pub(super) async fn messages(
         return Err(err);
     }
     let stream = request.stream.unwrap_or(false);
+    let stream_permit = if stream {
+        match state.stream_permits.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                state
+                    .metrics
+                    .record_route("messages", false, started.elapsed());
+                return Err(AppError::RateLimited {
+                    message: "concurrent stream limit exceeded".to_owned(),
+                    retry_after_secs: 1,
+                });
+            }
+        }
+    } else {
+        None
+    };
     info!(
         request_id = headers
             .get(&X_REQUEST_ID)
@@ -275,22 +286,25 @@ pub(super) async fn messages(
     let mut retry_count = 0u32;
     let mut fallback_from_provider = None;
     let mut result = Err(AppError::ProviderNotFound(requested_model.clone()));
-    let mut first_provider = None::<String>;
+    let mut first_sent_provider = None::<String>;
+    let mut sent_attempts = 0u32;
+    let mut last_sent = None::<(String, String, String, UsageEstimate)>;
 
-    for (index, mut attempt) in attempts.into_iter().enumerate() {
-        if index > 0 {
-            retry_count = retry_count.saturating_add(1);
-            fallback_from_provider = first_provider.clone();
-        }
-        if first_provider.is_none() {
-            first_provider = Some(attempt.provider_id.clone());
-        }
+    for mut attempt in attempts {
         provider_id = attempt.provider_id.clone();
         upstream_model = attempt.model.clone();
-        let credential_id = state
-            .control
-            .apply_selected_provider_credential_for_request(&provider_id, &mut attempt.provider);
         protocol = provider_protocol_value(attempt.provider.protocol).to_owned();
+        let credential_id = match state
+            .control
+            .apply_selected_provider_credential_for_request(&provider_id, &mut attempt.provider)
+        {
+            Ok(credential_id) => credential_id,
+            Err(err) => {
+                result = Err(err);
+                continue;
+            }
+        };
+        let estimate = estimate_usage(&request, &upstream_model);
         if let Err(err) = state.control.check_quotas(
             &identity,
             estimate,
@@ -300,15 +314,39 @@ pub(super) async fn messages(
             &provider_id,
         ) {
             result = Err(err);
-            break;
+            continue;
         }
+        if let Err(err) = validate_message_attempt(&state, &attempt, &request) {
+            result = Err(err);
+            continue;
+        }
+        if let Err(err) = state
+            .rate_limiter
+            .check_provider_attempt(&provider_id, &upstream_model)
+        {
+            result = Err(err);
+            continue;
+        }
+        if sent_attempts > 0 {
+            retry_count = retry_count.saturating_add(1);
+            fallback_from_provider = first_sent_provider.clone();
+        } else {
+            first_sent_provider = Some(provider_id.clone());
+        }
+        sent_attempts = sent_attempts.saturating_add(1);
+        last_sent = Some((
+            provider_id.clone(),
+            upstream_model.clone(),
+            protocol.clone(),
+            estimate,
+        ));
         let attempt_result =
             send_message_attempt(state.clone(), attempt, request.clone(), &headers).await;
         let attempt_success = attempt_result.is_ok();
         let attempt_status = attempt_result
             .as_ref()
             .map(|response| response.status().as_u16())
-            .unwrap_or(500);
+            .unwrap_or_else(|error| error.http_status().as_u16());
         let attempt_error = attempt_result.as_ref().err().map(ToString::to_string);
         state.control.record_provider_outcome_for_credential(
             &provider_id,
@@ -316,6 +354,7 @@ pub(super) async fn messages(
             attempt_success,
             attempt_status,
             attempt_error.as_deref(),
+            false,
         )?;
         result = attempt_result;
         if result.is_ok() || !is_retryable_message_error(result.as_ref().err()) {
@@ -327,12 +366,26 @@ pub(super) async fn messages(
     let status_code = result
         .as_ref()
         .map(|response| response.status().as_u16())
-        .unwrap_or(500);
+        .unwrap_or_else(|error| error.http_status().as_u16());
+    let timed_out = result.as_ref().err().is_some_and(
+        |error| matches!(error, AppError::Transport(message) if message.contains("timed out")),
+    );
     let error_message = result.as_ref().err().map(ToString::to_string);
-    let actual_estimate = result
+    let upstream_usage = result
         .as_ref()
         .ok()
-        .and_then(|response| pricing::usage_from_headers(response.headers()))
+        .and_then(|response| pricing::usage_from_headers(response.headers()));
+    let chargeable = last_sent.is_some();
+    if let Some((sent_provider, sent_model, sent_protocol, _)) = &last_sent {
+        provider_id.clone_from(sent_provider);
+        upstream_model.clone_from(sent_model);
+        protocol.clone_from(sent_protocol);
+    }
+    let local_estimate = last_sent
+        .as_ref()
+        .map(|(_, _, _, estimate)| *estimate)
+        .unwrap_or_default();
+    let actual_estimate = upstream_usage
         .map(|charge| UsageEstimate {
             input_tokens: charge.input_tokens,
             output_tokens: charge.output_tokens,
@@ -340,7 +393,12 @@ pub(super) async fn messages(
             cache_read_tokens: charge.cache_read_tokens,
             cost_estimate: charge.cost_estimate,
         })
-        .unwrap_or(estimate);
+        .unwrap_or(local_estimate);
+    let billing_mode = if upstream_usage.is_some() {
+        "upstream-returned"
+    } else {
+        "local-estimate"
+    };
 
     state.metrics.record_route("messages", success, duration);
     state.metrics.record_message(
@@ -351,16 +409,23 @@ pub(super) async fn messages(
         duration,
         actual_estimate,
     );
-    state.control.record_usage(UsageEventInput {
+    if let Err(err) = state.control.record_usage(UsageEventInput {
         identity,
+        request_id: headers
+            .get(&X_REQUEST_ID)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
         model: requested_model,
         resolved_model: upstream_model,
         provider: provider_id,
         protocol,
         stream,
         success,
+        timed_out,
         status_code,
         estimate: actual_estimate,
+        billing_mode: billing_mode.to_owned(),
+        chargeable,
         latency: duration,
         first_byte_latency: Some(duration),
         retry_count,
@@ -368,8 +433,35 @@ pub(super) async fn messages(
         client_ip: request_client_ip,
         request_path: "/v1/messages".to_owned(),
         error_message,
-    })?;
-    result
+    }) {
+        error!(
+            error = %err,
+            request_id = headers
+                .get(&X_REQUEST_ID)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or(""),
+            "failed to persist usage after handling upstream response"
+        );
+    }
+    result.map(|response| match stream_permit {
+        Some(permit) => response_holding_stream_permit(response, permit),
+        None => response,
+    })
+}
+
+fn response_holding_stream_permit(
+    response: Response,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
+    let (parts, body) = response.into_parts();
+    let stream = async_stream::stream! {
+        let _permit = permit;
+        let mut body = body.into_data_stream();
+        while let Some(chunk) = body.next().await {
+            yield chunk;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(stream))
 }
 
 async fn send_message_attempt(
@@ -378,16 +470,6 @@ async fn send_message_attempt(
     request: AnthropicRequest,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    crate::config::validate_provider_base_url_for_request(
-        &resolved.provider_id,
-        &resolved.provider.base_url,
-        state.security.allow_private_provider_urls,
-    )?;
-    validate_anthropic_tool_capabilities(
-        &request,
-        &resolved.provider_id,
-        &resolved.provider.tool_use,
-    )?;
     match resolved.provider.protocol {
         ProviderProtocol::Anthropic => {
             providers::anthropic::messages(state, resolved, request, headers)
@@ -395,11 +477,32 @@ async fn send_message_attempt(
                 .map(IntoResponse::into_response)
         }
         ProviderProtocol::OpenaiCompat => {
-            providers::openai_compat::messages(state, resolved, request)
+            providers::openai_compat::messages(state, resolved, request, headers)
                 .await
                 .map(IntoResponse::into_response)
         }
     }
+}
+
+fn validate_message_attempt(
+    state: &AppState,
+    resolved: &ResolvedProvider,
+    request: &AnthropicRequest,
+) -> Result<(), AppError> {
+    crate::config::validate_provider_base_url_for_request(
+        &resolved.provider_id,
+        &resolved.provider.base_url,
+        state.security.allow_private_provider_urls,
+    )?;
+    if resolved.provider.api_key_required {
+        let _ = resolved.provider.api_key()?;
+    }
+    validate_anthropic_tool_capabilities(
+        request,
+        &resolved.provider_id,
+        &resolved.provider.tool_use,
+    )?;
+    Ok(())
 }
 
 fn route_attempts(
@@ -493,17 +596,18 @@ fn validate_message_request(request: &AnthropicRequest) -> Result<(), AppError> 
         )));
     }
 
-    if let Some(max_tokens) = request.max_tokens {
-        if max_tokens == 0 {
-            return Err(AppError::InvalidRequest(
-                "max_tokens must be greater than 0".to_owned(),
-            ));
-        }
-        if max_tokens > max_output_tokens {
-            return Err(AppError::InvalidRequest(format!(
-                "max_tokens exceeds configured limit; max={max_output_tokens}"
-            )));
-        }
+    let max_tokens = request
+        .max_tokens
+        .ok_or_else(|| AppError::InvalidRequest("max_tokens is required".to_owned()))?;
+    if max_tokens == 0 {
+        return Err(AppError::InvalidRequest(
+            "max_tokens must be greater than 0".to_owned(),
+        ));
+    }
+    if max_tokens > max_output_tokens {
+        return Err(AppError::InvalidRequest(format!(
+            "max_tokens exceeds configured limit; max={max_output_tokens}"
+        )));
     }
 
     let messages_json_chars = serde_json::to_string(&request.messages)
@@ -578,16 +682,13 @@ fn validate_message_request(request: &AnthropicRequest) -> Result<(), AppError> 
     Ok(())
 }
 
-fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
-    let input_chars = serde_json::to_string(&request.messages)
+fn estimate_usage(request: &AnthropicRequest, resolved_model: &str) -> UsageEstimate {
+    // Estimate the complete input payload, including tool schemas and flattened
+    // protocol fields. The heuristic is conservative and the provider-reported
+    // usage replaces it whenever a completed response exposes usage metadata.
+    let input_chars = serde_json::to_string(request)
         .map(|value| value.chars().count())
-        .unwrap_or(0)
-        + request
-            .system
-            .as_ref()
-            .and_then(|value| serde_json::to_string(value).ok())
-            .map(|value| value.chars().count())
-            .unwrap_or(0);
+        .unwrap_or(0);
     let input_tokens = u64::try_from(input_chars.div_ceil(4)).unwrap_or(u64::MAX);
     let output_tokens = request.max_tokens.unwrap_or(0);
     UsageEstimate {
@@ -596,7 +697,7 @@ fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
         cache_write_tokens: 0,
         cache_read_tokens: 0,
         cost_estimate: pricing::cost_for_model(
-            &request.model,
+            resolved_model,
             TokenUsageBreakdown {
                 input_tokens,
                 output_tokens,
@@ -604,5 +705,24 @@ fn estimate_usage(request: &AnthropicRequest) -> UsageEstimate {
                 cache_read_tokens: 0,
             },
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn streaming_permit_lives_until_response_body_is_dropped() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = semaphore.clone().try_acquire_owned().unwrap();
+        let response =
+            response_holding_stream_permit(Response::new(Body::from("data: done\n\n")), permit);
+
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(response);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 }

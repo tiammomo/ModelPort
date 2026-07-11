@@ -102,6 +102,25 @@ pub fn openai_usage(response: &Value) -> TokenUsageBreakdown {
     }
 }
 
+pub fn openai_usage_if_present(response: &Value) -> Option<TokenUsageBreakdown> {
+    let usage = response.get("usage")?.as_object()?;
+    let has_supported_field = [
+        "prompt_tokens",
+        "input_tokens",
+        "completion_tokens",
+        "output_tokens",
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+        "cache_creation_input_tokens",
+        "prompt_cache_write_tokens",
+        "prompt_tokens_details",
+        "input_tokens_details",
+    ]
+    .iter()
+    .any(|field| usage.contains_key(*field));
+    has_supported_field.then(|| openai_usage(response))
+}
+
 pub fn anthropic_usage(response: &Value) -> TokenUsageBreakdown {
     let Some(usage) = response.get("usage") else {
         return TokenUsageBreakdown::default();
@@ -113,6 +132,19 @@ pub fn anthropic_usage(response: &Value) -> TokenUsageBreakdown {
         cache_write_tokens: get_u64(usage, &["cache_creation_input_tokens"]),
         cache_read_tokens: get_u64(usage, &["cache_read_input_tokens"]),
     }
+}
+
+pub fn anthropic_usage_if_present(response: &Value) -> Option<TokenUsageBreakdown> {
+    let usage = response.get("usage")?.as_object()?;
+    let has_supported_field = [
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ]
+    .iter()
+    .any(|field| usage.contains_key(*field));
+    has_supported_field.then(|| anthropic_usage(response))
 }
 
 pub fn pricing_for_model(model: &str) -> ModelPricing {
@@ -320,5 +352,18 @@ mod tests {
         let charge = charge_for_model("claude-sonnet-4-20250514", usage);
 
         assert!((charge.cost_estimate - 22.05).abs() < 0.000001);
+    }
+
+    #[test]
+    fn usage_metadata_must_contain_supported_token_fields() {
+        assert!(openai_usage_if_present(&json!({ "id": "response" })).is_none());
+        assert!(openai_usage_if_present(&json!({ "usage": {} })).is_none());
+        assert!(anthropic_usage_if_present(&json!({ "usage": null })).is_none());
+        assert!(
+            openai_usage_if_present(&json!({
+                "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
+            }))
+            .is_some()
+        );
     }
 }

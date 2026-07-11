@@ -6,10 +6,15 @@ use std::{
 
 use crate::control::UsageEstimate;
 
+const MAX_MESSAGE_SERIES: usize = 512;
+const OVERFLOW_PROVIDER_LABEL: &str = "__overflow__";
+const OVERFLOW_MODEL_LABEL: &str = "__other__";
+
 #[derive(Debug)]
 pub struct Metrics {
     started_at: Instant,
     inner: Mutex<MetricsInner>,
+    max_message_series: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +90,7 @@ impl Metrics {
         Self {
             started_at: Instant::now(),
             inner: Mutex::new(MetricsInner::default()),
+            max_message_series: MAX_MESSAGE_SERIES,
         }
     }
 
@@ -107,13 +113,21 @@ impl Metrics {
         usage: UsageEstimate,
     ) {
         let mut inner = self.inner.lock().expect("metrics lock poisoned");
+        let mut key = MessageKey {
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            stream,
+        };
+        if !inner.messages.contains_key(&key)
+            && inner.messages.len() >= self.max_message_series.saturating_sub(1)
+        {
+            key.provider = OVERFLOW_PROVIDER_LABEL.to_owned();
+            key.model = OVERFLOW_MODEL_LABEL.to_owned();
+            key.stream = false;
+        }
         inner
             .messages
-            .entry(MessageKey {
-                provider: provider.to_owned(),
-                model: model.to_owned(),
-                stream,
-            })
+            .entry(key)
             .or_default()
             .record(success, duration, usage);
     }
@@ -357,5 +371,33 @@ mod tests {
     #[test]
     fn escapes_label_values() {
         assert_eq!(escape_label_value("a\"b\\c\nd"), "a\\\"b\\\\c\\nd");
+    }
+
+    #[test]
+    fn bounds_user_controlled_model_series() {
+        let metrics = Metrics {
+            started_at: Instant::now(),
+            inner: Mutex::new(MetricsInner::default()),
+            max_message_series: 2,
+        };
+        for model in ["model-a", "model-b", "model-c", "model-d"] {
+            metrics.record_message(
+                "custom",
+                model,
+                false,
+                true,
+                Duration::from_millis(1),
+                UsageEstimate::default(),
+            );
+        }
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.messages.len(), 2);
+        assert!(
+            snapshot
+                .messages
+                .iter()
+                .any(|message| message.model == OVERFLOW_MODEL_LABEL && message.requests_total == 3)
+        );
     }
 }

@@ -8,7 +8,7 @@ pub(crate) fn provider_failure_guidance(
     if provider_account_issue(status_code, error) == "insufficient_balance" {
         return (
             "account",
-            "上游账号余额不足，可为该渠道处理代充值后重试，或切换到另一个账号/Provider。",
+            "上游账号余额不足，请为该渠道充值后重试，或切换到另一个账号/Provider。",
         );
     }
     if status_code == Some(401) || status_code == Some(403) {
@@ -110,8 +110,11 @@ mod tests {
             "insufficient_balance"
         );
         assert_eq!(
-            provider_failure_guidance(Some(402), Some("balance not enough")).0,
-            "account"
+            provider_failure_guidance(Some(402), Some("balance not enough")),
+            (
+                "account",
+                "上游账号余额不足，请为该渠道充值后重试，或切换到另一个账号/Provider。",
+            )
         );
     }
 

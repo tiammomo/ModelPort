@@ -15,7 +15,7 @@ pub(super) struct DeleteProviderQuery {
     force: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ProviderWriteBody {
     id: Option<String>,
@@ -23,6 +23,7 @@ pub(super) struct ProviderWriteBody {
     protocol: Option<String>,
     base_url: Option<String>,
     api_key_env: Option<String>,
+    clear_api_key_env: Option<bool>,
     api_key_required: Option<bool>,
     default_model: Option<String>,
     models: Option<Vec<String>>,
@@ -587,9 +588,11 @@ fn provider_body_to_record(
         .model_prefixes
         .or_else(|| current_provider.map(|provider| provider.model_prefixes.clone()))
         .unwrap_or_default();
-    let api_key_env = body
-        .api_key_env
-        .or_else(|| current_provider.and_then(|provider| provider.api_key_env.clone()));
+    let api_key_env = resolve_provider_api_key_env(
+        body.api_key_env,
+        body.clear_api_key_env.unwrap_or(false),
+        current_provider.and_then(|provider| provider.api_key_env.as_deref()),
+    )?;
     let max_tokens_field = body
         .max_tokens_field
         .or_else(|| {
@@ -648,6 +651,25 @@ fn provider_body_to_record(
     })
 }
 
+fn resolve_provider_api_key_env(
+    requested: Option<String>,
+    clear: bool,
+    current: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    if clear {
+        if requested
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(AppError::InvalidRequest(
+                "apiKeyEnv and clearApiKeyEnv=true cannot be used together".to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
+    Ok(requested.or_else(|| current.map(str::to_owned)))
+}
+
 fn validate_provider_tool_use(provider_id: &str, tool_use: &ToolUseConfig) -> Result<(), AppError> {
     if !tool_use.supported && (tool_use.tool_choice || tool_use.parallel_tool_calls) {
         return Err(AppError::InvalidRequest(format!(
@@ -674,5 +696,18 @@ mod tests {
         let error = validate_provider_tool_use("local", &tool_use).unwrap_err();
 
         assert!(error.to_string().contains("toolUse.supported=false"));
+    }
+
+    #[test]
+    fn provider_api_key_env_has_explicit_clear_semantics() {
+        assert_eq!(
+            resolve_provider_api_key_env(None, false, Some("OLD_API_KEY")).unwrap(),
+            Some("OLD_API_KEY".to_owned())
+        );
+        assert_eq!(
+            resolve_provider_api_key_env(None, true, Some("OLD_API_KEY")).unwrap(),
+            None
+        );
+        assert!(resolve_provider_api_key_env(Some("NEW_API_KEY".to_owned()), true, None).is_err());
     }
 }

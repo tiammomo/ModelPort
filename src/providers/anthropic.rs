@@ -33,7 +33,7 @@ pub async fn messages(
     let url = resolved.provider.endpoint("/v1/messages");
 
     if request.stream.unwrap_or(false) {
-        let frames = state.transport.post_json_sse(url, headers, body);
+        let frames = state.transport.post_json_sse(url, headers, body).await?;
         let events: Pin<Box<dyn Stream<Item = Result<Event, AppError>> + Send>> = Box::pin(
             normalize_anthropic_stream(frames, resolved.provider.deduplicate_stream_text),
         );
@@ -42,12 +42,14 @@ pub async fn messages(
             .into_response())
     } else {
         let response = state.transport.post_json(&url, &headers, &body).await?;
-        let usage = pricing::anthropic_usage(&response);
+        let usage = pricing::anthropic_usage_if_present(&response);
         let mut response = Json(response).into_response();
-        response.headers_mut().insert(
-            USAGE_HEADER,
-            pricing::usage_header_value(&resolved.model, usage)?,
-        );
+        if let Some(usage) = usage {
+            response.headers_mut().insert(
+                USAGE_HEADER,
+                pricing::usage_header_value(&resolved.model, usage)?,
+            );
+        }
         Ok(response)
     }
 }
@@ -91,14 +93,18 @@ fn normalize_anthropic_stream(
     try_stream! {
         let mut block_types = BTreeMap::<usize, String>::new();
         let mut text_seen = BTreeMap::<usize, String>::new();
-        let mut processed_prefix = Vec::<String>::new();
+        let mut saw_event = false;
+        let mut saw_message_stop = false;
 
         while let Some(result) = frames.next().await {
             let frame = match result {
                 Ok(frame) => frame,
                 Err(err) => {
+                    if saw_message_stop {
+                        return;
+                    }
                     yield anthropic_error_event(&err)?;
-                    continue;
+                    return;
                 }
             };
 
@@ -109,19 +115,8 @@ fn normalize_anthropic_stream(
                 .filter(|line| !line.is_empty())
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>();
-            let skip_count = if lines.len() >= processed_prefix.len()
-                && lines
-                    .iter()
-                    .take(processed_prefix.len())
-                    .eq(processed_prefix.iter())
-            {
-                processed_prefix.len()
-            } else {
-                0
-            };
-            processed_prefix = lines.clone();
 
-            for line in lines.into_iter().skip(skip_count) {
+            for line in lines {
                 if line == "[DONE]" {
                     yield event_with_metadata(
                         &frame,
@@ -132,6 +127,7 @@ fn normalize_anthropic_stream(
                 }
 
                 let Ok(mut data) = serde_json::from_str::<Value>(&line) else {
+                    saw_event = true;
                     yield event_with_metadata(
                         &frame,
                         frame.event.as_deref().unwrap_or("message"),
@@ -143,6 +139,12 @@ fn normalize_anthropic_stream(
                 .get("type")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
+            saw_event = true;
+            if event_type.as_deref() == Some("message_stop")
+                || frame.event.as_deref() == Some("message_stop")
+            {
+                saw_message_stop = true;
+            }
             let index = data
                 .get("index")
                 .and_then(Value::as_u64)
@@ -188,7 +190,17 @@ fn normalize_anthropic_stream(
                 .unwrap_or("message")
                 .to_owned();
             yield event_with_metadata(&frame, &event_name, serde_json::to_string(&data)?);
+            if saw_message_stop {
+                return;
             }
+            }
+        }
+
+        if !saw_event || !saw_message_stop {
+            let app_error = AppError::UpstreamProtocol(
+                "Anthropic stream ended without a message_stop event".to_owned(),
+            );
+            yield anthropic_error_event(&app_error)?;
         }
     }
 }
@@ -205,4 +217,35 @@ fn event_with_metadata(frame: &SseFrame, event_name: &str, data: String) -> Even
         event = event.comment(comment.clone());
     }
     event
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::{StreamExt, stream};
+
+    use super::*;
+
+    fn frame(event: &str, data: &str) -> SseFrame {
+        SseFrame {
+            event: Some(event.to_owned()),
+            id: None,
+            retry: None,
+            comments: Vec::new(),
+            data: data.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn native_stream_stops_immediately_after_message_stop() {
+        let frames: SseFrameStream = Box::pin(stream::iter(vec![
+            Ok(frame("message_stop", r#"{"type":"message_stop"}"#)),
+            Err(AppError::Transport(
+                "must not be observed after terminal event".to_owned(),
+            )),
+        ]));
+        let mut events = Box::pin(normalize_anthropic_stream(frames, false));
+
+        assert!(events.next().await.is_some_and(|event| event.is_ok()));
+        assert!(events.next().await.is_none());
+    }
 }

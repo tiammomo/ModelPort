@@ -1,7 +1,13 @@
 use std::{
     env, fs,
+    fs::{File, OpenOptions},
+    io::{self, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, mpsc},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -12,6 +18,7 @@ use serde_json::Value;
 use crate::error::AppError;
 
 const STATE_TABLE: &str = "modelport_state";
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub enum JsonStore {
@@ -107,15 +114,7 @@ impl JsonStore {
 
     pub fn write_value(&self, value: &Value) -> Result<(), AppError> {
         match self {
-            Self::File(path) => {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let tmp_path = path.with_extension("json.tmp");
-                fs::write(&tmp_path, serde_json::to_string_pretty(value)?)?;
-                fs::rename(tmp_path, path)?;
-                Ok(())
-            }
+            Self::File(path) => write_json_file_atomic(path, value),
             Self::Postgres(store) => {
                 let (respond_to, response) = mpsc::channel();
                 store
@@ -141,6 +140,90 @@ impl JsonStore {
             Self::Postgres(store) => store.location.clone(),
         }
     }
+}
+
+pub(crate) fn write_json_file_atomic(path: &Path, value: &Value) -> Result<(), AppError> {
+    let contents = serde_json::to_vec_pretty(value)?;
+    let parent = parent_directory(path);
+    fs::create_dir_all(parent)?;
+
+    let (temporary_path, temporary_file) = create_secure_temporary_file(path, parent)?;
+    let result = write_and_replace(temporary_file, &temporary_path, path, parent, &contents);
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+fn parent_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn create_secure_temporary_file(path: &Path, parent: &Path) -> io::Result<(PathBuf, File)> {
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "JSON store path must include a file name",
+        )
+    })?;
+
+    for _ in 0..16 {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary_name = format!(
+            ".{}.{}.{}.tmp",
+            file_name.to_string_lossy(),
+            std::process::id(),
+            sequence
+        );
+        let temporary_path = parent.join(temporary_name);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        match options.open(&temporary_path) {
+            Ok(file) => return Ok((temporary_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary JSON store file",
+    ))
+}
+
+fn write_and_replace(
+    mut temporary_file: File,
+    temporary_path: &Path,
+    destination: &Path,
+    parent: &Path,
+    contents: &[u8],
+) -> Result<(), AppError> {
+    temporary_file.write_all(contents)?;
+    temporary_file.flush()?;
+    temporary_file.sync_all()?;
+    drop(temporary_file);
+
+    fs::rename(temporary_path, destination)?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 fn database_url() -> Option<String> {
@@ -278,4 +361,56 @@ fn redact_database_url(url: &str) -> String {
     };
     let username = userinfo.split(':').next().unwrap_or("modelport");
     format!("{scheme}://{username}:<redacted>@{host}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn temporary_test_directory(label: &str) -> PathBuf {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "modelport-storage-{label}-{}-{sequence}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn atomic_json_write_replaces_content_without_leaving_temporary_files() {
+        let directory = temporary_test_directory("atomic");
+        let path = directory.join("state.json");
+
+        write_json_file_atomic(&path, &json!({ "version": 1 })).unwrap();
+        write_json_file_atomic(&path, &json!({ "version": 2 })).unwrap();
+
+        let stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored, json!({ "version": 2 }));
+        let entries = fs::read_dir(&directory)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path(), path);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_json_write_enforces_owner_only_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = temporary_test_directory("permissions");
+        let path = directory.join("state.json");
+        write_json_file_atomic(&path, &json!({ "secure": true })).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_json_file_atomic(&path, &json!({ "secure": "replaced" })).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

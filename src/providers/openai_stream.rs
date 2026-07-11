@@ -9,33 +9,15 @@ use uuid::Uuid;
 
 use crate::{
     error::AppError,
-    http::{Header, HttpTransport, SseFrameStream},
-    types::{anthropic_error_event, anthropic_event, openai_response_to_anthropic},
+    http::SseFrameStream,
+    types::{anthropic_error_event, anthropic_event},
 };
 
 pub(crate) fn openai_complete_to_anthropic_stream(
-    transport: HttpTransport,
-    url: String,
-    headers: Vec<Header>,
-    body: Value,
+    message: Value,
     requested_model: String,
 ) -> impl Stream<Item = Result<Event, AppError>> + Send {
     try_stream! {
-        let response = match transport.post_json(&url, &headers, &body).await {
-            Ok(response) => response,
-            Err(err) => {
-                yield anthropic_error_event(&err)?;
-                return;
-            }
-        };
-        let message = match openai_response_to_anthropic(&response, &requested_model) {
-            Ok(message) => message,
-            Err(err) => {
-                yield anthropic_error_event(&err)?;
-                return;
-            }
-        };
-
         let message_id = message
             .get("id")
             .and_then(Value::as_str)
@@ -146,6 +128,7 @@ pub(crate) fn openai_stream_to_anthropic(
     mut frames: SseFrameStream,
     model: String,
     deduplicate_stream_text: bool,
+    deduplicate_tool_arguments: bool,
 ) -> impl Stream<Item = Result<Event, AppError>> + Send {
     try_stream! {
         let message_id = format!("msg_{}", Uuid::new_v4().simple());
@@ -156,11 +139,15 @@ pub(crate) fn openai_stream_to_anthropic(
         let mut tools = BTreeMap::<usize, ToolState>::new();
         let mut finish_reason = "end_turn".to_owned();
         let mut stream_done = false;
+        let mut saw_finish_reason = false;
 
         while let Some(frame) = frames.next().await {
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(err) => {
+                    if saw_finish_reason {
+                        break;
+                    }
                     yield anthropic_error_event(&err)?;
                     return;
                 }
@@ -195,6 +182,8 @@ pub(crate) fn openai_stream_to_anthropic(
                 for choice in chunk.choices {
                     if let Some(reason) = choice.finish_reason {
                         finish_reason = map_finish_reason(&reason).to_owned();
+                        saw_finish_reason = true;
+                        stream_done = true;
                     }
 
                     if let Some(content) = choice.delta.content {
@@ -249,14 +238,14 @@ pub(crate) fn openai_stream_to_anthropic(
                                     state.name = Some(name);
                                 }
                                 if let Some(arguments) = function.arguments {
-                                    ingest_tool_arguments(state, arguments, deduplicate_stream_text);
+                                    ingest_tool_arguments(state, arguments, deduplicate_tool_arguments);
                                 }
                             }
 
                             if let Some(event) = pending_tool_arguments_event_if_started(
                                 was_started,
                                 state,
-                                deduplicate_stream_text,
+                                deduplicate_tool_arguments,
                             )? {
                                 yield event;
                             }
@@ -264,7 +253,7 @@ pub(crate) fn openai_stream_to_anthropic(
                             if !state.started && state.name.is_some() {
                                 yield start_tool_state(state)?;
                                 if let Some(event) =
-                                    pending_tool_arguments_event(state, deduplicate_stream_text)?
+                                    pending_tool_arguments_event(state, deduplicate_tool_arguments)?
                                 {
                                     yield event;
                                 }
@@ -284,13 +273,13 @@ pub(crate) fn openai_stream_to_anthropic(
                             state.name = Some(name);
                         }
                         if let Some(arguments) = function_call.arguments {
-                            ingest_tool_arguments(state, arguments, deduplicate_stream_text);
+                            ingest_tool_arguments(state, arguments, deduplicate_tool_arguments);
                         }
 
                         if let Some(event) = pending_tool_arguments_event_if_started(
                             was_started,
                             state,
-                            deduplicate_stream_text,
+                            deduplicate_tool_arguments,
                         )? {
                             yield event;
                         }
@@ -298,7 +287,7 @@ pub(crate) fn openai_stream_to_anthropic(
                         if !state.started && state.name.is_some() {
                             yield start_tool_state(state)?;
                             if let Some(event) =
-                                pending_tool_arguments_event(state, deduplicate_stream_text)?
+                                pending_tool_arguments_event(state, deduplicate_tool_arguments)?
                             {
                                 yield event;
                             }
@@ -314,6 +303,14 @@ pub(crate) fn openai_stream_to_anthropic(
             if stream_done {
                 break;
             }
+        }
+
+        if !stream_done && !saw_finish_reason {
+            let app_error = AppError::UpstreamProtocol(
+                "OpenAI-compatible stream ended without [DONE] or finish_reason".to_owned(),
+            );
+            yield anthropic_error_event(&app_error)?;
+            return;
         }
 
         if !message_started {
@@ -337,7 +334,7 @@ pub(crate) fn openai_stream_to_anthropic(
             }
 
             if state.started {
-                if deduplicate_stream_text
+                if deduplicate_tool_arguments
                     && let Some(arguments) = state.complete_arguments()
                 {
                     yield anthropic_event("content_block_delta", json!({
@@ -350,7 +347,7 @@ pub(crate) fn openai_stream_to_anthropic(
                     }))?;
                 } else {
                     if let Some(event) =
-                        pending_tool_arguments_event(state, deduplicate_stream_text)?
+                        pending_tool_arguments_event(state, deduplicate_tool_arguments)?
                     {
                         yield event;
                     }
@@ -820,9 +817,47 @@ fn collect_complete_json_objects(source: &str, best: &mut Option<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        best_complete_json_object, stable_text_chunks, suppress_repeated_output, text_delta,
+    use futures_util::{StreamExt, stream};
+
+    use crate::{
+        error::AppError,
+        http::{SseFrame, SseFrameStream},
     };
+
+    use super::{
+        best_complete_json_object, openai_stream_to_anthropic, stable_text_chunks,
+        suppress_repeated_output, text_delta,
+    };
+
+    #[tokio::test]
+    async fn finish_reason_terminates_without_waiting_for_done_or_eof() {
+        let frame = SseFrame {
+            event: None,
+            id: None,
+            retry: None,
+            comments: Vec::new(),
+            data: r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#.to_owned(),
+        };
+        let frames: SseFrameStream = Box::pin(stream::iter(vec![
+            Ok(frame),
+            Err(AppError::Transport(
+                "must not be observed after finish_reason".to_owned(),
+            )),
+        ]));
+        let mut events = Box::pin(openai_stream_to_anthropic(
+            frames,
+            "test-model".to_owned(),
+            false,
+            false,
+        ));
+        let mut count = 0usize;
+        while let Some(event) = events.next().await {
+            assert!(event.is_ok());
+            count += 1;
+        }
+
+        assert_eq!(count, 6);
+    }
 
     #[test]
     fn cumulative_stream_text_is_reduced_to_suffix() {

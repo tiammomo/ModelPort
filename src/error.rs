@@ -27,6 +27,10 @@ pub enum AppError {
     InvalidRequest(String),
     #[error("missing secret environment variable: {0}")]
     MissingSecret(String),
+    #[error("service not ready: {0}")]
+    NotReady(String),
+    #[error("not found: {0}")]
+    NotFound(String),
     #[error("provider not found: {0}")]
     ProviderNotFound(String),
     #[error("transport error: {0}")]
@@ -39,6 +43,12 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+}
+
+impl AppError {
+    pub(crate) fn http_status(&self) -> StatusCode {
+        status_code(self)
+    }
 }
 
 impl From<postgres::Error> for AppError {
@@ -71,7 +81,7 @@ impl IntoResponse for AppError {
             _ => None,
         };
         let message = self.to_string();
-        let status = status_code(&self);
+        let status = self.http_status();
 
         let kind = match &self {
             AppError::Auth => "authentication_error",
@@ -79,6 +89,8 @@ impl IntoResponse for AppError {
             AppError::QuotaExceeded(_) => "quota_exceeded",
             AppError::RateLimited { .. } => "rate_limit_error",
             AppError::InvalidRequest(_) | AppError::ProviderNotFound(_) => "invalid_request_error",
+            AppError::NotFound(_) => "not_found_error",
+            AppError::NotReady(_) => "server_error",
             AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
                 "upstream_error"
             }
@@ -121,10 +133,16 @@ fn status_code(error: &AppError) -> StatusCode {
         AppError::QuotaExceeded(_) | AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
         AppError::MissingSecret(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        AppError::NotReady(_) => StatusCode::SERVICE_UNAVAILABLE,
+        AppError::NotFound(_) => StatusCode::NOT_FOUND,
         AppError::ProviderNotFound(_) => StatusCode::BAD_REQUEST,
         AppError::Transport(_) | AppError::UpstreamProtocol(_) => StatusCode::BAD_GATEWAY,
         AppError::Upstream { status, .. } => {
-            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
+            if (400..=599).contains(status) {
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
+            } else {
+                StatusCode::BAD_GATEWAY
+            }
         }
         AppError::Io(_) | AppError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -140,6 +158,8 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::RateLimited { .. } => "rate_limited",
         AppError::InvalidRequest(_) => "invalid_request",
         AppError::MissingSecret(_) => "missing_secret",
+        AppError::NotReady(_) => "not_ready",
+        AppError::NotFound(_) => "not_found",
         AppError::ProviderNotFound(_) => "provider_not_found",
         AppError::Transport(_) => "transport_error",
         AppError::Upstream { .. } => "upstream_error",
@@ -165,6 +185,8 @@ fn error_hint(error: &AppError) -> &'static str {
         AppError::RateLimited { .. } => "请求速度超过本地限流护栏，请按 Retry-After 退避后重试。",
         AppError::InvalidRequest(_) => "检查表单字段、时间戳、IP/CIDR 或模型/provider 名称格式。",
         AppError::ProviderNotFound(_) => "确认该 provider 已在配置文件或环境变量中启用。",
+        AppError::NotReady(_) => "检查持久化存储和运行配置，恢复后再发送流量。",
+        AppError::NotFound(_) => "确认资源 ID 正确，且资源仍在当前保留窗口内。",
         AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
             "上游 provider 连接失败，可先在系统设置中测试连接并查看请求日志。"
         }
@@ -207,6 +229,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn not_ready_response_uses_service_unavailable() {
+        let response = AppError::NotReady("control storage unavailable".to_owned()).into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["code"], "not_ready");
+    }
+
+    #[tokio::test]
+    async fn not_found_response_uses_standard_json_envelope() {
+        let response = AppError::NotFound("request log missing".to_owned()).into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "not_found_error");
+        assert_eq!(body["error"]["code"], "not_found");
+        assert_eq!(body["error"]["status"], 404);
+    }
+
+    #[tokio::test]
     async fn upstream_response_keeps_status_but_uses_upstream_type() {
         let response = AppError::Upstream {
             status: 402,
@@ -223,6 +265,17 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains("Insufficient Balance"))
         );
+    }
+
+    #[tokio::test]
+    async fn upstream_redirect_is_reported_as_bad_gateway() {
+        let response = AppError::Upstream {
+            status: 302,
+            body: "redirects are disabled".to_owned(),
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     async fn response_json(response: Response) -> Value {
