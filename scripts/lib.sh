@@ -76,8 +76,21 @@ listen_pids() {
 }
 
 setup_cc_fallback() {
-  if [[ -x /usr/bin/gcc ]]; then
+  if [[ -x /usr/bin/gcc || -x /usr/bin/clang ]]; then
     return
+  fi
+
+  if [[ -z "${ZIG_BIN:-}" ]]; then
+    if command -v zig >/dev/null 2>&1; then
+      ZIG_BIN="$(command -v zig)"
+    elif [[ -x "${HOME:-}/.local/share/dev-tools/zig/current/zig" ]]; then
+      ZIG_BIN="${HOME}/.local/share/dev-tools/zig/current/zig"
+    else
+      # Leave Cargo's compiler discovery untouched when Zig is unavailable.
+      # It may still find a usable clang/cc outside the conventional paths.
+      return
+    fi
+    export ZIG_BIN
   fi
 
   if [[ -z "${CC_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/tools/zig-cc-wrapper.sh" ]]; then
@@ -87,6 +100,16 @@ setup_cc_fallback() {
   if [[ -z "${CXX_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/tools/zig-cxx-wrapper.sh" ]]; then
     export CXX_x86_64_unknown_linux_gnu="$ROOT_DIR/tools/zig-cxx-wrapper.sh"
   fi
+}
+
+release_is_fresh() {
+  [[ -x "$RELEASE_BIN" ]] || return 1
+  ! find \
+    "$ROOT_DIR/src" \
+    "$ROOT_DIR/Cargo.toml" \
+    "$ROOT_DIR/Cargo.lock" \
+    "$ROOT_DIR/rust-toolchain.toml" \
+    -newer "$RELEASE_BIN" -print -quit | grep -q .
 }
 
 wait_for_health() {

@@ -14,5 +14,5 @@
 (modelport_proxy) {
   encode zstd gzip
 
-  reverse_proxy dashboard:80
+  reverse_proxy dashboard:8080
 }

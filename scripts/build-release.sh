@@ -7,5 +7,5 @@ source "$SCRIPT_DIR/lib.sh"
 
 setup_cc_fallback
 log "building release binary"
-cargo build --release
+cargo build --release --locked
 log "built $RELEASE_BIN"
