@@ -1912,7 +1912,7 @@ function ProviderCard({
   const disabledModelCount = inventoryItems.length - enabledModelCount
   const disableCandidateCount = inventoryItems.filter((item) => item.status !== 'disabled' && item.model !== provider.defaultModel).length
   const isBulkUpdating = bulkModelMutation?.providerId === provider.id
-  const rechargeBadge = provider.health?.rechargeRequired ? provider.health.rechargeBadge || '等待充值' : null
+  const rechargeBadge = provider.health?.rechargeRequired ? '等待充值' : null
   const readiness = providerReadiness(provider, isDefault)
 
   return (
@@ -2075,7 +2075,7 @@ function ProviderCard({
                 {credentials.map((credential) => {
                   const health = credential.health
                   const healthStatus = health?.status ?? (credential.hasApiKey ? 'healthy' : 'degraded')
-                  const credentialRechargeBadge = health?.rechargeRequired ? health.rechargeBadge || '等待充值' : null
+                  const credentialRechargeBadge = health?.rechargeRequired ? '等待充值' : null
                   return (
                     <div key={credential.id} className="grid gap-2 rounded-md border bg-background/70 px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto]">
                       <div className="min-w-0">

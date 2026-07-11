@@ -269,7 +269,7 @@ function GatewayOperationsPanel({
                     <p className="truncate text-sm font-medium">{provider.displayName}</p>
                     {provider.rechargeRequired && (
                       <Badge variant="warning" className="shrink-0 text-[10px]">
-                        {provider.rechargeBadge || '等待充值'}
+                        等待充值
                       </Badge>
                     )}
                   </div>
@@ -329,7 +329,7 @@ function ProviderBreakdown({
                     <p className="truncate text-sm font-semibold">{provider.displayName}</p>
                     {provider.rechargeRequired && (
                       <span className="rounded-full bg-amber-500 px-2 py-0.5 text-xs font-medium text-white">
-                        {provider.rechargeBadge || '等待充值'}
+                        等待充值
                       </span>
                     )}
                   </div>
