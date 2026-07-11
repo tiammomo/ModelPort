@@ -1,17 +1,18 @@
 # Local Runtime Integration
 
-ModelPort does not load model weights. It routes Anthropic-compatible client traffic to an already running OpenAI-compatible inference server.
+ModelPort does not load model weights. It routes Anthropic-compatible client
+traffic to a separately managed OpenAI-compatible inference server such as
+SGLang, vLLM, llama.cpp, Ollama, or a custom runtime.
 
-For SGLang, vLLM, llama.cpp, Ollama, or a custom local server, the important value is the served model name exposed by that runtime. In practice this is often the fine-tuned model name or the runtime alias you configured, not just the base model family name.
+## Contract
 
-## Integration Contract
-
-A local runtime should expose:
+The runtime should expose:
 
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
-ModelPort points a provider at the runtime's `/v1` base URL:
+Use the exact served model ID returned by the runtime, including any fine-tuned
+alias. Example TOML:
 
 ```toml
 [providers.local_vllm]
@@ -29,85 +30,112 @@ fidelity_mode = "best_effort"
 local = "local_vllm:qwen2.5-coder-ft"
 ```
 
-Then route Claude Code / VS Code Claude through that provider:
+Then select:
 
-```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:17878
-export ANTHROPIC_AUTH_TOKEN=replace-with-the-same-local-router-token
-export ANTHROPIC_MODEL=local_vllm:qwen2.5-coder-ft
+```env
+ANTHROPIC_BASE_URL=http://127.0.0.1:17878
+ANTHROPIC_AUTH_TOKEN=<MODELPORT_AUTH_TOKEN>
+ANTHROPIC_MODEL=local_vllm:qwen2.5-coder-ft
 ```
 
-## Built-In Provider Templates
+## Built-In Templates
 
-The local providers are built in and can be enabled by environment variables.
-
-| Provider | Default base URL | Enable flag | Model variable |
+| Provider | Default base URL | Enable flag | Model/key variables |
 | --- | --- | --- | --- |
-| `local_sglang` | `http://127.0.0.1:30000/v1` | `MODELPORT_ENABLE_LOCAL_SGLANG=1` | `SGLANG_MODEL` |
-| `local_vllm` | `http://127.0.0.1:8000/v1` | `MODELPORT_ENABLE_LOCAL_VLLM=1` | `VLLM_MODEL` |
-| `local_llamacpp` | `http://127.0.0.1:8080/v1` | `MODELPORT_ENABLE_LOCAL_LLAMACPP=1` | `LLAMACPP_MODEL` |
+| `ollama` | `http://127.0.0.1:11434/v1` | `MODELPORT_ENABLE_OLLAMA=1` | `OLLAMA_MODEL`, optional `OLLAMA_API_KEY` |
+| `local_sglang` | `http://127.0.0.1:30000/v1` | `MODELPORT_ENABLE_LOCAL_SGLANG=1` | `SGLANG_MODEL`, optional `SGLANG_API_KEY` |
+| `local_vllm` | `http://127.0.0.1:8000/v1` | `MODELPORT_ENABLE_LOCAL_VLLM=1` | `VLLM_MODEL`, optional `VLLM_API_KEY` |
+| `local_llamacpp` | `http://127.0.0.1:8080/v1` | `MODELPORT_ENABLE_LOCAL_LLAMACPP=1` | `LLAMACPP_MODEL`, optional `LLAMACPP_API_KEY` |
+| `custom` | `http://127.0.0.1:8000/v1` | `MODELPORT_ENABLE_CUSTOM=1` or any custom value | `CUSTOM_OPENAI_MODEL`, optional `CUSTOM_OPENAI_API_KEY` |
 
 Example:
 
-```bash
-export MODELPORT_ENABLE_LOCAL_VLLM=1
-export VLLM_BASE_URL=http://127.0.0.1:8000/v1
-export VLLM_MODEL=qwen2.5-coder-ft
-export ANTHROPIC_MODEL=local_vllm:qwen2.5-coder-ft
+```env
+MODELPORT_ENABLE_LOCAL_VLLM=1
+VLLM_BASE_URL=http://127.0.0.1:8000/v1
+VLLM_MODEL=qwen2.5-coder-ft
 ```
 
-If your local runtime enforces an API key, set the matching key variable and keep authentication enabled on that provider:
+If authentication is required, set the matching key and, for TOML, use
+`api_key_required=true` plus `api_key_env`.
 
-```bash
-export VLLM_API_KEY=replace-with-local-runtime-key
+## Docker Host Runtime
+
+The backend container's loopback is not the host. Compose supplies a host
+gateway:
+
+```env
+VLLM_BASE_URL=http://host.docker.internal:8000/v1
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
 ```
 
-For file-based configuration, set `api_key_required = true` and `api_key_env = "VLLM_API_KEY"`.
+Only route to a trusted runtime. Current URL checks allow local/custom loopback
+and do not inspect a hostname's resolved IP, so firewall and Docker network
+policy remain part of the trust boundary. Base URLs with userinfo, a query
+string, or a fragment are rejected; put any runtime credential in its documented
+API-key environment variable, not the URL.
 
-## Discovering Served Models
+HTTP is intentionally available to local/custom Provider classes for loopback
+and controlled local-runtime traffic. Non-local/custom Providers require HTTPS
+unless `MODELPORT_ALLOW_INSECURE_PROVIDER_HTTP=1` is explicitly set. Do not use
+that override casually: plain HTTP exposes the Provider API key and complete
+prompt/response traffic to the network path.
 
-Use the dashboard model provider card and click `发现模型`. ModelPort will call the provider's `GET /v1/models`, store the result in the latest provider test record, and display the discovered count.
+## Model Discovery
 
-This is useful when a runtime exposes a name such as:
+The dashboard sends the CSRF-protected control request
+`POST /admin/providers/{provider_id}/models`. The backend then calls the
+upstream `<base_url>/models`, corresponding to `GET /v1/models` when the base
+ends in `/v1`. Because discovery stores the latest provider-test result and an
+audit event, the admin endpoint has no GET alias. The dashboard displays the
+discovered IDs; if discovery is empty, configured `models` and `default_model`
+remain the routing catalog.
 
-- `qwen2.5-coder-ft`
-- `deepseek-coder-33b-instruct-lora`
-- `my-org/my-code-model`
-- `local-model`
+Discovery proves only that the endpoint returned a parseable catalog. Run a
+non-stream and stream request before calling a runtime compatible.
 
-If discovery returns no model IDs, ModelPort falls back to the configured `models` list plus `default_model`.
+## Fidelity And Tool Use
 
-## Choosing the Model Name
+- `fidelity_mode="strict"` rejects Anthropic features that the OpenAI request
+  conversion cannot preserve.
+- `fidelity_mode="best_effort"` performs the normal adapter mapping and is the
+  practical starting point for local runtimes.
+- `fidelity_mode="stability"` is a label used when explicit stream rewrite flags
+  are configured. It does not enable deduplication or buffering by itself.
 
-Use the exact model ID returned by `/v1/models` whenever possible.
+For repeated cumulative text, set `deduplicate_stream_text=true` only after a
+real reproduction. `buffer_stream_text=true` changes streaming into complete
+generation and protocol conversion followed by locally chunked SSE. Upstream
+errors can then fail or fallback before local HTTP 200, and reported upstream
+usage enters normal accounting. The cost is full-generation time to first byte;
+downstream cancellation happens after the upstream generation is already done,
+and successful local delivery is not tracked.
 
-If the runtime was started with a served-name or alias, use that served name in:
+Local templates set `parallel_tool_calls=false` and
+`streaming_arguments="best_effort"`. The latter enables argument replay
+deduplication and recovery of the best complete JSON object available, but it is
+not a complete normalizer. The runtime can still have different schema,
+tool-choice, and argument-delta behavior. Certify with:
 
-- provider `default_model`
-- provider `models`
-- `ANTHROPIC_MODEL`
-- aliases such as `local = "local_vllm:qwen2.5-coder-ft"`
+```bash
+scripts/provider-matrix.sh --model local_vllm:qwen2.5-coder-ft
+scripts/tool-use-acceptance.sh --upstream
+```
 
-For fine-tuned models, this usually means the fine-tuned served model name. The base model name is only correct when the runtime exposes the base model name directly.
-
-## Fidelity Mode
-
-OpenAI-compatible runtimes cannot represent every Anthropic Messages feature exactly.
-
-- `fidelity_mode = "strict"` rejects unsupported Anthropic features instead of translating them approximately.
-- `fidelity_mode = "best_effort"` is the practical default for local runtimes.
-- `fidelity_mode = "stability"` enables additional stream stabilization behavior when a provider repeats text fragments.
-
-For local SGLang, vLLM, and llama.cpp, start with `best_effort`. Move to `strict` only when you prefer explicit rejection over protocol adaptation.
+These are real inference calls.
 
 ## Troubleshooting
 
-If the dashboard discovery fails:
-
-- Confirm the runtime is listening on the configured `base_url`.
-- Confirm the base URL includes `/v1`.
-- Open the runtime's `/v1/models` endpoint and check the returned ID.
-- Check whether the runtime requires an API key.
-- Keep `passthrough_unknown_models = true` while testing arbitrary local model IDs.
-
-If routing reaches the runtime but generation fails, the served model name is the first thing to verify.
+- Confirm the runtime listens on the configured network namespace/address.
+- Confirm the base URL ends at the API base, normally `/v1`, not
+  `/chat/completions`.
+- Query `/v1/models` and use its exact served ID.
+- Check key requirements and the provider's `max_tokens_field`.
+- Keep arbitrary passthrough only while the runtime/model catalog is controlled.
+- For live streaming, require a 2xx status other than 204,
+  `Content-Type: text/event-stream`, and an OpenAI `[DONE]` or
+  `finish_reason`; a missing termination signal becomes an SSE error.
+- Inspect the complete SSE body for `event: error`; HTTP 200 at stream start is
+  not a completed generation.
+- Remember that final live-stream usage, provider health, and fallback after
+  headers are current ModelPort lifecycle limits.

@@ -1,119 +1,151 @@
 # Tool Use Compatibility
 
-ModelPort treats Tool Use as a first-class protocol concern for Claude Code and VS Code Claude. The gateway keeps the client-facing contract Anthropic-compatible, then adapts or validates provider-specific behavior at the routing boundary.
+ModelPort keeps an Anthropic-compatible Tool Use contract at the client boundary
+and maps it to OpenAI function tools when required. This document describes the
+implemented adapter, validation gates, capability metadata, and known limits;
+it does not certify every configured provider.
 
-## Current Contract
+## Client Contract
 
-Client requests may use:
+Requests may contain:
 
-- `tools`
-- `tool_choice`
-- assistant `tool_use` content blocks
-- user `tool_result` content blocks
-- streaming tool-call arguments
+- top-level `tools` and `tool_choice`;
+- assistant `tool_use` content blocks;
+- user `tool_result` content blocks;
+- streaming tool-call arguments.
 
-DeepSeek's official Anthropic-compatible API is the reference path and should preserve these fields natively. OpenAI-compatible providers go through ModelPort's adapter.
+An Anthropic-compatible upstream receives these fields in the Anthropic request
+shape. An OpenAI-compatible upstream uses the mapping below.
 
 ## OpenAI-Compatible Mapping
 
-Request mapping:
+| Anthropic | OpenAI-compatible |
+| --- | --- |
+| `tools[].name/description/input_schema` | `tools[].type=function` and `function.*` |
+| `tool_choice.type=auto` | `"auto"` |
+| `tool_choice.type=none` | `"none"` |
+| `tool_choice.type=any` | `"required"` |
+| `tool_choice.type=tool,name=X` | named function choice |
+| `disable_parallel_tool_use` | inverse `parallel_tool_calls` |
+| assistant `tool_use` | assistant `tool_calls` |
+| user `tool_result` | `role=tool`, matching `tool_call_id` |
 
-- Anthropic `tools[]` become OpenAI `tools[]` with `type=function`.
-- Anthropic `tool_choice.type=auto` becomes OpenAI `"auto"`.
-- Anthropic `tool_choice.type=none` becomes OpenAI `"none"`.
-- Anthropic `tool_choice.type=any` becomes OpenAI `"required"`.
-- Anthropic `tool_choice.type=tool` becomes an OpenAI named function choice.
-- Anthropic `tool_choice.disable_parallel_tool_use` becomes OpenAI `parallel_tool_calls=false`.
-- Assistant `tool_use` blocks become assistant `tool_calls`.
-- User `tool_result` blocks become OpenAI `role=tool` messages.
-
-Response mapping:
-
-- OpenAI `tool_calls` become Anthropic `tool_use` blocks.
-- Legacy OpenAI `function_call` responses also become Anthropic `tool_use` blocks.
-- Non-object function arguments are wrapped under `_raw_arguments` so Claude Code still receives valid Anthropic `input` objects.
-- OpenAI `finish_reason=tool_calls` and `finish_reason=function_call` become Anthropic `stop_reason=tool_use`.
-
-## Streaming Behavior
-
-ModelPort emits Anthropic-style SSE:
-
-- `content_block_start` for each text or tool block.
-- `content_block_delta` with `text_delta` for text.
-- `content_block_delta` with `input_json_delta` for tool arguments.
-- `content_block_stop` when the block ends.
-- `message_delta` with the mapped stop reason.
-- `message_stop` when complete.
-
-For providers that replay cumulative argument strings, ModelPort can deduplicate fragments and recover the best complete JSON object it can parse. For providers that send arguments before the function name, ModelPort buffers the arguments and starts the tool block once the name arrives. If a provider never sends the name, ModelPort still emits a synthetic `tool` block instead of silently dropping arguments.
+OpenAI `tool_calls`, plus legacy `function_call`, map back to Anthropic
+`tool_use`. Finish reasons `tool_calls` and `function_call` map to
+`stop_reason=tool_use`. Function arguments must become an Anthropic input object;
+non-object or invalid JSON is preserved below `_raw_arguments` instead of being
+silently discarded.
 
 ## Validation Before Routing
 
-ModelPort rejects malformed Tool Use requests before contacting an upstream provider:
+The gateway rejects malformed Tool Use before contacting a provider:
 
-- `tools` must be an array.
-- Tool names must be unique.
-- Tool names must be 1-64 characters and use letters, numbers, `_`, or `-`.
-- Tool `input_schema` must be an object schema when present.
-- `tool_choice` must be an object with `type=auto`, `any`, `none`, or `tool`.
-- Named `tool_choice` must refer to a declared tool when tools are declared.
-- `tool_choice.type=any` and `tool_choice.type=tool` require at least one tool.
-- Assistant `tool_use` blocks must have non-empty `id`, valid `name`, and object `input`.
-- User `tool_result` blocks must reference a previous assistant `tool_use` id.
-- Duplicate `tool_use.id` values are rejected.
-- Duplicate `tool_result` answers for the same `tool_use.id` are rejected.
-- Tool count and tools JSON size are bounded by `MODELPORT_MAX_TOOLS` and `MODELPORT_MAX_TOOLS_JSON_CHARS`.
+- `tools` must be an array of objects with unique 1–64 character names using
+  ASCII letters, digits, `_`, or `-`;
+- descriptions must be strings and `input_schema`, when present, must be an
+  object schema;
+- `tool_choice` must be `auto`, `any`, `none`, or `tool`; a named choice must
+  reference a declared tool when definitions are present;
+- `any` and named `tool` choices require a non-empty tool list;
+- assistant `tool_use` requires a unique non-empty ID, valid name, and object
+  input;
+- user `tool_result` must reference an earlier unanswered assistant tool ID;
+- tool count and serialized size obey the configured guardrails.
 
-## Provider Capability Matrix
+Provider capability checks then reject Tool Use entirely, reject tool choice,
+or reject an explicitly enabled parallel-call request when that provider says it
+cannot support it.
 
-Each provider has a lightweight `tool_use` capability matrix:
+`parallel_tool_calls=false` in provider metadata is not a complete server-side
+single-tool transformer. When the client omits an explicit parallel preference,
+the upstream's own default can still matter. Verify local runtimes in practice.
+
+## Streaming
+
+ModelPort emits Anthropic-style events:
+
+- `content_block_start` for text or tool blocks;
+- `content_block_delta` with `text_delta` or `input_json_delta`;
+- `content_block_stop`;
+- `message_delta` with mapped stop reason;
+- `message_stop`.
+
+OpenAI tool calls are tracked by upstream call index. Arguments that arrive
+before the function name are buffered. A missing name produces a synthetic
+`tool` name rather than dropping argument data. With
+`streaming_arguments="delta"`, argument fragments remain incremental. The
+`cumulative` and `best_effort` modes enable replay deduplication and retain the
+best complete JSON object found at stream completion. Anthropic providers use
+native pass-through semantics.
+
+The stream can still end with `event: error` after HTTP 200. A half-written JSON
+argument is not guaranteed recoverable, and a synthetically named tool is a
+compatibility fallback rather than a semantically verified call.
+
+The live handshake requires a non-204 2xx response with
+`text/event-stream`. Native Anthropic completion requires `message_stop`;
+OpenAI-compatible completion requires `[DONE]` or `finish_reason`, after which
+ModelPort emits `message_stop`. EOF without that signal is an error, not a
+successful partial Tool Use result.
+
+With `buffer_stream_text=true`, the OpenAI-compatible adapter awaits and maps a
+complete non-stream response before it returns local SSE. Tool blocks are then
+emitted as `content_block_start`, one complete serialized `input_json_delta`,
+and `content_block_stop`. Upstream HTTP/JSON/conversion errors occur before the
+local SSE response and can use normal fallback; reported upstream usage is also
+available to accounting. This is not live tool-argument streaming and delays
+the first downstream event until the generation has completed.
+
+## Capability Configuration
 
 ```toml
-[providers.deepseek.tool_use]
+[providers.example.tool_use]
 supported = true
 tool_choice = true
 parallel_tool_calls = true
-streaming_arguments = "native"
+streaming_arguments = "delta" # native | delta | cumulative | best_effort
 ```
 
-Fields:
+The first three fields participate in capability validation.
+`streaming_arguments` also controls OpenAI-compatible Tool Use stream handling:
+`delta` forwards incremental fragments, while `cumulative` and `best_effort`
+enable argument replay deduplication and bounded complete-JSON recovery. The
+setting does not normalize every provider-specific schema or certify that the
+upstream really follows the declared mode.
 
-- `supported`: whether the provider should receive Tool Use requests.
-- `tool_choice`: whether the provider supports tool choice control.
-- `parallel_tool_calls`: whether the provider supports parallel tool calls.
-- `streaming_arguments`: one of `native`, `delta`, `cumulative`, or `best_effort`.
-
-Dashboard provider cards expose this capability, and the provider form can edit it.
-
-The dashboard model page also includes a capability matrix tab that lists protocol, Tool Use support, `tool_choice`, parallel tool calls, streaming argument mode, fidelity mode, and runtime status per provider.
+Similarly, `fidelity_mode="stability"` labels a stream-rewriting configuration;
+it does not enable a rewrite flag. `fidelity_mode="strict"` actively rejects
+unsupported Anthropic-to-OpenAI features and cannot be combined with configured
+stream text rewriting. Tool-argument handling is selected independently by
+`tool_use.streaming_arguments`; repeated text output still requires
+`deduplicate_stream_text` or `buffer_stream_text` explicitly.
 
 ## Acceptance
 
-Run the mock-backed Tool Use acceptance before changing protocol conversion, provider routing, streaming, or Tool Use validation:
+Mock-backed adapter acceptance:
 
 ```bash
 scripts/tool-use-acceptance.sh
 ```
 
-The default mode:
+It creates a temporary local OpenAI-compatible provider and covers non-stream
+mapping, streaming `input_json_delta`, `tool_result` continuation, malformed
+requests, and parallel-choice mapping before cleanup.
 
-- starts a temporary local OpenAI-compatible mock upstream;
-- creates a temporary `local_` provider through the dashboard API;
-- validates non-streaming Tool Use response mapping;
-- validates streaming `input_json_delta` mapping;
-- validates Anthropic `tool_result` to OpenAI `role=tool` continuation;
-- validates malformed Tool Use rejection before upstream routing;
-- checks that `disable_parallel_tool_use` maps to `parallel_tool_calls=false`;
-- cleans up the temporary provider.
-
-To certify a real configured provider:
+Real provider certification, which may cost money:
 
 ```bash
 scripts/tool-use-acceptance.sh --upstream
 ```
 
-## What Is Intentionally Deferred
+Record a dated result in [Provider Matrix](PROVIDER_MATRIX.md). A mock pass means
+the gateway adapter works for the fixture; it says nothing about a provider's
+schema limits, tool-choice support, argument streaming, or account entitlement.
 
-ModelPort does not yet introduce a heavyweight internal Tool IR. The current adapter remains small and testable. A Tool IR becomes worthwhile when multiple providers need deep normalization beyond the current matrix, such as provider-specific argument repair, schema transformation, or tool-call replay diagnostics.
+## Deferred Work
 
-It also does not run real upstream Tool Use in default smoke tests, because that can consume provider quota. Add provider-specific acceptance tests when you want to certify a channel.
+- A provider-neutral Tool IR and provider-specific schema transformation.
+- Strong enforcement/normalization of single-tool runtimes.
+- Final live-stream lifecycle accounting and fallback after response headers.
+- Provider-specific argument repair beyond the current bounded best effort.
+- A committed real-provider verification ledger.

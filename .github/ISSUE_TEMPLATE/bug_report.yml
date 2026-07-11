@@ -50,10 +50,21 @@ body:
       options:
         - mimo
         - deepseek
+        - deepseek_openai
         - anthropic
         - openai
         - openrouter
         - gemini
+        - xai
+        - groq
         - dashscope
+        - kimi
+        - zhipu
+        - mistral
+        - ark
+        - ollama
         - custom
+        - local_sglang
+        - local_vllm
+        - local_llamacpp
         - other

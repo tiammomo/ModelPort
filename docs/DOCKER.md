@@ -1,188 +1,302 @@
-# ModelPort Docker Compose
+# Docker Compose Deployment
 
-ModelPort 面向个人和小团队时，推荐保持轻量：
+Docker Compose is the recommended complete ModelPort deployment. It starts the
+backend, a same-origin dashboard proxy, and PostgreSQL.
 
-| 组件 | 默认 | 作用 |
-| --- | --- | --- |
-| `postgres` | 是 | PostgreSQL 16，保存控制面持久化状态；默认只在 Docker 内网监听，不占用宿主机 5432。 |
-| `modelport` | 是 | Rust 后端、Anthropic-compatible API、控制面 API、鉴权、路由、日志和配额。 |
-| `dashboard` | 是 | 静态后台 UI，并把 `/admin`、`/v1`、`/livez`、`/readyz`、`/health`、`/metrics` 反代到后端。 |
-| `modelport-postgres` | 是 | PostgreSQL 数据卷，保存用户、API Key、审计、用量和路由配置。 |
-| `modelport-data` | 是 | 后端辅助数据卷，可放 CLI 备份文件；未配置数据库时会作为 JSON 文件存储位置。 |
-| Caddy/Nginx | 否 | 只有需要局域网域名、HTTPS 或统一入口时再加。 |
-| Prometheus | 否 | 已有 `/metrics`，如果你已有监控系统再接入即可。 |
-| Redis/队列 | 否 | 当前控制面数据量小，不建议为个人/小团队默认引入。 |
+| Service/volume | Purpose |
+| --- | --- |
+| `postgres` | PostgreSQL 16 for auth and control documents; no host port by default. |
+| `modelport` | Rust data plane, control API, routing, metrics, and CLI. |
+| `dashboard` | Static React UI plus same-origin proxy to backend routes. |
+| `modelport-postgres` | Persistent PostgreSQL data. |
+| `modelport-data` | Backend working/backup files and file-backend migration source. |
 
-## 启动
+Redis, queues, Prometheus, Caddy, and an inference runtime are not part of the
+default stack.
+
+## Image Build And Runtime Hardening
+
+The backend image builds with Rust 1.96.0 and
+`cargo build --release --locked`, so `Cargo.lock` is authoritative. The
+dashboard builder uses Node.js 24 and `npm ci --no-audit --no-fund`; disabling
+the install-time audit and funding messages does not replace dependency review
+or vulnerability scanning.
+
+The Compose backend runs as the image's unprivileged `modelport` user with an
+init process, a read-only root filesystem, all Linux capabilities dropped, and
+`no-new-privileges`. Only these paths are writable at runtime:
+
+- `/data`, backed by the `modelport-data` named volume, for JSON state,
+  migration input, and CLI backup files;
+- `/tmp`, backed by a `noexec,nosuid` 64 MiB tmpfs for temporary runtime files.
+
+`/config/.env` is a read-only bind mount. The read-only root filesystem does
+not make the `/data` named volume read-only; persistence and backup commands
+depend on that volume remaining writable. PostgreSQL data is independently
+stored in `modelport-postgres`.
+
+The dashboard Nginx process runs as its unprivileged `nginx` user on internal
+port 8080. Compose also gives it an init process, a read-only root filesystem,
+no Linux capabilities, and `no-new-privileges`; its Nginx PID and temporary
+files live on a `noexec,nosuid` 32 MiB `/tmp` tmpfs. These controls are defense
+in depth, not a substitute for loopback publishing, a firewall, HTTPS, image
+updates, and secret protection.
+
+## Start
 
 ```bash
 cp deploy/docker/modelport.env.example .env
-nano .env
+# replace every required placeholder
 docker compose up -d --build
+docker compose ps
 ```
 
-访问：
-
-- 后台：`http://127.0.0.1:5173`
-- API：`http://127.0.0.1:17878/v1/messages`
-
-Claude Code / VS Code Claude 继续使用：
+Compose normally injects and mounts the root `.env`. For manifest validation or
+an intentionally different deployment file, point both uses at the same path:
 
 ```bash
-ANTHROPIC_BASE_URL=http://127.0.0.1:17878
-ANTHROPIC_AUTH_TOKEN=<same-as-MODELPORT_AUTH_TOKEN>
-ANTHROPIC_MODEL=deepseek-v4-flash
+MODELPORT_COMPOSE_ENV_FILE=deploy/docker/modelport.env.example \
+  docker compose --env-file deploy/docker/modelport.env.example config --quiet
 ```
 
-## 日常命令
+The example contains placeholders and is for validation only; do not start a
+deployment with its sample credentials.
+
+Open:
+
+- Dashboard: `http://127.0.0.1:5173`
+- API: `http://127.0.0.1:17878/v1/messages`
+- Liveness: `http://127.0.0.1:17878/livez`
+
+Claude Code uses the host-published backend:
+
+```env
+ANTHROPIC_BASE_URL=http://127.0.0.1:17878
+ANTHROPIC_AUTH_TOKEN=<same-as-MODELPORT_AUTH_TOKEN>
+ANTHROPIC_MODEL=<configured-model-id>
+```
+
+Run [Production Acceptance](ACCEPTANCE.md) after startup.
+
+## Daily Commands
 
 ```bash
 docker compose ps
 docker compose logs -f modelport
 docker compose logs -f dashboard
 docker compose restart modelport
-docker compose down
-```
-
-升级镜像但保留数据：
-
-```bash
 docker compose up -d --build
-```
-
-清理容器但保留数据：
-
-```bash
 docker compose down
 ```
 
-连数据一起清理：
+`docker compose down` preserves named volumes; `docker compose down -v` deletes
+PostgreSQL and backend data and is irreversible without a backup.
 
-```bash
-docker compose down -v
-```
+## Storage
 
-## 数据和备份
+Unless `.env` explicitly sets `MODELPORT_DATABASE_URL`, Compose constructs it
+for the internal PostgreSQL service. An explicit complete URL overrides that
+default. The application stores two `jsonb` documents in `modelport_state`:
 
-Docker Compose 默认启用内部 PostgreSQL，控制面数据保存在 named volume `modelport-postgres`。数据库服务没有 `ports` 映射，只在 Docker 内网通过 `postgres:5432` 给 `modelport` 使用，因此不会和宿主机已有的 PostgreSQL 端口冲突。
-
-应用层使用一张 `modelport_state` 表保存两份 `jsonb` 状态：
-
-| namespace | 内容 |
+| Namespace | Contents |
 | --- | --- |
-| `auth` | 管理用户、角色、状态、密码哈希。 |
-| `control` | 项目/团队、API Key 哈希、模型/provider 白名单、预算、配额、用量、审计、路由配置、provider 健康和测试记录。 |
+| `auth` | Users, roles, status, and password hashes. |
+| `control` | Teams, API-key hashes, policy, quota, usage, audit, route/provider overrides, credential metadata, health, and tests. |
 
-如果不设置 `MODELPORT_DATABASE_URL`，ModelPort 会回退到文件存储：`/data/admin-auth.json` 和 `/data/control-plane.json`。从旧版文件存储升级到 PostgreSQL 时，如果数据库为空，启动时会自动导入这两个 JSON 文件。
+The database is not exposed on host port 5432. If host access is required for
+debugging, add an explicit non-conflicting loopback mapping such as
+`127.0.0.1:15432:5432`.
 
-后台“系统设置 -> 运维”可以导出脱敏控制面快照，适合排查和留档，但不用于完整恢复。
+The current application client uses PostgreSQL `NoTls`; the template assumes
+traffic remains on the private Compose bridge. Do not point it across an
+untrusted network. Native TLS transport is not implemented.
 
-Compose 模板会把宿主机 `.env` 只读挂载到容器内 `/config/.env`，并设置 `MODELPORT_ENV_FILE=/config/.env`。修改 `.env` 或挂载的 `config.toml` 后，可在后台 `系统设置 -> 运维 -> 热重载配置` 让新请求使用刷新后的 provider key、Base URL、模型列表、别名和路由顺序。监听地址、请求体上限、并发层、HTTP client 超时、可信代理和首个管理员 bootstrap 配置仍需重启 `modelport` 容器。
+Compose interpolation does not percent-encode
+`MODELPORT_POSTGRES_PASSWORD`. Use a long URL-safe value made from letters,
+digits, `_`, and `-`, or explicitly set a complete `MODELPORT_DATABASE_URL`
+whose password component is percent-encoded. Keep
+`MODELPORT_POSTGRES_PASSWORD` itself as PostgreSQL's raw password. Characters
+such as `@`, `:`, `/`, `%`, and `#` are unsafe in the constructed URL when left
+unencoded.
 
-完整恢复使用 CLI 备份，里面包含密码哈希和 API Key 哈希等认证材料。请像保护密钥一样保护该文件：
+The Compose service always supplies either the explicit or constructed database
+URL. To select the JSON-file backend, remove that environment assignment from a
+Compose override; merely leaving `MODELPORT_DATABASE_URL` out of `.env` selects
+the constructed PostgreSQL default. File-backend paths are
+`/data/admin-auth.json` and `/data/control-plane.json`. On first PostgreSQL use,
+an empty namespace imports an existing corresponding JSON file.
+
+Persistence currently synchronously replaces the complete logical document on
+state changes, including completed request usage. PostgreSQL avoids file-rewrite
+failure modes but does not turn the design into row-per-event storage. Keep
+usage retention and throughput within the small-team profile.
+
+## Backup
+
+The dashboard's CSRF-protected `POST /admin/backup` download is a redacted
+diagnostic snapshot, creates an audit event, and is not a restore artifact. Use
+the CLI for a restorable application backup:
 
 ```bash
-docker compose exec modelport model-port backup export /data/modelport-backup.json
-docker compose exec modelport model-port backup validate /data/modelport-backup.json
+docker compose exec modelport \
+  model-port backup export /data/modelport-backup.json
+docker compose exec modelport \
+  model-port backup validate /data/modelport-backup.json
 ```
 
-恢复会先备份当前数据文件，再写入备份内容：
+Validation and restore both deeply deserialize the auth/control payloads before
+writing. Auth checks include unique non-empty IDs/usernames, valid identity and
+password-hash fields, and at least one active admin for a non-empty user set;
+control records must match the current schema.
+
+The file contains password and API-key hashes plus personal/usage metadata.
+Copy it to encrypted storage and restrict access.
+
+Restore with writers stopped:
 
 ```bash
 docker compose stop modelport dashboard
-docker compose run --rm modelport model-port backup restore /data/modelport-backup.json --yes
+docker compose run --rm modelport \
+  model-port backup restore /data/modelport-backup.json --yes
 docker compose up -d
 ```
 
-也可以直接备份 volume：
+Restore saves both previous logical values, then writes auth and control
+sequentially. It is not an atomic two-document transaction; retain the saved
+application values and a database-native backup until the restored service has
+passed smoke and login checks.
 
-```bash
-docker run --rm \
-  -v modelport_modelport-postgres:/var/lib/postgresql/data:ro \
-  -v "$PWD":/backup \
-  debian:bookworm-slim \
-  tar czf /backup/modelport-postgres.tgz -C /var/lib/postgresql/data .
-```
-
-更推荐用 PostgreSQL 自带逻辑备份：
+Keep a database-native backup too:
 
 ```bash
 docker compose exec postgres pg_dump -U modelport modelport > modelport.sql
-```
-
-恢复到同一 compose 项目时：
-
-```bash
 docker compose exec -T postgres psql -U modelport modelport < modelport.sql
 ```
 
-## PostgreSQL 端口冲突
+The Compose project has `name: modelport`; a physical volume backup therefore
+uses volume `modelport_modelport-postgres`. Prefer `pg_dump` for portable
+restore instead of copying a live database directory.
 
-默认 `postgres` 服务没有 `ports:`，所以不会绑定宿主机 `5432`，也不会影响你机器上已有的 PostgreSQL。
+## Reload And Restart
 
-只有你需要从宿主机直接连这个数据库调试时，才建议临时加端口映射，并选择一个不冲突的端口，例如：
+Compose mounts `.env` read-only at `/config/.env` and sets
+`MODELPORT_ENV_FILE=/config/.env`. The dashboard can reload mounted TOML and
+env-file-only values for new requests, but process environment values take
+precedence over the mounted file.
 
-```yaml
-postgres:
-  ports:
-    - "127.0.0.1:15432:5432"
+Restart or recreate `modelport` for:
+
+- bind/body/request-concurrency/stream-concurrency layers;
+- HTTP client timeout, redirect, response/SSE settings;
+- rate-limit values/window;
+- trusted proxies, CSRF/origin, detailed-health, and private/insecure-URL policy;
+- admin bootstrap/session/cookie settings;
+- storage URL/paths;
+- a newly added credential-profile environment variable.
+
+Docker's `env_file` populates process variables when the container is created.
+Editing an existing `.env` key and pressing reload therefore does not override
+the old process value. Dashboard credential profiles also read process variables
+directly. Recreate after `.env` changes:
+
+```bash
+docker compose up -d --force-recreate modelport
 ```
 
-这样宿主机连 `127.0.0.1:15432`，容器内部仍然是 `postgres:5432`。
+See the exact [reload matrix](CONFIGURATION.md#reload-versus-restart).
 
-## 访问范围
+## Access Scope And Reverse Proxy
 
-默认 compose 只发布到本机：
+Default publishing is loopback-only:
 
 ```env
 MODELPORT_API_PUBLISH=127.0.0.1:17878
 MODELPORT_DASHBOARD_PUBLISH=127.0.0.1:5173
 ```
 
-如果要给局域网访问，改成：
+For a trusted LAN, bind deliberately and enforce a host firewall. For remote or
+shared use, expose one HTTPS origin through a reverse proxy. The dashboard Nginx
+image already proxies `/admin`, `/v1`, `/livez`, `/readyz`, `/health`, and
+`/metrics` on one origin.
+
+`deploy/docker/Caddyfile.example` addresses `dashboard:8080`; that name resolves
+only when Caddy joins the same Compose network. An external host Caddy instance
+must target the dashboard's published host port instead.
+
+Behind HTTPS set:
 
 ```env
-MODELPORT_API_PUBLISH=0.0.0.0:17878
-MODELPORT_DASHBOARD_PUBLISH=0.0.0.0:5173
+MODELPORT_ADMIN_COOKIE_SECURE=1
+MODELPORT_ALLOWED_ORIGINS=https://modelport.example.com
+MODELPORT_TRUSTED_PROXIES=<exact-proxy-ip-or-cidr>
 ```
 
-对外网或跨网络访问，建议放在 Caddy/Nginx 后面，并启用 HTTPS。`deploy/docker/Caddyfile.example` 提供了最小反代示例。
+`MODELPORT_ALLOWED_ORIGINS` is an admin-write check, not browser CORS. Keep the
+dashboard and backend routes same-origin.
 
-## 可信代理和控制台写保护
+## Trusted Client IP
 
-ModelPort 默认只信任来自本机代理的 `X-Forwarded-For` / `X-Real-IP`。Docker 模板额外设置：
+The Compose template includes the Docker bridge range so Nginx can forward the
+real client IP:
 
 ```env
 MODELPORT_TRUSTED_PROXIES=127.0.0.1,::1,172.16.0.0/12
 ```
 
-这是为了让 dashboard 容器反代到后端时仍能保留真实客户端 IP。如果你把 API 直接暴露到局域网，并且不希望信任整个 Docker bridge 网段，可以改成更精确的反代容器 IP 或自建反代 IP。
+This is broad. In a controlled network, replace it with the actual proxy subnet
+or address. A wrong trust rule can let a client forge IP allowlist/rate-limit
+inputs.
 
-控制台写操作要求前端带 `X-ModelPort-CSRF`，并校验 `Origin` / `Referer` 是否与当前 Host 匹配。常规 dashboard 使用不需要额外配置。只有反代改写 Host 导致不匹配时，才需要：
+The bundled Nginx proxy deliberately sets `X-Forwarded-For` to its observed
+`$remote_addr` instead of appending an incoming client-controlled chain.
+ModelPort then walks forwarded hops from right to left and removes only peers
+covered by `MODELPORT_TRUSTED_PROXIES`. If another reverse proxy is added in
+front, list only its exact addresses/subnets and verify the complete hop chain.
+
+Nginx also forwards `Host $http_host`, not `$host`. `$http_host` preserves the
+published port (for example `127.0.0.1:5173`), which keeps the browser Origin
+and backend Host authorities aligned for CSRF write checks. A custom proxy on a
+non-default port must likewise preserve the original Host including its port;
+otherwise same-origin dashboard writes can be rejected.
+
+## Host Model Runtimes
+
+Inside a container, `127.0.0.1` is the container itself. Use the configured
+host gateway for a runtime on the Docker host:
 
 ```env
-MODELPORT_ALLOWED_ORIGINS=https://modelport.example.com
-```
-
-`MODELPORT_DISABLE_CSRF=1` 只建议本地紧急调试使用。
-
-## 本机模型运行时
-
-容器内的 `127.0.0.1` 指向容器自己。如果要连接宿主机上的 Ollama、vLLM、SGLang 或自定义 OpenAI-compatible 服务，用：
-
-```env
+MODELPORT_ENABLE_OLLAMA=1
 OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+OLLAMA_MODEL=llama3.1
+
+MODELPORT_ENABLE_CUSTOM=1
 CUSTOM_OPENAI_BASE_URL=http://host.docker.internal:8000/v1
+CUSTOM_OPENAI_MODEL=default
 ```
 
-`docker-compose.yml` 已配置 `host.docker.internal:host-gateway`。
+`host.docker.internal` is a hostname and current URL validation does not inspect
+its resolved IP. Only use it for a runtime you trust. See
+[Local Runtime Integration](LOCAL_RUNTIME.md).
 
-## 为什么暂时不加 Redis 或队列
+Local/custom Provider classes may use HTTP for these controlled runtime paths.
+Other Providers require HTTPS unless
+`MODELPORT_ALLOW_INSECURE_PROVIDER_HTTP=1` is set. That override sends Provider
+API keys and prompt/response content in plaintext across the Docker/network
+path, so do not use it for an Internet endpoint or an untrusted LAN.
 
-ModelPort 当前主要是单机个人/小团队网关，PostgreSQL 已经足够保存控制面状态：
+Provider base URLs may not contain userinfo, query parameters, or fragments.
+Set runtime/provider keys through the corresponding environment variable; do
+not embed a credential in the URL.
 
-- 部署和备份仍然简单。
-- 单机并发足够。
-- 不增加额外缓存一致性和队列消费成本。
+## Current Limits
 
-只有当你需要多实例横向扩容、异步计费或复杂审计留存时，再考虑 Redis/队列/对象存储。
+- Compose is a single backend instance; rate limits and sessions are not shared.
+- Concurrent-stream permits are also process-local and stay held until each
+  downstream response body completes or is dropped.
+- `/readyz` checks auth/control storage but is not an all-Provider gate.
+- Live-stream completion/final usage and fallback after headers are incomplete.
+- Quota enforcement is not a concurrent reservation transaction.
+- Provider hostname DNS answers are not revalidated by the SSRF guard.
+- PostgreSQL stores complete logical documents rather than normalized usage rows.
+
+These limits are detailed in [Operations](OPERATIONS.md#current-operational-limits).

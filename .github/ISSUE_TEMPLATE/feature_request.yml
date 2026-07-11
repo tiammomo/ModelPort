@@ -3,6 +3,10 @@ description: Suggest a provider, protocol, deployment, or developer-experience i
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        请不要粘贴真实 API key、token、完整 `.env`、完整备份、prompt/response 或敏感日志。
   - type: textarea
     id: problem
     attributes:

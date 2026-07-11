@@ -1,110 +1,122 @@
-# ModelPort 项目指导文档
+# ModelPort Project Guide
 
-ModelPort 的最佳定位是：面向 Claude Code / VS Code Claude 的本地模型路由适配层，同时提供个人和小团队可用的轻量控制面。它不是聊天客户端，也不是云端模型平台，而是把本机开发工作流稳定接到不同模型 provider，并让团队能管理密钥、预算、路由和请求日志。
+This is the maintainer-facing product and engineering guide. Normative runtime
+behavior lives in [Architecture](ARCHITECTURE.md),
+[Configuration](CONFIGURATION.md), [API](API.md), and
+[Operations](OPERATIONS.md).
 
-## 一句话定位
+## Positioning
 
-ModelPort is a local Anthropic-compatible model gateway for Claude Code and VS Code Claude.
+ModelPort is a self-hosted Anthropic-compatible routing and adaptation layer for
+Claude Code, VS Code Claude, and API clients, with a lightweight control plane
+for one host or a small team.
 
-中文表达：
+It should remain:
 
-> ModelPort 是本机 Claude 模型端口，以 DeepSeek 官方 Anthropic-compatible 适配为标准样例，同时可把 Claude Code 的 Anthropic Messages 请求路由到 OpenAI-compatible provider 和自定义上游，并提供小团队 API Key、额度和日志控制面。
+- easier to deploy and understand than an enterprise AI platform;
+- explicit about protocol loss, provider verification, and operational limits;
+- safe by default on loopback and usable behind one trusted HTTPS origin;
+- observable enough to diagnose routing and provider failures without requiring
+  a distributed operations stack.
 
-## 当前主线
+It is not a chat product, inference engine, public aggregation service, exact
+billing system, enterprise IAM product, or multi-tenant SaaS control plane.
 
-主线应保持清晰：
+## Current Product Line
 
-- 入口协议：Anthropic-compatible `/v1/messages`。
-- 目标用户：个人开发者，以及需要共享模型网关的小团队/初创团队。
-- 主要价值：快速切换模型、本机密钥隔离、provider 协议转换、稳定流式输出。
-- 控制面价值：用户、API Key、项目/团队、预算、provider 策略、审计、备份、请求日志和用量/费用看板。
-- 默认场景：`MODELPORT_DEFAULT_PROVIDER=deepseek` + `ANTHROPIC_MODEL=deepseek-v4-flash`。
+Implemented:
 
-## 架构分层
+- Anthropic-compatible Messages/model endpoints;
+- Anthropic and OpenAI-compatible provider paths;
+- common Tool Use validation/conversion and SSE mapping;
+- model/provider routing, aliases, control-plane overrides, credential pools,
+  cooldown and bounded fallback;
+- users, API keys, teams, quotas, provider/model management, logs, health,
+  audit, redacted diagnostic snapshots, PostgreSQL/JSON state;
+- Docker Compose, systemd, scripts, CI, dashboard and E2E tests.
+
+Configured but not yet evidenced by a committed real-upstream ledger:
+
+- every provider/model entry in the built-in catalog;
+- provider-specific Tool Use and streaming behavior;
+- pricing estimates beyond regression-tested local tables.
+
+Proposed, not implemented:
+
+- Image/Responses APIs;
+- a complete internal protocol/Tool IR;
+- OIDC/SSO and public multi-tenancy;
+- distributed rate limits, sessions, quotas, and health;
+- transactional/event-oriented usage persistence.
+
+## Engineering Priorities
+
+1. Close correctness gaps in live-stream completion, final usage/cost, provider
+   outcomes, and errors after headers.
+2. Make quota enforcement concurrency-safe before treating it as a hard budget.
+3. Replace hostname-only SSRF checks with DNS-aware outbound policy where the
+   deployment threat model requires it.
+4. Reduce complete-document persistence and define retention/migration behavior.
+5. Maintain a dated provider verification ledger and test examples as code.
+6. Only then expand protocols or distributed deployment scope.
+
+## Decision Principles
+
+- Prefer an Anthropic-compatible or OpenAI-compatible adapter over a provider-
+  native API until native behavior has clear product value.
+- Do not silently lose Anthropic semantics in strict mode.
+- Do not call configuration support “verified”.
+- Do not infer exact spend, latency, or stream success from an estimate or the
+  initial HTTP status.
+- Keep secrets in process/file/secret-manager inputs, not control-plane records.
+- Make runtime overrides visible and distinguish them from base configuration.
+- Add a deployment dependency only when it solves a measured problem for the
+  intended audience.
+
+## Repository Map
 
 ```text
-VS Code Claude / Claude Code
-        |
-        | Anthropic-compatible /v1/messages
-        v
-ModelPort local gateway
-        |
-        | auth, policy, route, alias, protocol conversion, usage logging
-        v
-DeepSeek official / OpenAI-compatible / custom provider
+src/                 Rust gateway and CLI
+src/lib.rs            library orchestration; CLI/server dispatch
+src/cli.rs            config validation and backup commands
+src/server.rs         server state, listener and shutdown
+src/routes/          client, operations, and control-plane route modules
+src/providers/       Anthropic/OpenAI-compatible adapters
+dashboard/           React control plane and Playwright tests
+scripts/             local lifecycle, checks, smoke, acceptance, benchmark
+deploy/docker/       Compose environment, Nginx and Caddy examples
+deploy/systemd/      hardened backend unit and environment template
+docs/                maintained reference and non-normative learning material
 ```
 
-代码边界：
+See the exact module responsibilities in
+[Architecture](ARCHITECTURE.md#backend-boundaries).
 
-- `src/routes.rs`：HTTP 入口、鉴权、请求限制、响应转换和主路由挂载。
-- `src/routes/admin_providers.rs`：管理后台 provider 生命周期、模型发现、模型库存启用/禁用。
-- `src/config.rs`：provider、模型别名、默认路由和环境变量。
-- `src/providers/`：Anthropic 和 OpenAI-compatible 协议适配。
-- `src/http.rs`：上游 HTTP 客户端、SSE 解析、超时和响应体限制。
-- `src/metrics.rs`：轻量 Prometheus 文本指标，用于长期运行观测。
-- `dashboard/`：React 管理后台，覆盖看板、请求日志、API Key、用户、额度、provider 和系统设置。
-- `scripts/`：本机运行、配置校验、自检、冒烟和 benchmark。
-- `deploy/`：systemd 等生产部署模板。
-- `docs/`：长期维护指导。
+## Release Evidence
 
-## 效率判断
+A release should include:
 
-当前中转效率足够高，适合本机长期使用和内网小团队试生产。原因是 ModelPort 只做必要的鉴权、策略检查、路由、JSON/SSE 转换和轻量用量记录；请求真正耗时通常来自上游模型生成和第三方中转网络。
+- change summary and configuration/migration notes;
+- the exact commit and build/test commands;
+- Docker and systemd smoke results when affected;
+- dated provider/model results only for real calls that were actually run;
+- known stream, quota, DNS, persistence, and cost-estimation limits;
+- a validated complete backup before persistence changes.
 
-不要把它建设成重型平台。短期优先级应该是：
+The provider acceptance standard is defined in
+[Provider Matrix](PROVIDER_MATRIX.md#verification-procedure), and the broader
+production checklist in [Acceptance](ACCEPTANCE.md).
 
-1. 稳定文本链路。
-2. 小团队控制面闭环：用户、API Key、项目/团队、预算、日志、用量和备份。
-3. 真实 provider 兼容矩阵。
-4. 可观测、自检、验收脚本和部署模板。
-5. 再扩展图像、Responses API 或更重的多实例能力。
+## Documentation Ownership
 
-## GitHub 建设路线
+- Root README: short, verifiable user entry.
+- `docs/ARCHITECTURE.md`: implementation boundaries and limitations.
+- `docs/CONFIGURATION.md`: one configuration reference.
+- `docs/API.md`: public contract and control-plane route groups.
+- `docs/OPERATIONS.md`: runtime truth, logs, metrics, backup, troubleshooting.
+- `docs/PROVIDER_MATRIX.md`: static catalog plus dated real verification.
+- `docs/learning/`: non-normative explanation derived from the sources above.
+- Proposed work: clearly labelled proposal/RFC, never presented as shipped.
 
-仓库应该具备：
-
-- README：面向使用者，回答“是什么、怎么用、怎么排查”。
-- `docs/PROJECT_GUIDE.md`：面向维护者，说明定位和路线。
-- `docs/PROVIDER_MATRIX.md`：面向 provider 接入，记录实测状态和验收标准。
-- `docs/ACCEPTANCE.md`：面向试生产，记录上线前应跑的控制面验收。
-- `docs/DOCKER.md`：面向个人/小团队部署，说明轻量 compose 和 PostgreSQL 数据存储。
-- `docs/PERFORMANCE.md`：说明效率、瓶颈和 benchmark。
-- `docs/GPT_IMAGE_2_GUIDE.md`：说明图像能力如何扩展。
-- CI：Rust fmt/test/clippy，以及 dashboard `npm ci`、`npm run lint`、`npm run build`。
-- Issue / PR 模板：规范反馈。
-- Security policy：防止密钥泄露。
-- Release notes：每次升级说明兼容性和验证结果。
-
-## 未来拓展
-
-建议按风险从低到高推进：
-
-- Provider 实测矩阵：用 `scripts/provider-matrix.sh` 记录 DeepSeek、OpenRouter、DashScope、Gemini、Mimo 等真实测试状态。
-- 路由策略：按模型名前缀、别名、fallback、provider 优先级扩展。
-- 上游账号池：同一 provider 已支持多个上游账号配置，控制面只保存 API Key 环境变量名和可选 Base URL，不保存明文 key；API 请求可按手动、故障切换或轮询策略选择账号，并记录账号级健康、冷却和最近错误。
-- 账号池后续优化：补充每账号速率阈值、权重、长期成功率趋势和更细的冷却原因分布。
-- 配置校验和热加载：已有 `model-port config validate`、`scripts/config-validate.sh` 和后台配置热加载；provider key、Base URL、模型列表、别名和路由顺序可以让新请求直接使用新快照。
-- 可观测性：已有 `/metrics`、请求日志、用量看板和 provider 健康；后续补上更细的上游状态码分布和长期趋势导出。
-- 图像能力：独立支持 `gpt-image-2` 的 Image API，不混入 Claude Code 文本主路径。
-- 管理面：继续保持轻量，不引入企业 SSO、外部结算或复杂租户层。
-
-## Provider 验收标准
-
-新增或声明支持某个 provider 前，至少完成：
-
-1. 填好真实 key 和模型变量。
-2. 启动 ModelPort；如果只是调整 provider key、Base URL、模型列表、别名或路由顺序，可在后台执行热重载配置。
-3. 运行 `scripts/doctor.sh`。
-4. 运行 `scripts/provider-matrix.sh --model <model-id>`。
-5. 同时通过非流式和流式 `/v1/messages`。
-6. 把结果记录到 `docs/PROVIDER_MATRIX.md`。
-
-如果 provider 只是在配置中存在，但没有真实 key 跑过，应标记为“待真实 key 验证”，不要对外宣称已生产验证。
-
-## 不建议做的事
-
-- 不要直接公网暴露。
-- 不要在日志输出真实 key。
-- 不要把所有 provider native API 都塞进第一阶段。
-- 不要为了“任意模型”牺牲默认 Claude Code 稳定性。
-- 不要把图片 base64 通过当前文本 SSE 主链路硬塞给 Claude Code。
+When implementation and docs disagree, fix both in the same change and add a
+check that would catch the drift again.

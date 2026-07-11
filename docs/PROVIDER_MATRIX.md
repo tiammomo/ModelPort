@@ -1,93 +1,120 @@
 # Provider Compatibility Matrix
 
-This document tracks the practical provider support status for ModelPort. The goal is to keep provider claims grounded in repeatable checks, not just configuration entries.
+This document separates two different facts:
 
-## Production Rule
+1. **Built-in configuration** means ModelPort has a provider template and a
+   protocol adapter path.
+2. **Verified** means a real account/model passed dated non-stream, stream, and
+   relevant Tool Use acceptance through a specific commit.
 
-A provider should only be described as "verified" after both paths pass through the local ModelPort gateway:
+Configuration is not verification. A model listed by `/v1/models` may still be
+unavailable to the account or runtime.
+
+## Built-In Catalog
+
+Defaults below are derived from the built-in catalog in `src/config.rs` as of
+2026-07-11. The shipped `config.example.toml` is a smaller DeepSeek-only example.
+Provider catalogs change; an environment model override is inserted into that
+provider's runtime model list.
+
+| Provider | Protocol | Code default model | Tool-argument mode | Primary variables |
+| --- | --- | --- | --- | --- |
+| `deepseek` | Anthropic | `deepseek-v4-flash` | native | `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_ANTHROPIC_BASE_URL`, `DEEPSEEK_MODEL` |
+| `deepseek_openai` | OpenAI-compatible | `deepseek-v4-flash` | delta | `DEEPSEEK_OPENAI_API_KEY`, `DEEPSEEK_OPENAI_BASE_URL`, `DEEPSEEK_OPENAI_MODEL` |
+| `mimo` | OpenAI-compatible | `mimo-v2.5-pro` | delta | `MIMO_OPENAI_API_KEY`, `MIMO_OPENAI_BASE_URL`/`BASE_URL`, `MIMO_MODEL` |
+| `anthropic` | Anthropic | `claude-fable-5` | native | `ANTHROPIC_API_KEY`, `ANTHROPIC_UPSTREAM_BASE_URL`, `ANTHROPIC_UPSTREAM_MODEL` |
+| `openai` | OpenAI-compatible | `gpt-5.5` | delta | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| `openrouter` | OpenAI-compatible | `openrouter/auto` | delta | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL` |
+| `gemini` | OpenAI-compatible | `gemini-3.5-flash` | delta | `GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`, `GEMINI_MODEL` |
+| `xai` | OpenAI-compatible | `grok-3` | delta | `XAI_API_KEY`, `XAI_BASE_URL`, `XAI_MODEL` |
+| `groq` | OpenAI-compatible | `llama-3.3-70b-versatile` | delta | `GROQ_API_KEY`, `GROQ_BASE_URL`, `GROQ_MODEL` |
+| `dashscope` | OpenAI-compatible | `qwen-plus` | delta | `DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL`, `DASHSCOPE_MODEL` |
+| `kimi` | OpenAI-compatible | `kimi-k2.6` | delta | `MOONSHOT_API_KEY`, `KIMI_BASE_URL`, `KIMI_MODEL` |
+| `zhipu` | OpenAI-compatible | `glm-4.7` | delta | `ZHIPU_API_KEY`, `ZHIPU_BASE_URL`, `ZHIPU_MODEL` |
+| `mistral` | OpenAI-compatible | `mistral-large-latest` | delta | `MISTRAL_API_KEY`, `MISTRAL_BASE_URL`, `MISTRAL_MODEL` |
+| `ark` | OpenAI-compatible | `doubao-seed-1-6-250615` | delta | `ARK_API_KEY`, `ARK_BASE_URL`, `ARK_MODEL` |
+| `ollama` | OpenAI-compatible | `llama3.1` | best_effort | `MODELPORT_ENABLE_OLLAMA`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
+| `custom` | OpenAI-compatible | `default` | best_effort | `CUSTOM_OPENAI_BASE_URL`, `CUSTOM_OPENAI_API_KEY`, `CUSTOM_OPENAI_MODEL` |
+| `local_sglang` | OpenAI-compatible | `local-model` | best_effort | `MODELPORT_ENABLE_LOCAL_SGLANG`, `SGLANG_BASE_URL`, `SGLANG_MODEL` |
+| `local_vllm` | OpenAI-compatible | `local-model` | best_effort | `MODELPORT_ENABLE_LOCAL_VLLM`, `VLLM_BASE_URL`, `VLLM_MODEL` |
+| `local_llamacpp` | OpenAI-compatible | `local-model` | best_effort | `MODELPORT_ENABLE_LOCAL_LLAMACPP`, `LLAMACPP_BASE_URL`, `LLAMACPP_MODEL` |
+
+Fallback credential names include `DEEPSEEK_API_KEY`, `GOOGLE_API_KEY`,
+`QWEN_API_KEY`, `KIMI_API_KEY`, and `VOLCENGINE_API_KEY`. Every template also
+supports a comma-separated `*_MODELS` catalog; see
+[Configuration](CONFIGURATION.md#provider-environment-pattern).
+
+Anthropic templates default to Tool Use support, tool choice, parallel calls,
+and native arguments. General OpenAI-compatible templates default to delta
+arguments. Ollama/SGLang/vLLM/llama.cpp default to `parallel_tool_calls=false`;
+custom and local templates default to `best_effort`. For OpenAI-compatible
+streams, `delta` preserves incremental argument fragments, while `cumulative`
+and `best_effort` enable argument replay deduplication and complete-JSON
+recovery. A configured mode remains an expectation, not real-provider
+verification.
+
+## Committed Verification Ledger
+
+No dated, reproducible real-provider result is currently committed. Therefore
+none of the built-in entries above should be advertised as production verified
+by this repository. DeepSeek with `deepseek-v4-flash` is the configured sample
+path only.
+
+Add results in this format without secrets:
+
+| Date | Commit | Provider/model | Endpoint ownership | Non-stream | Stream body | Tool Use | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| _YYYY-MM-DD_ | `_sha_` | `_provider:model_` | official/local/third-party | pass/fail | pass/fail | pass/fail/n-a | account tier, caveat, script version |
+
+“Stream pass” requires a text/tool delta and no `event: error`; HTTP 200 alone
+does not pass. “Tool Use pass” requires the real upstream path, not only the
+local mock adapter test.
+
+## Verification Procedure
+
+Start with the gateway running and the exact account/model configured:
 
 ```bash
-scripts/provider-matrix.sh --model <model-id>
+scripts/config-validate.sh
+scripts/doctor.sh
+scripts/provider-matrix.sh --model provider:model
 ```
 
-For registered models:
+For multiple models:
 
 ```bash
-scripts/provider-matrix.sh --all
+scripts/provider-matrix.sh --models provider:model-a,provider:model-b
 ```
 
-The script checks:
-
-- `POST /v1/messages` non-streaming.
-- `POST /v1/messages` with `stream: true`.
-- Local ModelPort auth and routing.
-- Upstream HTTP/error behavior as seen through ModelPort.
-
-Tool Use compatibility has a separate focused check:
+For real Tool Use certification:
 
 ```bash
 scripts/tool-use-acceptance.sh --upstream
 ```
 
-Default `scripts/tool-use-acceptance.sh` uses a local mock provider and proves the gateway adapter. `--upstream` is required before marking a real provider as Tool Use verified.
+These commands make paid provider calls. Record failures as evidence too. The
+default `scripts/tool-use-acceptance.sh` proves the local adapter with a mock;
+it does not certify a provider.
 
-It reads secrets from `.env` but does not print them.
+## Interpretation Limits
 
-## Standard Sample Baseline
-
-The project's default sample route is DeepSeek's official Anthropic-compatible API:
-
-| Provider | Protocol | Model | Non-stream | Stream | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `deepseek` | Anthropic-compatible | `deepseek-v4-flash` | Standard sample | Standard sample | Use this path for docs, smoke tests, and adapter examples. |
-
-## Pricing Notes
-
-ModelPort uses provider pricing only for operational cost estimates; upstream providers remain the source of truth for billing. Avoid adding model-specific pricing branches unless the model is part of the active standard sample or a real deployment needs the estimate.
-
-## Built-In Providers
-
-These providers are built into the router. A "Pending real-key verification" status means the adapter is configured, but the repository should not claim end-to-end production verification until a real key has been tested with `scripts/provider-matrix.sh`.
-
-| Provider | Protocol | Default Model | Tool Use Default | Status | Key Variables |
-| --- | --- | --- | --- | --- | --- |
-| `deepseek` | Anthropic-compatible | `deepseek-v4-flash` | native | Standard sample | `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_MODEL` |
-| `deepseek_openai` | OpenAI-compatible | `deepseek-chat` | delta | Pending real-key verification | `DEEPSEEK_OPENAI_API_KEY`, `DEEPSEEK_OPENAI_MODEL`, `DEEPSEEK_API_KEY` |
-| `mimo` | OpenAI-compatible | `mimo-v2.5-pro` | delta | Generic OpenAI-compatible provider | `BASE_URL`, `MIMO_OPENAI_BASE_URL`, `MIMO_OPENAI_API_KEY`, `MIMO_MODEL` |
-| `anthropic` | Anthropic-compatible | `claude-sonnet-4-20250514` | native | Pending real-key verification | `ANTHROPIC_API_KEY`, `ANTHROPIC_UPSTREAM_MODEL` |
-| `openai` | OpenAI-compatible | `gpt-4o` | delta | Pending real-key verification | `OPENAI_API_KEY`, `OPENAI_MODEL` |
-| `openrouter` | OpenAI-compatible | `openrouter/auto` | delta | Pending real-key verification | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` |
-| `gemini` | OpenAI-compatible | `gemini-2.5-flash` | delta | Pending real-key verification | `GEMINI_API_KEY`, `GEMINI_MODEL` |
-| `xai` | OpenAI-compatible | `grok-3` | delta | Pending real-key verification | `XAI_API_KEY`, `XAI_MODEL` |
-| `groq` | OpenAI-compatible | `llama-3.3-70b-versatile` | delta | Pending real-key verification | `GROQ_API_KEY`, `GROQ_MODEL` |
-| `dashscope` | OpenAI-compatible | `qwen-plus` | delta | Pending real-key verification | `DASHSCOPE_API_KEY`, `DASHSCOPE_MODEL` |
-| `kimi` | OpenAI-compatible | `kimi-k2.6` | delta | Pending real-key verification | `MOONSHOT_API_KEY`, `KIMI_MODEL` |
-| `zhipu` | OpenAI-compatible | `glm-4.7` | delta | Pending real-key verification | `ZHIPU_API_KEY`, `ZHIPU_MODEL` |
-| `mistral` | OpenAI-compatible | `mistral-large-latest` | delta | Pending real-key verification | `MISTRAL_API_KEY`, `MISTRAL_MODEL` |
-| `ark` | OpenAI-compatible | `doubao-seed-1-6-250615` | delta | Pending real-key verification | `ARK_API_KEY`, `ARK_MODEL` |
-| `ollama` | OpenAI-compatible | `llama3.1` | best_effort, single-tool | Pending local runtime verification | `MODELPORT_ENABLE_OLLAMA`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
-| `custom` | OpenAI-compatible | `default` | best_effort | Depends on upstream | `CUSTOM_OPENAI_BASE_URL`, `CUSTOM_OPENAI_API_KEY`, `CUSTOM_OPENAI_MODEL` |
-| `local_sglang` | OpenAI-compatible | runtime served model | best_effort, single-tool | Pending local runtime verification | `MODELPORT_ENABLE_LOCAL_SGLANG`, `SGLANG_BASE_URL`, `SGLANG_MODEL` |
-| `local_vllm` | OpenAI-compatible | runtime served model | best_effort, single-tool | Pending local runtime verification | `MODELPORT_ENABLE_LOCAL_VLLM`, `VLLM_BASE_URL`, `VLLM_MODEL` |
-| `local_llamacpp` | OpenAI-compatible | runtime served model | best_effort, single-tool | Pending local runtime verification | `MODELPORT_ENABLE_LOCAL_LLAMACPP`, `LLAMACPP_BASE_URL`, `LLAMACPP_MODEL` |
-
-## Acceptance Checklist
-
-Before marking a provider as verified:
-
-- Add the provider key and model variables to `.env`.
-- Start or restart ModelPort.
-- Run `scripts/doctor.sh`.
-- Run `scripts/provider-matrix.sh --model <provider:model-or-model-id>`.
-- Run `scripts/tool-use-acceptance.sh --upstream` when the provider is expected to support Claude Code Tool Use.
-- For providers with multiple important models, run `scripts/provider-matrix.sh --models model-a,model-b`.
-- Record the date, provider, model, protocol, and any caveats in this document.
-- If the provider has special pricing, update the pricing table and add a regression test in `src/pricing.rs`.
-
-## Known Caveats
-
-- Some OpenAI-compatible providers use `max_tokens`, while others require `max_completion_tokens`; ModelPort supports provider-level `max_tokens_field`.
-- Some streaming providers replay previous text fragments; use provider-level `deduplicate_stream_text` only when a real upstream needs it.
-- Streaming upstream failures may arrive as Anthropic SSE `event: error` with HTTP 200, so stream tests must inspect the event body.
-- `openrouter`, `custom`, and `ollama` are best suited for arbitrary model passthrough.
-- Image and Responses API work should remain separate from the Claude Code text path.
+- Provider model names, account permissions, pricing, and APIs change outside
+  this repository. Confirm them with the provider before deployment.
+- OpenAI-compatible does not imply identical Tool Use, SSE, usage, or error
+  semantics.
+- Live-stream verification must observe a non-204 2xx
+  `text/event-stream` handshake and the protocol's termination marker, not only
+  an initial HTTP 200 or a text delta.
+- `max_tokens_field`, text replay, and tool-argument behavior are provider-level
+  compatibility settings.
+- A keyless local/custom provider can be present in file configuration and
+  appear in `/v1/models` while its runtime is offline.
+- Provider base URLs reject userinfo, query strings, and fragments. Credentials
+  belong in their environment-backed adapter headers, not the URL.
+- Non-local/non-custom Provider bases require HTTPS by default. The explicit
+  insecure-HTTP override is only for a trusted internal network because it
+  exposes Provider credentials and model traffic in plaintext.
+- Stream errors can occur after headers and are not currently reconciled into
+  the normal provider outcome/fallback lifecycle.
+- Pricing values are estimates and require separate regression tests in
+  `src/pricing.rs`; provider billing remains authoritative.

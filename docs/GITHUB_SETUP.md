@@ -1,66 +1,68 @@
-# GitHub 建设建议
+# Repository, CI, And Release Setup
 
-ModelPort 的 GitHub 仓库建议按“可长期维护的开发者工具”来建设，而不是临时脚本仓库。
+This document records the intended GitHub maintenance policy. It is not runtime
+configuration.
 
-## 仓库基础信息
+## Repository Metadata
 
-建议设置：
+- Description: `Self-hosted Anthropic-compatible model gateway for Claude Code and VS Code Claude.`
+- Topics: `claude-code`, `anthropic`, `openai-compatible`, `llm-gateway`,
+  `model-router`, `rust`, `vscode`, `deepseek`.
+- License: MIT.
 
-- Description: `Local Anthropic-compatible model gateway for Claude Code and VS Code Claude.`
-- Website: README 中的快速开始或 release 页面。
-- Topics: `claude-code`, `anthropic`, `openai-compatible`, `llm-gateway`, `model-router`, `rust`, `vscode`, `mimo`, `deepseek`
-- License: MIT
+Do not use topics or the description to claim verified providers that have no
+dated result in [Provider Matrix](PROVIDER_MATRIX.md).
 
 ## Branch Protection
 
-对 `main` 开启：
+Protect `main` with:
 
-- Require pull request before merging。
-- Require status checks to pass。
-- 必选检查：`Rust checks`；如果启用前端 CI，再加入 `Dashboard checks`。
-- Require branches to be up to date before merging。
-- Require conversation resolution before merging。
+- pull requests before merge;
+- the current **Repository checks** workflow as a required status;
+- up-to-date branches and resolved review conversations;
+- restricted force pushes and branch deletion.
 
-个人项目也可以允许管理员绕过，但正式投产后建议所有变更都经 PR。
+The current CI uses the pinned Rust 1.96.0 toolchain, Node.js 24, locked npm
+dependencies, Rust fmt/test/clippy, dashboard typecheck/lint/unit/build, shell
+syntax, and configuration-example checks through `scripts/check-all.sh`.
+Playwright E2E and paid upstream tests remain separate unless a deterministic
+CI environment is added.
 
-## Actions
+Use least-privilege workflow permissions, pinned major actions, concurrency
+cancellation, and no persistent checkout credential where it is unnecessary.
 
-当前 CI 位于 `.github/workflows/ci.yml`，覆盖：
+## Issues And Pull Requests
 
-- `cargo fmt --all -- --check`
-- `cargo test --all-targets`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cd dashboard && npm ci`
-- `cd dashboard && npm run lint`
-- `cd dashboard && npm run build`
+The repository includes bug/feature issue forms, a PR template, and CODEOWNERS.
+Issue forms must not require or invite a full `.env`, provider key, session/API
+token, complete backup, raw prompt/response, or unreviewed log.
 
-Playwright E2E 和真实 provider 相关验证仍放在本机或受控内网环境执行，避免 CI 依赖真实上游密钥和外部账单状态。
+Provider choices in forms should track the catalog or allow free text rather
+than silently omitting supported templates.
 
-不要把真实 provider key 放进 GitHub Actions secrets 里跑上游测试。真实上游测试留在本机或受控内网环境执行。
+Security details belong in the private process in [SECURITY.md](../SECURITY.md),
+not a public bug report.
 
-## Release
+## Releases
 
-建议发布节奏：
+Every release should include:
 
-- `v0.1.x`：本机投产、Claude Code 稳定接入、DeepSeek 官方主路径稳定。
-- `v0.2.x`：provider 可观测性、benchmark、更多 provider 实测矩阵。
-- `v0.3.x`：可选 Responses API / Images API 独立扩展。
+- behavior summary and upgrade steps;
+- configuration variables/defaults added, changed, or removed;
+- persistence schema/migration and rollback notes;
+- Docker/systemd changes;
+- validation commands and exact commit;
+- only dated real-provider results that were actually run;
+- stream, quota, DNS SSRF, persistence, and cost-estimation limits that remain.
 
-每次 release 附带：
+Maintain a changelog or release notes from the first public release. Version the
+backend and dashboard coherently enough that a bug report can identify the
+deployed pair.
 
-- 变更摘要。
-- 升级命令。
-- 配置变更。
-- 已验证 provider。
-- 已知问题。
+## CI Secret Policy
 
-## Issue 和 PR
-
-仓库已经提供：
-
-- Bug report 模板。
-- Feature request 模板。
-- Pull request 模板。
-- CODEOWNERS。
-
-Issue 中禁止粘贴真实 API key、完整 `.env` 和敏感日志。维护者回复问题时也不要要求用户公开密钥。
+Routine CI must not make paid upstream calls. If a future protected workflow
+does so, use a dedicated low-quota account, manual/environment approval,
+redacted artifacts, strict timeout/cost limits, and no fork access. GitHub
+Secrets can protect storage, but they do not remove billing, prompt disclosure,
+or third-party availability risk.

@@ -1,145 +1,153 @@
 # Production Acceptance
 
-This checklist is for the main ModelPort audience: personal use and small teams running a lightweight self-hosted gateway.
+This checklist validates the supported single-host/personal-or-small-team
+profile. It does not prove public multi-tenant safety, all-provider health,
+exact billing, or final live-stream lifecycle accounting.
 
-## Run The Script
+## Prerequisites
 
-Start ModelPort first, then run:
+- A running backend and configured `.env`.
+- `curl` and Node.js.
+- Admin username/password for control-plane checks.
+- Dashboard reachable when dashboard acceptance is required.
+- A complete backup before running against important existing state.
+
+The scripts create temporary users, teams, API keys, provider records, audit
+events, and backup files, then clean temporary control records. Run them only on
+an instance where those changes are acceptable.
+
+## Local Control-Plane Acceptance
 
 ```bash
 scripts/acceptance.sh
 ```
 
-Default mode verifies the control plane and safety policies without making a real upstream model call.
+Default mode does not call an upstream model. It checks:
 
-Tool Use has a dedicated acceptance script:
+- `/livez` and authenticated `/readyz` diagnostics;
+- optional dashboard reachability and admin login;
+- authenticated `/v1/models`;
+- temporary user, team, and API-key creation;
+- API-key IP rejection and tiny spend-limit rejection before upstream routing;
+- audit-event creation;
+- complete CLI backup export and deep auth/control validation;
+- cleanup of temporary records.
+
+`readyz` returning success means auth/control storage was readable and detailed
+diagnostics were accessible; it does not prove that every Provider is ready.
+
+## Tool Use Adapter Acceptance
 
 ```bash
 scripts/tool-use-acceptance.sh
 ```
 
-Default Tool Use acceptance starts a temporary local OpenAI-compatible mock upstream, creates a temporary local provider through the dashboard API, validates non-streaming Tool Use, streaming `input_json_delta`, `tool_result` continuation, and malformed Tool Use rejection, then cleans the provider up. It does not consume upstream quota.
+Default mode starts a temporary local OpenAI-compatible mock, creates a
+temporary provider through the dashboard API, and validates:
 
-To include one real `/v1/messages` call through the created API key:
+- non-stream Tool Use response mapping;
+- streaming `input_json_delta` mapping;
+- `tool_result` continuation to OpenAI `role=tool`;
+- malformed Tool Use rejection before upstream;
+- `disable_parallel_tool_use` mapping;
+- cleanup of the provider and mock process.
+
+This proves the adapter against the fixture, not a real provider.
+
+## Paid Upstream Acceptance
 
 ```bash
 scripts/acceptance.sh --upstream
+scripts/tool-use-acceptance.sh --upstream
+scripts/provider-matrix.sh --model provider:model
 ```
 
-To certify the configured real upstream provider's Tool Use behavior:
+These commands consume provider quota and depend on account entitlement, model
+availability, and upstream status. Provider matrix stream acceptance inspects
+text deltas and `event: error`; record the date/commit/result in
+[Provider Matrix](PROVIDER_MATRIX.md).
+
+An upstream acceptance pass does not close these known limits:
+
+- later live-stream completion/usage/provider outcome is not reconciled into the
+  normal request log and fallback lifecycle;
+- concurrent quota checks are not transactional reservations;
+- provider hostname DNS answers are not private-range revalidated;
+- persisted control state is synchronously written as a complete document.
+
+## Code And Dashboard Checks
+
+Use the aggregate repository check when available:
 
 ```bash
-scripts/tool-use-acceptance.sh --upstream
+scripts/check-all.sh
 ```
 
-Before a release or push that touches the dashboard, pricing, routing, auth, quotas, or request logs, also run the code checks:
+Or run the layers explicitly:
 
 ```bash
 cargo fmt --all -- --check
-CC_x86_64_unknown_linux_gnu=./tools/zig-cc-wrapper.sh cargo test --all-targets
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets --all-features -- -D warnings
+
 cd dashboard
-npm run lint
-npm run build
-LD_LIBRARY_PATH=../.modelport/playwright-deps/root/usr/lib/x86_64-linux-gnu npm run e2e
+npm ci
+npm run check
+npm run e2e
 ```
 
-The `LD_LIBRARY_PATH` line is only needed on machines where Playwright's Chromium cannot find system libraries such as `libnspr4.so`.
-
-## What It Checks
-
-The script verifies:
-
-- `/livez` is reachable.
-- Authenticated `/readyz` returns detailed readiness.
-- Dashboard URL is reachable when `MODELPORT_DASHBOARD_URL` points to it.
-- Admin login works.
-- Authenticated `/v1/models` works.
-- A temporary user can be created.
-- A temporary team/project can be created.
-- A temporary API key can be created and bound to that team/project.
-- API key IP restriction rejects a disallowed client IP.
-- API key spend limit rejects an over-limit request before upstream routing.
-- Audit events are recorded.
-- Full local backup export and validation work.
-- Temporary user, team/project, and key are cleaned up.
-- Dedicated Tool Use acceptance can validate the protocol adapter with a local mock provider.
-
-`--upstream` additionally verifies:
-
-- The same temporary API key can make a successful real model request when IP policy allows it.
-- `scripts/tool-use-acceptance.sh --upstream` verifies that the configured provider can return a real Tool Use response.
-
-## Environment
-
-The script reads `.env` through the shared script loader. Required values:
-
-```env
-MODELPORT_BIND=127.0.0.1:17878
-MODELPORT_AUTH_TOKEN=...
-MODELPORT_ADMIN_USERNAME=admin
-MODELPORT_ADMIN_PASSWORD=...
-```
-
-Optional:
-
-```env
-MODELPORT_DASHBOARD_URL=http://127.0.0.1:5173
-MODELPORT_TOOL_USE_MOCK_HOST=host.docker.internal
-```
-
-The script requires `curl` and `node`. `node` is already part of the dashboard toolchain.
-
-`MODELPORT_TOOL_USE_MOCK_HOST` is optional. The Tool Use script automatically uses `host.docker.internal` when Docker Compose is running and `127.0.0.1` otherwise.
-
-## Docker Compose
-
-For Docker Compose:
+Playwright requires Chromium and host libraries. Install them using the
+supported Playwright command for the machine, such as:
 
 ```bash
-cp deploy/docker/modelport.env.example .env
-nano .env
-docker compose up -d --build
-MODELPORT_DASHBOARD_URL=http://127.0.0.1:5173 scripts/acceptance.sh
+npx playwright install --with-deps chromium
 ```
 
-If you published the dashboard or API on different host ports, adjust `MODELPORT_BIND` and `MODELPORT_DASHBOARD_URL` in `.env` or in the command environment.
+## Manual Product Checks
 
-## Interpreting Results
+- Login: correct/incorrect/locked credentials, mobile layout, focus and error
+  text.
+- Dashboard: ranges, long numbers/names, empty/error/loading states.
+- Dashboard navigation: role-filtered sidebar and command palette, explicit
+  access denied pages, return-to-source login, and query cache isolation after
+  changing users.
+- Dashboard ranges: server totals cover all retained rows rather than the
+  visible log page; source/estimated/retention-limit labels match the response.
+- Logs: real request ID, debounced and shareable URL filters, local-time
+  shortcuts, automatic refresh without a fixed end time, mobile request cards, accessible detail
+  drawer, stream-estimate labels; `upstream-returned` versus `local-estimate`
+  provenance; no claim of stored raw request/provider IR or per-request Tool Use
+  stages that were not persisted.
+- Models/providers: create/update/disable/delete dependencies, credential status,
+  `clearApiKeyEnv`, automatic-pool fail-closed behavior, discovery and a real
+  model test when intended.
+- Settings: service-level runtime fields are read-only; default provider/order
+  save correctly; reload reports accurate restart scope.
+- API keys/users/teams/quotas: ownership and role boundaries, one-time key
+  reveal acknowledgement, preview-versus-secret wording, self/last-admin
+  protection, owner-active checks, separate quota units, explicit zero-limit
+  blocking confirmation, user UTC calendar quota resets versus rolling spend
+  windows, referenced-team deletion rejection, expiration and cleanup.
+- Messages/billing: missing, zero, and oversized `max_tokens` rejection;
+  canonical API-key/quota usernames; locally rejected requests consuming zero
+  quota/spend; correct `billingMode` provenance after a real attempt.
+- Proxy/SSE: right-to-left trusted-hop extraction, Host port preservation,
+  strict `text/event-stream` handshake, handshake/error-body/idle timeouts, and
+  missing termination events becoming SSE errors; concurrent-stream exhaustion
+  returns 429 and a permit remains held until body completion/drop.
+- Operations: diagnostic export versus complete CLI backup is clearly labelled.
 
-Passing default acceptance means ModelPort is ready for personal or small-team trial production.
+## Release Evidence
 
-Passing `--upstream` means the full path is working:
+Record:
 
-```text
-Claude-compatible client -> ModelPort auth/policy -> provider route -> upstream model
-```
+- commit/build and deployment mode;
+- every command run and whether it used a paid provider;
+- configured provider/model and endpoint ownership;
+- pass/fail plus any SSE error body (redacted);
+- storage backend and backup validation;
+- known limitations accepted for this rollout.
 
-If default acceptance passes but `--upstream` fails, investigate provider credentials, model names, base URL, or upstream quota.
-
-## Dashboard Acceptance
-
-The dashboard E2E suite currently covers:
-
-- Admin login through the account-based dashboard auth flow.
-- Dashboard range filters: last 1 day, 3 days, 7 days, and custom range.
-- No `Invalid Date` labels in trend charts.
-- Public model catalog visibility for active configured providers.
-- DeepSeek standard model visibility when the provider is usable.
-- Provider lifecycle and model inventory workflows: create, disable/restore, change default model, enable/disable a model, and delete.
-- System settings configuration reload, including the returned restart-required scope.
-- User and API key create/edit/cleanup flows.
-
-Manual visual checks before a user-facing release should include:
-
-- `/login`: desktop and mobile layout, button/input sizing, and readable color contrast.
-- `/dashboard`: KPI cards, request trend, provider breakdown, model distribution, token trend, recent usage, and no clipped long numbers.
-- `/logs`: filter panel, virtualized table, token/cost columns, retry/network details, and horizontal overflow behavior.
-
-## Pricing Acceptance
-
-Cost display is an estimate, but the estimate must be internally consistent:
-
-- `src/pricing.rs` has regression tests for provider-specific cache input/output pricing.
-- Request logs expose `modelPricing`, `costBreakdown`, token totals, and cache hit rate.
-- Dashboard summaries recalculate historical records with token details from the current pricing table.
-- Legacy records without token details keep their stored estimate so old quota tests and imports remain compatible.
+A default acceptance pass supports a controlled trial of the local control
+plane. A dated real-provider result supports only the exact provider/model/path
+that was tested.

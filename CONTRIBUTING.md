@@ -1,54 +1,101 @@
-# Contributing to ModelPort
+# Contributing To ModelPort
 
-感谢参与 ModelPort。这个项目的目标是保持轻量、可靠、容易本机投产：优先服务 Claude Code / VS Code Claude 的 Anthropic-compatible 文本链路，再逐步扩展常用 provider。
+ModelPort prioritizes a reliable Anthropic-compatible text path, explicit
+security boundaries, and low operational cost for a single host or small team.
+Changes should preserve that scope and distinguish implemented behavior from
+provider-specific verification or future proposals.
 
-## 开发环境
+## Development Setup
+
+The CI baseline is Rust stable and Node.js 24. Install Rust with `rustfmt` and
+`clippy`, Node.js/npm, `curl`, and a native compiler toolchain. Docker Compose is
+needed for the complete stack.
+
+`scripts/install-deps-ubuntu.sh` installs only native helper packages; it does
+not install Rust, Node.js, npm, Docker, or Playwright browsers.
 
 ```bash
 git clone git@github.com:tiammomo/ModelPort.git
 cd ModelPort
 cp .env.example .env
-scripts/install-deps-ubuntu.sh
+# replace required placeholders; never commit this file
+scripts/config-validate.sh
 scripts/check.sh
+
+cd dashboard
+npm ci
+npm run lint
+npm run build
 ```
 
-`.env` 只放本机真实密钥，已经被 `.gitignore` 忽略。不要把真实 API key、token、日志、`.modelport/` 或 `target/` 提交进仓库。
+Full setup and the change-to-test matrix are in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-## 提交前检查
+## Before A Pull Request
 
-每个改动至少跑：
+Run the aggregate check:
 
 ```bash
-scripts/check.sh
-scripts/doctor.sh
+scripts/check-all.sh
 ```
 
-涉及真实 provider、流式转换、鉴权或路由行为时，再跑：
+If working incrementally, `scripts/check.sh` is the backend-only subset and
+`cd dashboard && npm run check` is the dashboard subset.
+Dependency updates must also pass `cargo audit --deny warnings --file Cargo.lock`
+and `npm --prefix dashboard audit --audit-level=low`; CI runs both.
 
-```bash
-scripts/doctor.sh --upstream
-scripts/smoke-test.sh --upstream
-```
+Then choose checks by risk:
 
-涉及 Docker 时跑：
+- dashboard behavior: affected Playwright specs or `npm run e2e`;
+- auth, API keys, teams, quota, or backup: `scripts/acceptance.sh`;
+- protocol, SSE, or Tool Use: relevant Rust tests and
+  `scripts/tool-use-acceptance.sh`;
+- provider behavior: `scripts/provider-matrix.sh --model provider:model` and
+  real Tool Use acceptance when certification is intended;
+- Docker/systemd/reverse proxy: build/install the deployment and run smoke
+  through the deployed origin.
 
-```bash
-docker build -t modelport:local .
-```
+Real upstream checks can incur cost and must use your own local secrets. CI and
+ordinary pull requests should prefer mock-backed checks.
 
-## 代码约定
+## Code And Security Conventions
 
-- 优先沿用现有模块边界：`config` 负责配置与路由，`routes` 负责 HTTP 入口，`providers` 负责协议转换，`http` 负责上游传输。
-- provider 扩展优先走 Anthropic-compatible 或 OpenAI-compatible，不急着引入 provider native API。
-- 流式行为要加测试，尤其是 SSE 分片、错误事件、重复 chunk 和 tool call 参数。
-- 不在日志中输出 API key、完整 Authorization header、完整 base64 图片或大请求体。
-- README 面向使用者，`docs/` 面向维护者和长期建设。
+- Preserve module boundaries described in
+  [Architecture](docs/ARCHITECTURE.md#backend-boundaries).
+- Keep protocol conversion in adapters and provider quirks in explicit provider
+  configuration.
+- Add tests for split SSE frames, errors after headers, Tool Use causality,
+  request/response bounds, redirect behavior, and secret redaction.
+- Do not log or commit API keys, session/API tokens, `.env`, `.modelport/`,
+  complete backups, raw prompts/responses, or large base64/multipart payloads.
+- Secret-bearing types need redacted `Debug` behavior and regression tests; a
+  later derived/debug wrapper can silently undo that boundary.
+- Treat control-plane changes as security-sensitive: verify role checks, CSRF,
+  Origin, IP/trusted-proxy, and ownership behavior.
+- Avoid presenting estimated usage/cost as exact billing.
 
-## Pull Request
+## Documentation Contract
 
-PR 描述请说明：
+- Root READMEs are short user entry points. Maintained behavior belongs in
+  `docs/` and should be linked instead of copied.
+- Label features as **implemented**, real providers as **verified** only with a
+  dated result, and future work as **proposed**.
+- Keep English and Chinese README commands, endpoints, limits, and links aligned.
+- Update configuration, deployment templates, scripts, and docs together when a
+  variable or default changes.
+- Learning/interview material is non-normative and must link back to maintained
+  reference docs.
+- Check relative links and example commands before submission.
 
-- 改了什么行为。
-- 对 Claude Code / VS Code Claude 的影响。
-- 运行过哪些验证命令。
-- 是否涉及密钥、鉴权、日志、上游兼容或费用风险。
+## Pull Request Description
+
+Explain:
+
+- the behavior and user-visible outcome;
+- impact on Claude Code / VS Code Claude and provider compatibility;
+- validation commands and whether any used a paid upstream;
+- migration, configuration, persistence, security, or cost implications;
+- documentation updated for the changed contract.
+
+Keep unrelated refactors out of the same pull request when they make the risk or
+verification story harder to review.

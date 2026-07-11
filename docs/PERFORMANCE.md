@@ -1,56 +1,73 @@
-# 性能与效率
+# Performance And Efficiency
 
-结论：ModelPort 目前的中转效率足够支撑 Claude Code / VS Code Claude 的本机长期使用，也足够支撑内网小团队试生产。它不是重型代理，不做数据库写入、复杂策略引擎或二次推理；主要开销来自一次本机 HTTP hop、JSON 协议转换和上游网络请求。
+ModelPort is designed for single-host personal and small-team traffic. The
+gateway adds one local HTTP hop, authentication/policy work, JSON or SSE
+conversion, metrics, and a synchronous control-state write per completed
+request. Upstream queueing and generation will often dominate latency, but the
+repository does not claim a universal throughput or latency target without a
+dated benchmark.
 
-## 为什么足够快
+## Work Per Request
 
-- HTTP 入口使用 Axum/Tokio，异步处理请求。
-- 上游使用 reqwest/rustls 原生客户端，不依赖系统 `curl` 子进程。
-- 上游连接池复用 TCP/TLS 连接，减少重复握手。
-- 非流式响应只做必要 JSON 映射。
-- 流式响应按 SSE chunk 转换并转发，不等待完整回答结束。
-- 请求体、响应体和并发都有上限，避免异常请求拖垮本机服务。
+- Axum/Tokio handles ingress asynchronously with a process-wide concurrency
+  limit.
+- reqwest/rustls reuses upstream connections and disables redirects.
+- Non-stream responses are bounded and parsed before response mapping.
+- Normal streams are converted frame by frame with idle and total-byte limits.
+  The general request timeout covers only their response-header handshake; an
+  established stream has no fixed wall-clock lifetime while chunks continue
+  arriving within the idle and byte limits.
+  A separate process-local stream semaphore is acquired before the upstream
+  attempt and remains attached to the downstream response body until completion
+  or drop. This prevents the handler-return boundary from hiding long-lived
+  stream occupancy; immediate exhaustion returns 429 rather than queueing.
+  A provider configured with `buffer_stream_text` intentionally waits for a
+  complete non-stream generation and conversion, captures reported usage, and
+  only then emits local SSE. This removes upstream generation from the
+  post-header phase but makes time to first byte equal to full upstream
+  generation plus conversion.
+- Authentication, model routing, rate policy, quota checks, credential health,
+  pricing estimates, metrics, and usage records add local work.
+- Auth and control persistence currently replaces a complete logical JSON
+  document synchronously. PostgreSQL stores two `jsonb` rows; file mode rewrites
+  JSON files. This is measurable write amplification as usage/audit state grows.
+- Log filtering and pagination happen server-side for the HTTP contract, but
+  still materialize and scan retained usage rows in memory before slicing the
+  page. They reduce response/UI work, not complete-document storage cost.
+- Dashboard trend aggregation also scans the complete retained usage set for
+  the selected window rather than the visible logs page. It is bounded to 90
+  days and by `MODELPORT_USAGE_LOG_LIMIT`; reaching the retention cap can make
+  an older range incomplete.
 
-## 真正的瓶颈在哪里
+## Benchmark
 
-通常不在 ModelPort，而在：
-
-- 上游模型排队和生成速度。
-- 第三方中转服务的网络质量。
-- Claude Code 一次任务发起的上下文大小。
-- 流式 provider 是否重放文本片段。
-- 本机网络代理、防火墙或 DNS。
-
-## 如何测
-
-本机网关基准：
+Local endpoints, default 30 iterations:
 
 ```bash
 scripts/bench.sh
 ```
 
-真实上游基准会产生模型调用成本，默认只跑 3 次：
+Real upstream, default 3 paid calls:
 
 ```bash
 scripts/bench.sh --upstream
-```
-
-调整次数：
-
-```bash
-scripts/bench.sh -n 100
 scripts/bench.sh --upstream -n 5
 ```
 
-建议关注：
+Record at least:
 
-- `/livez`：本机服务和进程调度开销。
-- `/v1/models`：本机鉴权、路由配置和 JSON 响应开销。
-- `/v1/messages`：真实上游耗时，主要反映 provider 质量。
+- date, commit, build profile, CPU/RAM and OS;
+- storage backend and retained usage-record count;
+- provider/model, stream mode, context/output size;
+- local endpoint p50/p95 and end-to-end client latency;
+- first content delta and complete generation separately;
+- failure/SSE-error count, not only initial HTTP status.
 
-## 运行指标
+`/livez` measures HTTP/process overhead. `/v1/models` adds authentication and
+catalog generation. `/v1/messages` is not a gateway-only benchmark because it
+includes provider behavior and a persistence write.
 
-ModelPort 提供带鉴权的 Prometheus 文本指标：
+## Metrics
 
 ```bash
 curl -sS \
@@ -58,36 +75,60 @@ curl -sS \
   http://127.0.0.1:17878/metrics
 ```
 
-当前指标包括：
+Current process-local series:
 
 - `modelport_uptime_seconds`
-- `modelport_route_requests_total`
-- `modelport_route_successes_total`
-- `modelport_route_failures_total`
-- `modelport_route_duration_ms_total`
-- `modelport_message_requests_total`
-- `modelport_message_successes_total`
-- `modelport_message_failures_total`
-- `modelport_message_duration_ms_total`
+- `modelport_route_{requests,successes,failures,duration_ms}_total`
+- `modelport_message_{requests,successes,failures,duration_ms}_total`
+- `modelport_message_{input,output,cache_write,cache_read}_tokens_total`
+- `modelport_message_cost_estimate_usd_total`
 
-`modelport_message_*` 会按 `provider`、`model`、`stream` 打标签。对流式请求而言，当前耗时统计的是 ModelPort 建立响应和上游流式请求初始化阶段，不代表完整模型生成耗时；完整生成体验仍要结合客户端感知、日志和 provider 自身状态判断。
+Message metrics are labelled by provider, model, and stream. Arbitrary model
+passthrough can create high cardinality. Metrics reset on restart.
 
-## 投产调优
+For streams, current duration and success account for upstream connection and
+local stream acceptance, not guaranteed final completion. Final tokens/cost can
+be estimated from the request rather than reconciled provider usage. Do not
+build SLOs or invoices from those series without closing that lifecycle gap.
+Request logs expose `billingMode` to distinguish Provider-returned usage from a
+local estimate. Attempt-level preflight rows record zero usage; earlier ingress
+failures may return before persistence. Neither updates quota/spend, though both
+still incur local validation/metrics work.
 
-常用参数：
+## Tuning
 
-```bash
+```env
 MODELPORT_MAX_CONCURRENT_REQUESTS=64
+MODELPORT_MAX_CONCURRENT_STREAMS=64
 MODELPORT_HTTP_CONNECT_TIMEOUT_SECS=10
 MODELPORT_HTTP_REQUEST_TIMEOUT_SECS=600
 MODELPORT_HTTP_STREAM_IDLE_TIMEOUT_SECS=300
 MODELPORT_HTTP_MAX_RESPONSE_BYTES=33554432
+MODELPORT_HTTP_SSE_MAX_LINE_BYTES=1048576
+MODELPORT_HTTP_SSE_MAX_EVENT_BYTES=8388608
+MODELPORT_HTTP_SSE_MAX_STREAM_BYTES=67108864
+MODELPORT_USAGE_LOG_LIMIT=5000
 ```
 
-建议：
+- Lower concurrency before raising it when provider rate limits or storage
+  latency are the bottleneck.
+- `MODELPORT_MAX_CONCURRENT_STREAMS` defaults to the effective general
+  concurrency cap. Size it for simultaneously open bodies, not request-start
+  throughput: slow readers hold permits until completion/drop. A 429 includes
+  `Retry-After: 1`, and raising the cap increases open sockets and upstream
+  work.
+- Keep request/response/SSE limits finite; larger values increase memory and
+  connection exposure.
+- Do not use `MODELPORT_HTTP_REQUEST_TIMEOUT_SECS` as a live-generation cap. It
+  covers the full non-stream exchange but only the SSE handshake; tune the
+  stream idle and byte limits for the established phase.
+- Reduce usage retention when complete-document writes become visible.
+- Prefer PostgreSQL over JSON files when control state changes frequently, while
+  recognizing that the logical document is still replaced synchronously.
+- Diagnose provider/network latency before changing gateway timeouts.
+- Measure Tool Use and large-context workloads separately from tiny text calls.
 
-- 本机 Claude Code 使用保持 `MODELPORT_BIND=127.0.0.1:17878`。
-- 团队使用放到内网反向代理后面，不要直接公网暴露。
-- 上游响应慢时先换 provider 或线路，再考虑调大超时。
-- 大上下文任务优先观察上游 token 限制和价格。
-- 图像生成类能力不要混入 `/v1/messages` 主路径，因为 base64 图片会显著放大响应体。
+Multi-instance rate limiting, transactional quota reservations, event-oriented
+usage storage, and final live-stream accounting are not implemented. Those are
+the scaling triggers for architectural work, not settings that can be tuned
+away.
