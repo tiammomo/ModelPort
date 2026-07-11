@@ -7,12 +7,12 @@ source "$SCRIPT_DIR/lib.sh"
 
 setup_cc_fallback
 log "checking rustfmt"
-cargo fmt -- --check
+cargo fmt --all -- --check
 
 log "running tests"
-cargo test
+cargo test --locked --all-targets
 
 log "running clippy"
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 
 log "all checks passed"
