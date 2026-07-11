@@ -1,31 +1,49 @@
-import { useMemo, useState, type ElementType } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useDashboard, useLogs } from '@/hooks'
+import { useAuthStore } from '@/stores'
 import { MetricCard } from '@/components/shared/MetricCard'
 import { LoadingPage } from '@/components/shared/LoadingPage'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { EmptyState } from '@/components/shared/EmptyState'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { cn, formatNumber, formatRelativeTime, parseDate, formatLatency } from '@/lib/utils'
-import type { DashboardRange, DashboardStatsParams } from '@/services/dashboard.service'
+import { cn, formatNumber, formatRelativeTime, formatLatency } from '@/lib/utils'
+import {
+  DAY_MS,
+  TREND_RANGES,
+  compactModelUsageRows,
+  computeTrend,
+  customRangeError,
+  dashboardTrendParams,
+  formatChartTime,
+  formatPercentValue,
+  formatRate,
+  formatUsd,
+  providerTokens,
+  rangeLabel,
+  statusText,
+  toDateTimeLocal,
+  tokenBreakdownDescription,
+  type ModelUsageRow,
+  type TokenTrendPoint,
+} from '@/features/dashboard/dashboard-data'
+import type { DashboardRange } from '@/services/dashboard.service'
 import type { DashboardStats, RequestLog } from '@/types'
 import {
   Activity,
   ArrowRight,
   Box,
-  Clock,
+  CheckCircle2,
   Database,
   Gauge,
-  GitBranch,
   KeyRound,
   Layers,
-  Route,
   ScrollText,
-  ShieldCheck,
-  TrendingUp,
+  TriangleAlert,
   WalletCards,
   Wrench,
   Zap,
@@ -50,28 +68,6 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
-const TREND_RANGES: Array<{ value: DashboardRange; label: string }> = [
-  { value: '1d', label: '近1天' },
-  { value: '3d', label: '近3天' },
-  { value: '7d', label: '近7天' },
-  { value: 'custom', label: '自定义' },
-]
-
-const RANGE_LABELS: Record<DashboardRange, string> = {
-  '1d': '24小时',
-  '3d': '3天',
-  '7d': '7天',
-  custom: '自定义',
-}
-
-const RANGE_MS: Record<Exclude<DashboardRange, 'custom'>, number> = {
-  '1d': DAY_MS,
-  '3d': 3 * DAY_MS,
-  '7d': 7 * DAY_MS,
-}
-
 const PIE_COLORS = [
   'hsl(212 86% 48%)',
   'hsl(162 72% 38%)',
@@ -95,211 +91,6 @@ const TOOLTIP_STYLE = {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function computeTrend(series: { value: number }[]): number {
-  if (series.length < 2) return 0
-  const mid = Math.floor(series.length / 2)
-  const firstHalf = series.slice(0, mid).reduce((s, p) => s + p.value, 0)
-  const secondHalf = series.slice(mid).reduce((s, p) => s + p.value, 0)
-  if (firstHalf === 0) return secondHalf > 0 ? 100 : 0
-  return Math.round(((secondHalf - firstHalf) / firstHalf) * 100 * 10) / 10
-}
-
-function formatChartTime(timestamp: string, bucketMs?: number): string {
-  const date = parseDate(timestamp)
-  if (Number.isNaN(date.getTime())) return '--:--'
-  if (bucketMs && bucketMs > 60 * 60 * 1000) {
-    return date.toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  }
-  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-}
-
-function rangeLabel(range?: DashboardRange): string {
-  return RANGE_LABELS[range ?? '1d'] ?? '24小时'
-}
-
-function dashboardTrendParams(
-  range: DashboardRange,
-  from: string,
-  to: string,
-): DashboardStatsParams {
-  if (range !== 'custom') return { range }
-  const fromMs = dateTimeLocalToMillis(from)
-  const toMs = dateTimeLocalToMillis(to)
-  if (!fromMs || !toMs || Number(fromMs) >= Number(toMs)) return { range: '1d' }
-  return { range, from: fromMs, to: toMs }
-}
-
-function toDateTimeLocal(timestamp: number): string {
-  const date = new Date(timestamp)
-  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-  return localDate.toISOString().slice(0, 16)
-}
-
-function dateTimeLocalToMillis(value: string): string | undefined {
-  const timestamp = new Date(value).getTime()
-  return Number.isFinite(timestamp) ? String(timestamp) : undefined
-}
-
-function timestampMs(value: string): number {
-  const numeric = Number(value)
-  if (Number.isFinite(numeric)) return numeric
-  const parsed = parseDate(value).getTime()
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function formatUsd(value: number, digits = 4): string {
-  return `$${value.toFixed(digits)}`
-}
-
-function formatPercentValue(value: number): string {
-  return `${value.toFixed(1)}%`
-}
-
-function formatRate(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0'
-  if (value >= 1000) return formatNumber(value)
-  if (value >= 100) return value.toFixed(0)
-  if (value >= 10) return value.toFixed(1).replace(/\.0$/, '')
-  if (value >= 1) return value.toFixed(2).replace(/\.?0+$/, '')
-  return value.toFixed(2)
-}
-
-function tokenBreakdownDescription(
-  inputTokens: number,
-  outputTokens: number,
-  cacheWriteTokens: number,
-  cacheReadTokens: number,
-): string {
-  return `入 ${formatNumber(inputTokens)} / 出 ${formatNumber(outputTokens)} / Cache ${formatNumber(cacheWriteTokens + cacheReadTokens)}`
-}
-
-function currentLogFilters(range: DashboardRange, customFrom: string, customTo: string) {
-  if (range === 'custom') {
-    return { dateFrom: customFrom || undefined, dateTo: customTo || undefined }
-  }
-  const now = Date.now()
-  return {
-    dateFrom: toDateTimeLocal(now - RANGE_MS[range]),
-    dateTo: toDateTimeLocal(now),
-  }
-}
-
-interface ModelUsageRow {
-  model: string
-  provider: string
-  requests: number
-  tokens: number
-  cost: number
-}
-
-interface TokenTrendPoint {
-  time: string
-  input: number
-  output: number
-  cacheWrite: number
-  cacheRead: number
-  cacheHitRate: number
-}
-
-function buildModelUsageRows(logs: RequestLog[], fallback: DashboardStats['topModels']): ModelUsageRow[] {
-  if (logs.length === 0) {
-    return fallback.slice(0, 6).map((item) => ({
-      model: item.model,
-      provider: item.provider,
-      requests: item.requests,
-      tokens: 0,
-      cost: 0,
-    }))
-  }
-
-  const rows = new Map<string, ModelUsageRow>()
-  for (const log of logs) {
-    const key = `${log.provider}:${log.resolvedModel || log.model}`
-    const current = rows.get(key) || {
-      model: log.resolvedModel || log.model,
-      provider: log.provider,
-      requests: 0,
-      tokens: 0,
-      cost: 0,
-    }
-    current.requests += 1
-    current.tokens += log.totalTokens ?? (log.inputTokens + log.outputTokens + (log.cacheWriteTokens || 0) + (log.cacheReadTokens || 0))
-    current.cost += log.costEstimate || 0
-    rows.set(key, current)
-  }
-
-  return Array.from(rows.values())
-    .sort((a, b) => b.tokens - a.tokens || b.requests - a.requests)
-    .slice(0, 6)
-}
-
-function buildTokenTrend(logs: RequestLog[], startMs: number, endMs: number, bucketMs: number): TokenTrendPoint[] {
-  const safeStart = Number.isFinite(startMs) ? startMs : 0
-  const safeEnd = Number.isFinite(endMs) && endMs > safeStart ? endMs : safeStart + DAY_MS
-  const safeBucket = Math.max(bucketMs || 60 * 60 * 1000, 30 * 60 * 1000)
-  const bucketCount = Math.min(48, Math.max(1, Math.ceil((safeEnd - safeStart) / safeBucket)))
-  const buckets = Array.from({ length: bucketCount }, (_, index) => {
-    const bucketStart = safeStart + index * safeBucket
-    return {
-      start: bucketStart,
-      end: index === bucketCount - 1 ? safeEnd + 1 : bucketStart + safeBucket,
-      time: formatChartTime(String(bucketStart), safeBucket),
-      input: 0,
-      output: 0,
-      cacheWrite: 0,
-      cacheRead: 0,
-      cacheHitRate: 0,
-    }
-  })
-
-  for (const log of logs) {
-    const time = timestampMs(log.timestamp)
-    const bucket = buckets.find((item) => time >= item.start && time < item.end)
-    if (!bucket) continue
-    bucket.input += log.inputTokens
-    bucket.output += log.outputTokens
-    bucket.cacheWrite += log.cacheWriteTokens || 0
-    bucket.cacheRead += log.cacheReadTokens || 0
-  }
-
-  return buckets.map((bucket) => {
-    const billedInput = bucket.input + bucket.cacheWrite + bucket.cacheRead
-    return {
-      time: bucket.time,
-      input: bucket.input,
-      output: bucket.output,
-      cacheWrite: bucket.cacheWrite,
-      cacheRead: bucket.cacheRead,
-      cacheHitRate: billedInput > 0 ? Math.round((bucket.cacheRead / billedInput) * 1000) / 10 : 0,
-    }
-  })
-}
-
-function providerTokens(provider: DashboardStats['providerHealth'][number]): number {
-  return (
-    (provider.inputTokensTotal || 0) +
-    (provider.outputTokensTotal || 0) +
-    (provider.cacheWriteTokensTotal || 0) +
-    (provider.cacheReadTokensTotal || 0)
-  )
-}
-
-function statusText(status: DashboardStats['providerHealth'][number]['status']): string {
-  if (status === 'healthy') return '健康'
-  if (status === 'degraded') return '降级'
-  if (status === 'cooldown') return '冷却'
-  return '不可用'
-}
-
-// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
@@ -310,6 +101,7 @@ function RangeSelector({
   customTo,
   onCustomFromChange,
   onCustomToChange,
+  error,
 }: {
   value: DashboardRange
   onChange: (r: DashboardRange) => void
@@ -317,9 +109,11 @@ function RangeSelector({
   customTo: string
   onCustomFromChange: (v: string) => void
   onCustomToChange: (v: string) => void
+  error?: string | null
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="仪表盘数据范围">
       {TREND_RANGES.map((option) => (
         <Button
           key={option.value}
@@ -336,24 +130,28 @@ function RangeSelector({
         </Button>
       ))}
       {value === 'custom' && (
-        <div className="flex items-center gap-2 ml-1">
+        <div className="flex w-full flex-col gap-2 pt-1 sm:ml-1 sm:w-auto sm:flex-row sm:items-center sm:pt-0">
           <Input
             aria-label="开始时间"
             type="datetime-local"
             value={customFrom}
             onChange={(e) => onCustomFromChange(e.target.value)}
-            className="h-8 w-[160px] text-xs"
+            aria-invalid={!!error}
+            className="h-8 w-full text-xs sm:w-[160px]"
           />
-          <span className="text-muted-foreground text-xs">至</span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">至</span>
           <Input
             aria-label="结束时间"
             type="datetime-local"
             value={customTo}
             onChange={(e) => onCustomToChange(e.target.value)}
-            className="h-8 w-[160px] text-xs"
+            aria-invalid={!!error}
+            className="h-8 w-full text-xs sm:w-[160px]"
           />
         </div>
       )}
+      </div>
+      {error && <p role="alert" className="max-w-lg text-xs text-destructive">{error}</p>}
     </div>
   )
 }
@@ -365,28 +163,6 @@ function providerStatusClass(status: DashboardStats['providerHealth'][number]['s
   return 'bg-rose-500'
 }
 
-function GatewayStep({
-  title,
-  detail,
-  icon: Icon,
-}: {
-  title: string
-  detail: string
-  icon: ElementType
-}) {
-  return (
-    <div className="min-w-[132px] flex-1 rounded-lg border bg-background p-3">
-      <div className="flex items-center gap-2">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Icon className="h-3.5 w-3.5" />
-        </div>
-        <p className="truncate text-sm font-semibold">{title}</p>
-      </div>
-      <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{detail}</p>
-    </div>
-  )
-}
-
 function GatewayOperationsPanel({
   stats,
   logs,
@@ -396,75 +172,82 @@ function GatewayOperationsPanel({
   logs: RequestLog[]
   primaryModel: string
 }) {
+  const isAdmin = useAuthStore((state) => state.currentUser?.role === 'admin')
   const primaryProvider = stats.providerHealth.find((provider) => provider.status === 'healthy')
     ?? stats.providerHealth[0]
   const streamCount = logs.filter((log) => log.stream === 'stream').length
   const errorCount = logs.filter((log) => log.status !== 'success').length
+  const healthyProviders = stats.providerHealth.filter((provider) => provider.status === 'healthy').length
+  const providerIssues = stats.providerHealth.filter(
+    (provider) => provider.status !== 'healthy' || provider.rechargeRequired,
+  )
+  const allHealthy = stats.providerHealth.length > 0 && providerIssues.length === 0
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
+    <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
       <Card className="overflow-hidden">
         <CardHeader className="border-b bg-muted/20 pb-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
-                <GitBranch className="h-4 w-4 text-primary" />
-                网关运行概览
+                {allHealthy
+                  ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  : <TriangleAlert className="h-4 w-4 text-amber-600" />}
+                运行状态
               </CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">
-                客户端请求进入 ModelPort 后的鉴权、协议适配、路由和上游状态。
+                先确认路由是否可用，再处理异常请求和上游账号问题。
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline" className="border-blue-200 bg-blue-50 text-blue-700">
-                Trace
-              </Badge>
-              <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
-                Tool Use
-              </Badge>
-            </div>
+            <Badge variant={allHealthy ? 'success' : providerIssues.length > 0 ? 'warning' : 'secondary'}>
+              {allHealthy ? '路由正常' : providerIssues.length > 0 ? `${providerIssues.length} 项需关注` : '等待 Provider'}
+            </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-4 p-4">
-          <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-stretch">
-            <GatewayStep title="客户端入口" detail="IDE / CLI / API 请求" icon={Zap} />
-            <div className="hidden items-center justify-center text-muted-foreground md:flex">
-              <ArrowRight className="h-4 w-4" />
-            </div>
-            <GatewayStep title="协议门禁" detail="鉴权、IP 策略、请求大小" icon={ShieldCheck} />
-            <div className="hidden items-center justify-center text-muted-foreground md:flex">
-              <ArrowRight className="h-4 w-4" />
-            </div>
-            <GatewayStep title="内部路由" detail="别名解析、工具映射、计量" icon={Route} />
-            <div className="hidden items-center justify-center text-muted-foreground md:flex">
-              <ArrowRight className="h-4 w-4" />
-            </div>
-            <GatewayStep
-              title={primaryProvider?.displayName || 'Provider'}
-              detail={primaryModel || '默认路由'}
-              icon={Database}
-            />
-          </div>
-
           <div className="grid gap-3 md:grid-cols-3">
             <div className="rounded-lg border bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">Streaming</p>
-              <p className="mt-1 font-mono text-lg font-semibold">{formatNumber(streamCount)}</p>
-              <p className="mt-1 text-xs text-muted-foreground">当前范围流式请求</p>
+              <p className="text-xs text-muted-foreground">可用 Provider</p>
+              <p className="mt-1 font-mono text-lg font-semibold">{healthyProviders} / {stats.providerHealth.length}</p>
+              <p className="mt-1 text-xs text-muted-foreground">基于当前运行健康记录</p>
             </div>
             <div className="rounded-lg border bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">协议错误</p>
+              <p className="text-xs text-muted-foreground">最近异常</p>
               <p className="mt-1 font-mono text-lg font-semibold">{formatNumber(errorCount)}</p>
-              <p className="mt-1 text-xs text-muted-foreground">已进入错误映射</p>
+              <p className="mt-1 text-xs text-muted-foreground">最近 {logs.length} 条记录；不等同于协议错误</p>
             </div>
             <div className="rounded-lg border bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">工具调用策略</p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <Badge variant="outline" className="font-mono text-[10px]">tool_choice</Badge>
-                <Badge variant="outline" className="font-mono text-[10px]">parallel</Badge>
-                <Badge variant="outline" className="font-mono text-[10px]">delta</Badge>
-              </div>
+              <p className="text-xs text-muted-foreground">当前首选路由</p>
+              <p className="mt-1 truncate font-mono text-sm font-semibold" title={primaryModel}>{primaryModel || '未配置'}</p>
+              <p className="mt-1 truncate text-xs text-muted-foreground">{primaryProvider?.displayName || '等待可用 Provider'}</p>
             </div>
+          </div>
+
+          {providerIssues.length > 0 ? (
+            <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+              {providerIssues.slice(0, 3).map((provider) => (
+                <div key={provider.providerId} className="flex items-start justify-between gap-3 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{provider.displayName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {provider.rechargeRequired ? '账号余额或额度需要处理' : `运行状态：${statusText(provider.status)}`}
+                    </p>
+                  </div>
+                  {isAdmin && <Button asChild variant="ghost" size="sm"><Link to="/models">处理</Link></Button>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/20">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+              <span>{stats.providerHealth.length > 0 ? '当前没有需要处理的 Provider 异常。' : '尚无 Provider 健康记录，请先完成上游接入。'}</span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline" size="sm"><Link to="/logs">查看请求日志</Link></Button>
+            {isAdmin && <Button asChild variant="outline" size="sm"><Link to="/models">管理模型与渠道</Link></Button>}
+            {streamCount > 0 && <Badge variant="outline" className="self-center">最近流式 {streamCount}</Badge>}
           </div>
         </CardContent>
       </Card>
@@ -486,7 +269,7 @@ function GatewayOperationsPanel({
                     <p className="truncate text-sm font-medium">{provider.displayName}</p>
                     {provider.rechargeRequired && (
                       <Badge variant="warning" className="shrink-0 text-[10px]">
-                        {provider.rechargeBadge || '代充值'}
+                        {provider.rechargeBadge || '等待充值'}
                       </Badge>
                     )}
                   </div>
@@ -529,7 +312,15 @@ function ProviderBreakdown({
         </span>
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {providers.length === 0 ? (
+          <EmptyState
+            icon={Database}
+            title="暂无 Provider 运行数据"
+            description="配置上游并完成请求后，这里会展示渠道健康、Token 与费用。"
+            className="py-8"
+          />
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {providers.slice(0, 6).map((provider) => (
             <div key={provider.providerId} className="rounded-lg border bg-muted/20 p-3">
               <div className="flex items-start justify-between gap-3">
@@ -538,7 +329,7 @@ function ProviderBreakdown({
                     <p className="truncate text-sm font-semibold">{provider.displayName}</p>
                     {provider.rechargeRequired && (
                       <span className="rounded-full bg-amber-500 px-2 py-0.5 text-xs font-medium text-white">
-                        {provider.rechargeBadge || '代充值'}
+                        {provider.rechargeBadge || '等待充值'}
                       </span>
                     )}
                   </div>
@@ -573,6 +364,7 @@ function ProviderBreakdown({
             </div>
           ))}
         </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -591,9 +383,17 @@ function ModelDistributionCard({
         <CardTitle className="text-base">模型分布</CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="grid gap-4 xl:grid-cols-[240px_1fr]">
+        {rows.length === 0 ? (
+          <EmptyState
+            icon={Layers}
+            title="暂无模型用量"
+            description="完成首个模型请求后，这里会按真实保留用量展示模型分布。"
+            className="min-h-[260px] py-8"
+          />
+        ) : (
+          <div className="grid gap-4 xl:grid-cols-[240px_1fr]">
           <div className="flex min-h-[220px] items-center justify-center">
-            {pieData.length > 0 ? (
+            {pieData.length > 0 && (
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie
@@ -616,10 +416,6 @@ function ModelDistributionCard({
                   <Tooltip {...TOOLTIP_STYLE} />
                 </PieChart>
               </ResponsiveContainer>
-            ) : (
-              <div className="flex h-[220px] items-center justify-center text-sm text-muted-foreground">
-                暂无数据
-              </div>
             )}
           </div>
           <Table>
@@ -654,19 +450,22 @@ function ModelDistributionCard({
             </TableBody>
           </Table>
         </div>
+        )}
       </CardContent>
     </Card>
   )
 }
 
 function TokenTrendCard({ data }: { data: TokenTrendPoint[] }) {
+  const hasUsage = data.some((point) => point.input + point.output + point.cacheWrite + point.cacheRead > 0)
   return (
     <Card className="h-full">
       <CardHeader className="pb-3">
         <CardTitle className="text-base">Token 使用趋势</CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
-        <ResponsiveContainer width="100%" height={280}>
+        {hasUsage ? (
+          <ResponsiveContainer width="100%" height={280}>
           <ComposedChart data={data}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
             <XAxis dataKey="time" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
@@ -680,7 +479,15 @@ function TokenTrendCard({ data }: { data: TokenTrendPoint[] }) {
             <Area yAxisId="tokens" type="monotone" dataKey="cacheRead" name="Cache Read" stroke="hsl(190 70% 50%)" fill="hsl(190 70% 50% / 0.12)" dot={false} />
             <Line yAxisId="rate" type="monotone" dataKey="cacheHitRate" name="Cache Hit Rate" stroke="hsl(260 90% 65%)" strokeDasharray="5 4" strokeWidth={2} dot={false} />
           </ComposedChart>
-        </ResponsiveContainer>
+          </ResponsiveContainer>
+        ) : (
+          <EmptyState
+            icon={Database}
+            title="暂无 Token 趋势"
+            description="图表只使用后端返回的真实用量，不会用零值推断调用情况。"
+            className="min-h-[280px] py-8"
+          />
+        )}
       </CardContent>
     </Card>
   )
@@ -727,11 +534,12 @@ function RecentUsageCard({ logs }: { logs: RequestLog[] }) {
 }
 
 function QuickActionsCard() {
+  const isAdmin = useAuthStore((state) => state.currentUser?.role === 'admin')
   const actions = [
     { to: '/api-keys', icon: KeyRound, title: '创建 API 密钥', desc: '生成新的 API 密钥' },
     { to: '/logs', icon: ScrollText, title: '查看使用记录', desc: '排查错误、成本和延迟' },
     { to: '/models', icon: Layers, title: '管理模型路由', desc: '检查供应商和别名' },
-  ]
+  ].filter((action) => isAdmin || action.to === '/logs')
 
   return (
     <Card className="h-full">
@@ -765,6 +573,63 @@ function QuickActionsCard() {
   )
 }
 
+function OperationalStat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="min-w-0 px-4 py-3 sm:px-5 sm:py-4">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p className="mt-1 truncate font-mono text-lg font-semibold" title={value}>{value}</p>
+      <p className="mt-1 truncate text-xs text-muted-foreground" title={detail}>{detail}</p>
+    </div>
+  )
+}
+
+function FirstRunGuide({ stats }: { stats: DashboardStats }) {
+  const isAdmin = useAuthStore((state) => state.currentUser?.role === 'admin')
+  if (!isAdmin) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-semibold">还没有请求记录</p>
+            <p className="mt-1 text-sm text-muted-foreground">查看管理员分配的客户端 API Key 与可用模型，然后发送首个请求。</p>
+          </div>
+          <Button asChild variant="outline"><Link to="/api-keys">查看我的 API 密钥</Link></Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const steps = [
+    { title: '接入 Provider', detail: '配置上游地址与凭证', done: stats.totalProviders > 0, to: '/models' },
+    { title: '确认模型路由', detail: '发现模型并检查默认路由', done: stats.activeProviders > 0 && stats.totalModels > 0, to: '/models' },
+    { title: '签发客户端密钥', detail: '绑定用户、项目与最小权限', done: (stats.apiKeysActive || 0) > 0, to: '/api-keys' },
+    { title: '验证首个请求', detail: '调用后在日志中核对路由', done: stats.totalRequests > 0, to: '/logs' },
+  ]
+
+  return (
+    <Card className="border-primary/20 bg-primary/[0.025]">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">完成首次接入</CardTitle>
+        <p className="text-sm text-muted-foreground">按顺序完成上游、路由、访问凭据和请求验证，避免拿到 Key 后才发现路由不可用。</p>
+      </CardHeader>
+      <CardContent className="grid gap-3 pt-0 sm:grid-cols-2 xl:grid-cols-4">
+        {steps.map((step, index) => (
+          <Link key={step.title} to={step.to} className="group rounded-lg border bg-background p-3 transition-colors hover:border-primary/40 hover:bg-primary/[0.03]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">步骤 {index + 1}</span>
+              {step.done
+                ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                : <ArrowRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />}
+            </div>
+            <p className="mt-2 text-sm font-semibold">{step.title}</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{step.detail}</p>
+          </Link>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -778,12 +643,12 @@ export function DashboardPage() {
     () => dashboardTrendParams(trendRange, customFrom, customTo),
     [customFrom, customTo, trendRange],
   )
-  const { data: stats, isLoading, error, refetch } = useDashboard(dashboardParams)
-  const logFilters = useMemo(
-    () => currentLogFilters(trendRange, customFrom, customTo),
+  const rangeError = useMemo(
+    () => customRangeError(trendRange, customFrom, customTo),
     [customFrom, customTo, trendRange],
   )
-  const { data: logsData } = useLogs(logFilters, 1, 500)
+  const { data: stats, isLoading, isFetching, error, refetch, dataUpdatedAt } = useDashboard(dashboardParams)
+  const { data: logsData } = useLogs(undefined, 1, 5)
 
   // ---- Derived / memoized data ----
 
@@ -815,8 +680,8 @@ export function DashboardPage() {
   }, [stats])
 
   const modelUsageRows = useMemo(
-    () => buildModelUsageRows(logsData?.logs ?? [], stats?.topModels ?? []),
-    [logsData?.logs, stats?.topModels],
+    () => compactModelUsageRows(stats?.modelUsage ?? []),
+    [stats?.modelUsage],
   )
 
   const modelPieData = useMemo(
@@ -829,12 +694,15 @@ export function DashboardPage() {
 
   const tokenTrendData = useMemo(() => {
     if (!stats) return []
-    const fallbackStartMs = Number(dateTimeLocalToMillis(customFrom))
-    const fallbackEndMs = Number(dateTimeLocalToMillis(customTo))
-    const startMs = Number(stats.trendRange?.from ?? fallbackStartMs)
-    const endMs = Number(stats.trendRange?.to ?? fallbackEndMs)
-    return buildTokenTrend(logsData?.logs ?? [], startMs, endMs, stats.trendRange?.bucketMs ?? 60 * 60 * 1000)
-  }, [customFrom, customTo, logsData?.logs, stats])
+    return stats.tokenTimeSeries.map((point) => ({
+      time: formatChartTime(point.timestamp, stats.trendRange?.bucketMs),
+      input: point.inputTokens,
+      output: point.outputTokens,
+      cacheWrite: point.cacheWriteTokens,
+      cacheRead: point.cacheReadTokens,
+      cacheHitRate: point.cacheHitRate,
+    }))
+  }, [stats])
 
   // ---- Loading / Error ----
 
@@ -851,27 +719,20 @@ export function DashboardPage() {
     return <LoadingPage />
   }
 
-  const totalTokens =
-    (stats.todayInputTokens ?? 0) +
-    (stats.todayOutputTokens ?? 0) +
-    (stats.todayCacheWriteTokens ?? 0) +
-    (stats.todayCacheReadTokens ?? 0)
-  const summary = logsData?.summary
+  const summary = stats.rangeSummary
   const summaryInputTokens = summary?.totalInputTokens ?? stats.todayInputTokens ?? 0
   const summaryOutputTokens = summary?.totalOutputTokens ?? stats.todayOutputTokens ?? 0
   const summaryCacheWriteTokens = summary?.totalCacheWriteTokens ?? stats.todayCacheWriteTokens ?? 0
   const summaryCacheReadTokens = summary?.totalCacheReadTokens ?? stats.todayCacheReadTokens ?? 0
-  const summaryTokens = summary?.totalTokens ?? totalTokens
+  const summaryTokens = summary?.totalTokens
+    ?? summaryInputTokens + summaryOutputTokens + summaryCacheWriteTokens + summaryCacheReadTokens
   const summaryCost = summary?.totalCostEstimate ?? stats.todayCostEstimate ?? 0
+  const rangeSuccessRate = summary.totalRequests > 0
+    ? (summary.successRequests / summary.totalRequests) * 100
+    : null
   const billedInputTokens = summaryInputTokens + summaryCacheWriteTokens + summaryCacheReadTokens
   const cacheHitRate = billedInputTokens > 0 ? (summaryCacheReadTokens / billedInputTokens) * 100 : 0
 
-  const todayTokenDesc = tokenBreakdownDescription(
-    stats.todayInputTokens ?? 0,
-    stats.todayOutputTokens ?? 0,
-    stats.todayCacheWriteTokens ?? 0,
-    stats.todayCacheReadTokens ?? 0,
-  )
   const summaryTokenDesc = tokenBreakdownDescription(
     summaryInputTokens,
     summaryOutputTokens,
@@ -881,6 +742,15 @@ export function DashboardPage() {
 
   const rangeName = rangeLabel(stats.trendRange?.range ?? trendRange)
   const primaryModel = modelUsageRows[0]?.model ?? stats.topModels[0]?.model ?? '默认路由'
+  const updatedAt = dataUpdatedAt
+    ? new Date(dataUpdatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '—'
+  const dataSourceLabel = stats.rangeDataSource === 'persisted-usage'
+    ? '持久化用量'
+    : stats.rangeDataSource === 'process-metrics-estimate'
+      ? '进程指标估算'
+      : '暂无数据'
+  const hasRequestTrend = chartData.some((point) => point.requests > 0 || point.errors > 0)
 
   // ---- Render ----
 
@@ -889,11 +759,14 @@ export function DashboardPage() {
       {/* ---------------------------------------------------------------- */}
       {/* Header                                                           */}
       {/* ---------------------------------------------------------------- */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">仪表盘</h1>
           <p className="text-sm text-muted-foreground">
-            实时监控 API 调用、模型使用与系统健康状态
+            先判断网关是否可用，再定位异常、成本与路由变化。
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground" aria-live="polite">
+            {isFetching ? '正在刷新…' : `更新于 ${updatedAt}`} · 数据源：{dataSourceLabel}
           </p>
         </div>
         <RangeSelector
@@ -903,72 +776,74 @@ export function DashboardPage() {
           customTo={customTo}
           onCustomFromChange={setCustomFrom}
           onCustomToChange={setCustomTo}
+          error={rangeError}
         />
       </div>
+
+      {stats.totalRequests === 0 && <FirstRunGuide stats={stats} />}
+
+      {(stats.rangeDataEstimated || stats.rangeDataAtRetentionLimit) && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          {stats.rangeDataEstimated && (
+            <Badge variant="outline">进程指标估算</Badge>
+          )}
+          {stats.rangeDataEstimated && (
+            <span>当前没有持久化用量记录，范围统计来自本次进程启动后的指标。</span>
+          )}
+          {stats.rangeDataAtRetentionLimit && (
+            <>
+              <Badge variant="secondary">已达保留上限</Badge>
+              <span>更早的用量记录可能已被轮转，长时间范围仅覆盖当前保留窗口。</span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ---------------------------------------------------------------- */}
       {/* Metric Cards                                                     */}
       {/* ---------------------------------------------------------------- */}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard
-          title="API 密钥"
-          value={`${formatNumber(stats.apiKeysActive ?? 0)}/${formatNumber(stats.apiKeysTotal ?? 0)}`}
-          icon={KeyRound}
-          description={`${formatNumber(stats.apiKeysActive ?? 0)} 启用`}
-        />
-        <MetricCard
-          title="今日请求量"
-          value={formatNumber(stats.todayRequests ?? stats.totalRequests)}
+          title={`${rangeName}请求`}
+          value={formatNumber(summary.totalRequests)}
           icon={Activity}
           sparkline={sparklineRequests}
-          trend={{ value: requestTrend, label: `总计 ${formatNumber(stats.totalRequests)}` }}
+          trend={summary.totalRequests > 0 ? { value: requestTrend, label: '较范围前半段' } : undefined}
+          description={summary.totalRequests === 0 ? '当前范围暂无调用' : undefined}
         />
         <MetricCard
-          title="今日消耗"
-          value={formatUsd(stats.todayCostEstimate ?? 0, 4)}
-          icon={WalletCards}
-          sparkline={sparklineRequests}
-          description={`当前范围 ${formatUsd(summaryCost, 4)}`}
-        />
-        <MetricCard
-          title="今日 Token"
-          value={formatNumber(totalTokens)}
-          icon={Clock}
-          sparkline={sparklineRequests}
-          description={todayTokenDesc}
-        />
-        <MetricCard
-          title="累计 Token"
-          value={formatNumber(summaryTokens)}
-          icon={Database}
-          sparkline={sparklineRequests}
-          description={`当前范围 · ${summaryTokenDesc}`}
-        />
-        <MetricCard
-          title="成功率"
-          value={`${stats.successRate.toFixed(1)}%`}
+          title={`${rangeName}成功率`}
+          value={rangeSuccessRate === null ? '—' : `${rangeSuccessRate.toFixed(1)}%`}
           icon={Gauge}
           sparkline={successSparkline}
-          trend={{
-            value: Math.round(stats.successRate) >= 99 ? 0 : -1,
-            label: '目标 99%',
-          }}
+          description={rangeSuccessRate === null
+            ? '没有请求，不能推断成功率'
+            : `${formatNumber(summary.totalRequests - summary.successRequests)} 次异常`}
         />
         <MetricCard
-          title="性能指标"
-          value={`${formatRate(summary?.rpm ?? 0)} RPM`}
+          title={`${rangeName}估算费用`}
+          value={formatUsd(summaryCost, 4)}
+          icon={WalletCards}
+          sparkline={sparklineRequests}
+          description="运维估算，不等同于 Provider 账单"
+        />
+        <MetricCard
+          title="进程平均延迟"
+          value={formatLatency(stats.avgLatencyMs)}
           icon={Zap}
           sparkline={sparklineRequests}
-          description={`${formatRate(summary?.tpm ?? 0)} TPM`}
-        />
-        <MetricCard
-          title="平均响应"
-          value={formatLatency(stats.avgLatencyMs)}
-          icon={TrendingUp}
-          sparkline={sparklineRequests}
-          description={`缓存命中 ${formatPercentValue(cacheHitRate)}`}
+          description="进程累计，不受范围筛选影响"
         />
       </div>
+
+      <Card className="overflow-hidden">
+        <CardContent className="grid grid-cols-2 divide-x divide-y p-0 lg:grid-cols-4 lg:divide-y-0">
+          <OperationalStat label={`${rangeName} Token`} value={formatNumber(summaryTokens)} detail={summaryTokenDesc} />
+          <OperationalStat label="范围吞吐" value={`${formatRate(summary?.rpm ?? 0)} RPM`} detail={`${formatRate(summary?.tpm ?? 0)} TPM`} />
+          <OperationalStat label="客户端密钥" value={`${formatNumber(stats.apiKeysActive ?? 0)} / ${formatNumber(stats.apiKeysTotal ?? 0)}`} detail="启用 / 总数" />
+          <OperationalStat label="缓存命中" value={formatPercentValue(cacheHitRate)} detail={`读 ${formatNumber(summaryCacheReadTokens)} Token`} />
+        </CardContent>
+      </Card>
 
       <GatewayOperationsPanel
         stats={stats}
@@ -986,7 +861,8 @@ export function DashboardPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={320}>
+          {hasRequestTrend ? (
+            <ResponsiveContainer width="100%" height={320}>
             <AreaChart data={chartData}>
               <defs>
                 <linearGradient id="requestGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1035,7 +911,15 @@ export function DashboardPage() {
                 activeDot={{ r: 3, strokeWidth: 2 }}
               />
             </AreaChart>
-          </ResponsiveContainer>
+            </ResponsiveContainer>
+          ) : (
+            <EmptyState
+              icon={Activity}
+              title="当前范围暂无请求"
+              description="发送首个请求后，这里会展示真实请求与错误趋势。"
+              className="min-h-[320px] py-10"
+            />
+          )}
         </CardContent>
       </Card>
 

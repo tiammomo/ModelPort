@@ -1,4 +1,22 @@
 import type { TimeSeriesPoint } from './quota.types'
+import type { LogSummary } from './log.types'
+
+export interface DashboardModelUsage {
+  model: string
+  provider: string
+  requests: number
+  tokens: number
+  cost: number
+}
+
+export interface DashboardTokenTimePoint {
+  timestamp: string
+  inputTokens: number
+  outputTokens: number
+  cacheWriteTokens: number
+  cacheReadTokens: number
+  cacheHitRate: number
+}
 
 export interface DashboardStats {
   uptimeSeconds: number
@@ -26,6 +44,12 @@ export interface DashboardStats {
   requestTimeSeries: TimeSeriesPoint[]
   errorTimeSeries: TimeSeriesPoint[]
   topModels: Array<{ model: string; provider: string; requests: number }>
+  modelUsage: DashboardModelUsage[]
+  tokenTimeSeries: DashboardTokenTimePoint[]
+  rangeSummary: LogSummary
+  rangeDataSource: 'persisted-usage' | 'process-metrics-estimate' | 'empty'
+  rangeDataEstimated: boolean
+  rangeDataAtRetentionLimit: boolean
   providerHealth: Array<{
     providerId: string
     displayName: string

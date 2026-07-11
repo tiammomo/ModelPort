@@ -8,6 +8,7 @@ import { cn, formatLatency } from '@/lib/utils'
 import {
   ArrowDown,
   ArrowUp,
+  ChevronRight,
   Database,
   Search,
   Server,
@@ -30,9 +31,9 @@ import {
 
 const ROW_HEIGHT = 108
 const OVERSCAN = 10
-const TABLE_MIN_WIDTH = 1420
+const TABLE_MIN_WIDTH = 1050
 const TABLE_GRID_STYLE: CSSProperties = {
-  gridTemplateColumns: '30px 132px 212px 220px minmax(210px,1fr) 128px 144px 104px 96px minmax(220px,1.1fr)',
+  gridTemplateColumns: '28px 128px 170px 180px minmax(180px,1fr) 118px 130px 100px',
 }
 
 // ── Cell components ──────────────────────────────────────────────
@@ -111,7 +112,6 @@ function ModelCell({ log }: { log: RequestLog }) {
 }
 
 function LatencyCell({ log }: { log: RequestLog }) {
-  const firstByte = log.firstByteLatencyMs || log.latencyMs
   const width = Math.min(100, Math.max(8, (log.latencyMs / 12000) * 100))
 
   return (
@@ -125,7 +125,7 @@ function LatencyCell({ log }: { log: RequestLog }) {
       </div>
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="text-muted-foreground">首字</span>
-        <span className="font-mono">{formatLatency(firstByte)}</span>
+        <span className="font-mono">{log.firstByteLatencyMs ? formatLatency(log.firstByteLatencyMs) : '—'}</span>
       </div>
     </div>
   )
@@ -165,28 +165,6 @@ function CostCell({ log }: { log: RequestLog }) {
   )
 }
 
-function NetworkCell({ log }: { log: RequestLog }) {
-  return (
-    <div className="space-y-1.5 text-xs">
-      <div className="font-mono text-muted-foreground">{log.clientIp || '-'}</div>
-      <Badge variant="outline" className="font-mono text-[11px]">
-        retry {log.retryCount || 0}
-      </Badge>
-    </div>
-  )
-}
-
-function DetailPreview({ log }: { log: RequestLog }) {
-  return (
-    <div className="max-w-[260px] space-y-1.5 text-xs leading-5">
-      <p className={cn('break-words', log.errorMessage ? 'font-medium text-destructive' : 'text-foreground')}>
-        {log.errorMessage || log.detail || compactDetail(log)}
-      </p>
-      <p className="font-mono text-muted-foreground">{shortId(log.id)}</p>
-    </div>
-  )
-}
-
 // ── Shared small components ──────────────────────────────────────
 
 function ProviderBadge({ log }: { log: RequestLog }) {
@@ -204,12 +182,12 @@ function ProviderBadge({ log }: { log: RequestLog }) {
 
 function RequestModeBadge({ log }: { log: RequestLog }) {
   if (log.status !== 'success') {
-    return <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">异常</Badge>
+    return <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">异常</Badge>
   }
   return (
     <div className="flex flex-wrap gap-1">
-      <Badge variant="outline" className="border-lime-200 bg-lime-50 text-lime-700">消费</Badge>
-      {log.stream === 'stream' && <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700">流式</Badge>}
+      <Badge variant="outline" className="border-lime-200 bg-lime-50 text-lime-700 dark:border-lime-900 dark:bg-lime-950/40 dark:text-lime-300">消费</Badge>
+      {log.stream === 'stream' && <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">流式</Badge>}
     </div>
   )
 }
@@ -249,8 +227,6 @@ function TableHeaderRow() {
       <div className="py-3 text-center">延迟</div>
       <div className="py-3 text-center">Tokens</div>
       <div className="py-3 text-center">花费</div>
-      <div className="py-3">网络</div>
-      <div className="py-3">详情</div>
     </div>
   )
 }
@@ -274,8 +250,12 @@ function VirtualRow({
       onClick={() => onSelect(log)}
       role="button"
       tabIndex={0}
+      aria-label={`查看 ${log.resolvedModel || log.model} 请求详情`}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') onSelect(log)
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect(log)
+        }
       }}
     >
       <div className="flex justify-center pt-5">
@@ -302,13 +282,56 @@ function VirtualRow({
       <div className="py-3">
         <CostCell log={log} />
       </div>
-      <div className="py-3">
-        <NetworkCell log={log} />
-      </div>
-      <div className="py-3">
-        <DetailPreview log={log} />
-      </div>
     </div>
+  )
+}
+
+function MobileLogCard({ log, onSelect }: { log: RequestLog; onSelect: (log: RequestLog) => void }) {
+  const date = parseLogDate(log.timestamp)
+  const totalTokens = log.totalTokens
+    ?? log.inputTokens + log.outputTokens + (log.cacheWriteTokens || 0) + (log.cacheReadTokens || 0)
+
+  return (
+    <button
+      type="button"
+      className={cn('w-full border-b border-l-4 p-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', rowTone(log.status))}
+      onClick={() => onSelect(log)}
+      aria-label={`查看 ${log.resolvedModel || log.model} 请求详情`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={log.status} />
+            <span className="font-mono text-xs text-muted-foreground">{log.statusCode}</span>
+            <span className="text-xs text-muted-foreground">
+              {date ? date.toLocaleString('zh-CN', { hour12: false }) : log.timestamp}
+            </span>
+          </div>
+          <p className="mt-2 truncate font-mono text-sm font-semibold">{log.resolvedModel || log.model}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <ProviderBadge log={log} />
+            <RequestModeBadge log={log} />
+          </div>
+        </div>
+        <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg bg-muted/30 p-2.5 text-xs">
+        <div><p className="text-muted-foreground">延迟</p><p className="mt-1 font-mono font-medium">{formatLatency(log.latencyMs)}</p></div>
+        <div><p className="text-muted-foreground">Token</p><p className="mt-1 font-mono font-medium">{formatCompactTokenCount(totalTokens)}</p></div>
+        <div><p className="text-muted-foreground">费用</p><p className="mt-1 font-mono font-medium">{formatMoney(log.costEstimate || 0, 4)}</p></div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="truncate">{log.username} · {log.group || log.apiKeyGroup || '默认标签'}</span>
+        <span className="shrink-0 font-mono">{log.requestId ? shortId(log.requestId) : shortId(log.id)}</span>
+      </div>
+      {(log.errorMessage || log.detail) && (
+        <p className={cn('mt-2 line-clamp-2 text-xs leading-5', log.errorMessage ? 'text-destructive' : 'text-muted-foreground')}>
+          {log.errorMessage || log.detail || compactDetail(log)}
+        </p>
+      )}
+    </button>
   )
 }
 
@@ -372,21 +395,26 @@ export function LogsTable({
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <div style={{ minWidth: TABLE_MIN_WIDTH }}>
+        {logs.length === 0 && !isLoading ? (
+          <div className="flex h-60 flex-col items-center justify-center gap-2 text-center">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <Search className="h-5 w-5" />
+            </div>
+            <p className="font-medium">没有匹配的请求日志</p>
+            <p className="text-sm text-muted-foreground">调整筛选条件，或先发送一条模型请求。</p>
+          </div>
+        ) : (
+          <>
+            <div className="divide-y lg:hidden">
+              {logs.map((log) => <MobileLogCard key={log.id} log={log} onSelect={onSelectLog} />)}
+            </div>
+
+            <div className="hidden overflow-x-auto lg:block">
+              <div style={{ minWidth: TABLE_MIN_WIDTH }}>
             {/* Column headers */}
             <TableHeaderRow />
 
             {/* Virtualized body */}
-            {logs.length === 0 && !isLoading ? (
-              <div className="flex h-60 flex-col items-center justify-center gap-2 text-center">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                  <Search className="h-5 w-5" />
-                </div>
-                <p className="font-medium">没有匹配的请求日志</p>
-                <p className="text-sm text-muted-foreground">当前筛选下暂无记录。</p>
-              </div>
-            ) : (
               <div
                 ref={parentRef}
                 className="overflow-y-auto"
@@ -420,9 +448,10 @@ export function LogsTable({
                   })}
                 </div>
               </div>
-            )}
-          </div>
-        </div>
+              </div>
+            </div>
+          </>
+        )}
       </CardContent>
       <CardFooter className="border-t px-4 py-3">
         <PaginationBar

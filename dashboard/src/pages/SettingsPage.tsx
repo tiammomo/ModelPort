@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useAuditEvents, useExportBackup, useProviders, useReloadConfig, useSettings, useUpdateSettings, useTestProviderConnection } from '@/hooks'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuditEvents, useExportBackup, useProviders, useReloadConfig, useSettings, useTestProviderConnection } from '@/hooks'
 import { useAuthStore } from '@/stores'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { LoadingPage } from '@/components/shared/LoadingPage'
+import { ErrorState } from '@/components/shared/ErrorState'
+import { EmptyState } from '@/components/shared/EmptyState'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Switch } from '@/components/ui/switch'
-import { Separator } from '@/components/ui/separator'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { formatBytes, formatRelativeTime } from '@/lib/utils'
+import { providerReadiness, settingsTabForCheck, type SettingsOperatorTab } from '@/features/models/operator-state'
 import {
   Activity,
   AlertTriangle,
@@ -24,10 +25,11 @@ import {
   Loader2,
   Plug,
   RefreshCw,
-  Save,
+  Route,
+  Server,
   ShieldCheck,
 } from 'lucide-react'
-import type { AuditEvent, BackupExport, SetupCheck, SystemSettings } from '@/types'
+import type { AuditEvent, BackupExport, Provider, SetupCheck, SystemSettings } from '@/types'
 
 type ProviderTestResult = {
   success: boolean
@@ -38,28 +40,58 @@ type ProviderTestResult = {
 }
 
 export function SettingsPage() {
-  const { data: settings, isLoading } = useSettings()
+  const { data: settings, isLoading, error, refetch } = useSettings()
 
-  if (isLoading || !settings) {
+  if (isLoading) {
     return <LoadingPage />
   }
+
+  if (error && !settings) {
+    return (
+      <ErrorState
+        title="运行设置加载失败"
+        message={error instanceof Error ? error.message : '无法读取当前运行配置，请检查后端与登录状态。'}
+        onRetry={() => void refetch()}
+      />
+    )
+  }
+
+  if (!settings) return <LoadingPage />
 
   return <SettingsForm initialSettings={settings} />
 }
 
 function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) {
-  const updateSettings = useUpdateSettings()
+  const navigate = useNavigate()
   const testConnection = useTestProviderConnection()
   const reloadConfig = useReloadConfig()
   const exportBackup = useExportBackup()
-  const { data: providers = [] } = useProviders()
-  const { data: auditEvents } = useAuditEvents()
+  const {
+    data: providers = [],
+    isLoading: providersLoading,
+    error: providersError,
+    refetch: refetchProviders,
+  } = useProviders()
+  const {
+    data: auditEvents,
+    isLoading: auditLoading,
+    error: auditError,
+    refetch: refetchAudit,
+  } = useAuditEvents()
   const currentUser = useAuthStore((state) => state.currentUser)
+  const canOperate = currentUser?.role === 'admin'
 
-  const [form, setForm] = useState<SystemSettings>(initialSettings)
+  const [runtimeOverride, setRuntimeOverride] = useState<{
+    source: SystemSettings
+    settings: SystemSettings
+  } | null>(null)
+  const form = runtimeOverride?.source === initialSettings ? runtimeOverride.settings : initialSettings
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({})
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [activeTab, setActiveTab] = useState<SettingsOperatorTab>('service')
+  const [showReloadConfirm, setShowReloadConfirm] = useState(false)
+  const [showExportConfirm, setShowExportConfirm] = useState(false)
 
   // Auto-dismiss notices after 5 seconds
   useEffect(() => {
@@ -69,21 +101,14 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
   }, [notice])
 
   const providerById = useMemo(() => new Map(providers.map((provider) => [provider.id, provider])), [providers])
-
-  const handleSave = () => {
-    setNotice(null)
-    updateSettings.mutate(form, {
-      onSuccess: (settings) => {
-        setForm(settings)
-        setNotice({ type: 'success', message: '系统设置已更新' })
-      },
-      onError: (error) => {
-        setNotice({ type: 'error', message: error instanceof Error ? error.message : '保存失败' })
-      },
-    })
-  }
+  const orderedProviderIds = useMemo(() => {
+    const ids = new Set(form.gateway.providerOrder)
+    providers.forEach((provider) => ids.add(provider.id))
+    return [...ids]
+  }, [form.gateway.providerOrder, providers])
 
   const handleTestProvider = (providerId: string) => {
+    if (!canOperate) return
     setNotice(null)
     setTestingProviderId(providerId)
     testConnection.mutate(providerId, {
@@ -113,43 +138,75 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
   }
 
   const handleExportBackup = () => {
+    if (!canOperate) return
     setNotice(null)
     exportBackup.mutate(undefined, {
       onSuccess: (backup) => {
         downloadBackup(backup)
-        setNotice({ type: 'success', message: '控制面备份已生成' })
+        setShowExportConfirm(false)
+        setNotice({ type: 'success', message: '控制面诊断快照已生成' })
       },
       onError: (error) => {
+        setShowExportConfirm(false)
         setNotice({ type: 'error', message: error instanceof Error ? error.message : '导出失败' })
       },
     })
   }
 
   const handleReloadConfig = () => {
+    if (!canOperate) return
     setNotice(null)
     reloadConfig.mutate(undefined, {
       onSuccess: (result) => {
-        setForm(result.settings)
+        setShowReloadConfirm(false)
+        setRuntimeOverride({ source: initialSettings, settings: result.settings })
         const warningCount = result.issues.filter((issue) => issue.severity === 'warning').length
         setNotice({
           type: 'success',
           message: warningCount > 0
             ? `配置已热加载，${result.providerCount} 个供应商，${warningCount} 条告警`
-            : `配置已热加载，${result.providerCount} 个供应商可路由`,
+            : `配置已热加载，已读取 ${result.providerCount} 个 Provider 配置`,
         })
       },
       onError: (error) => {
+        setShowReloadConfirm(false)
         setNotice({ type: 'error', message: error instanceof Error ? error.message : '热加载失败' })
       },
     })
   }
 
+  const handleCopy = async (label: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setNotice({ type: 'success', message: `${label} 已复制` })
+    } catch {
+      setNotice({ type: 'error', message: '复制失败，请手动复制' })
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
-        title="系统设置"
-        description="配置网关运行参数"
-        action={{ label: '保存更改', onClick: handleSave, icon: Save }}
+        title="运行设置与运维"
+        description="查看当前生效的部署事实、连接检查与受控运维操作"
+      />
+
+      {!canOperate && (
+        <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-100" role="status">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-medium">当前账号仅可查看运行事实</p>
+            <p className="mt-1 text-xs opacity-80">Provider 测试、配置热加载和诊断快照会产生外部调用或审计记录，仅管理员可以执行。</p>
+          </div>
+        </div>
+      )}
+
+      <SettingsOverview
+        settings={form}
+        providers={providers}
+        providersLoading={providersLoading}
+        onOpenProviders={() => setActiveTab('providers')}
+        onOpenOperations={() => setActiveTab('operations')}
       />
 
       {notice && <InlineNotice type={notice.type} message={notice.message} />}
@@ -160,138 +217,75 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
         defaultProvider={form.gateway.defaultProvider}
         defaultProviderReady={providerById.get(form.gateway.defaultProvider)?.status === 'active'}
         authEnabled={form.auth.enabled}
+        onNavigate={(checkId) => {
+          if (checkId === 'admin') {
+            navigate('/users')
+            return
+          }
+          setActiveTab(settingsTabForCheck(checkId))
+        }}
       />
 
-      <Tabs defaultValue="general">
-        <TabsList>
-          <TabsTrigger value="general">通用</TabsTrigger>
-          <TabsTrigger value="auth">认证</TabsTrigger>
-          <TabsTrigger value="ratelimits">限流</TabsTrigger>
-          <TabsTrigger value="providers">提供商凭证</TabsTrigger>
-          <TabsTrigger value="operations">运维</TabsTrigger>
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SettingsOperatorTab)}>
+        <div className="overflow-x-auto pb-1">
+          <TabsList className="h-auto min-w-max justify-start">
+            <TabsTrigger value="service">服务运行</TabsTrigger>
+            <TabsTrigger value="security">认证安全</TabsTrigger>
+            <TabsTrigger value="limits">请求边界</TabsTrigger>
+            <TabsTrigger value="providers">Provider 检查</TabsTrigger>
+            <TabsTrigger value="operations">运维审计</TabsTrigger>
+          </TabsList>
+        </div>
 
-        {/* General Tab */}
-        <TabsContent value="general">
+        <TabsContent value="service">
           <Card>
             <CardHeader>
-              <CardTitle>通用设置</CardTitle>
-              <CardDescription>服务器基础配置</CardDescription>
+              <CardTitle className="flex items-center gap-2"><Server className="h-4 w-4" />服务运行事实</CardTitle>
+              <CardDescription>这些值来自当前进程，不是可编辑表单；部署配置修改后需要重启。</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>绑定地址</Label>
-                <Input
-                  value={form.server.bindAddress}
-                  onChange={(e) => setForm({ ...form, server: { ...form.server, bindAddress: e.target.value } })}
-                />
-                <p className="text-xs text-muted-foreground">格式: host:port，例如 127.0.0.1:17878</p>
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <Label>最大请求体大小</Label>
-                <Input
-                  type="number"
-                  value={form.server.maxRequestBodyBytes}
-                  onChange={(e) => setForm({ ...form, server: { ...form.server, maxRequestBodyBytes: Number(e.target.value) } })}
-                />
-                <p className="text-xs text-muted-foreground">当前值: {formatBytes(form.server.maxRequestBodyBytes)}</p>
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <Label>最大并发请求数</Label>
-                <Input
-                  type="number"
-                  value={form.server.maxConcurrentRequests}
-                  onChange={(e) => setForm({ ...form, server: { ...form.server, maxConcurrentRequests: Number(e.target.value) } })}
-                />
-              </div>
+            <CardContent className="grid gap-3 md:grid-cols-3">
+              <RuntimeFact label="绑定地址" value={form.server.bindAddress} hint="MODELPORT_BIND" mono />
+              <RuntimeFact label="最大请求体" value={formatBytes(form.server.maxRequestBodyBytes)} hint="MODELPORT_MAX_REQUEST_BODY_BYTES" />
+              <RuntimeFact label="并发请求" value={String(form.server.maxConcurrentRequests)} hint="MODELPORT_MAX_CONCURRENT_REQUESTS" />
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Auth Tab */}
-        <TabsContent value="auth">
+        <TabsContent value="security">
           <Card>
             <CardHeader>
-              <CardTitle>认证设置</CardTitle>
-              <CardDescription>配置 API 认证方式</CardDescription>
+              <CardTitle className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" />认证安全边界</CardTitle>
+              <CardDescription>展示数据面认证状态；Dashboard session、CSRF 与 Origin 保护由后端独立执行。</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>启用认证</Label>
-                  <p className="text-xs text-muted-foreground">要求所有 API 请求携带认证令牌</p>
-                </div>
-                <Switch
-                  checked={form.auth.enabled}
-                  onCheckedChange={(checked) => setForm({ ...form, auth: { ...form.auth, enabled: checked } })}
-                />
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>允许无认证访问</Label>
-                  <p className="text-xs text-muted-foreground">允许未携带令牌的请求通过（不推荐）</p>
-                </div>
-                <Switch
-                  checked={form.auth.allowNoAuth}
-                  onCheckedChange={(checked) => setForm({ ...form, auth: { ...form.auth, allowNoAuth: checked } })}
-                />
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <Label>Token 环境变量</Label>
-                <Input value={form.auth.tokenEnvVar} readOnly className="bg-muted" />
-                <p className="text-xs text-muted-foreground">从此环境变量读取认证令牌</p>
-              </div>
+            <CardContent className="grid gap-3 md:grid-cols-3">
+              <RuntimeFact
+                label="数据面认证"
+                value={form.auth.enabled ? '已启用' : '未启用'}
+                hint="/v1 与受保护诊断端点"
+                status={form.auth.enabled ? 'ok' : 'error'}
+              />
+              <RuntimeFact
+                label="匿名访问"
+                value={form.auth.allowNoAuth ? '允许' : '拒绝'}
+                hint={form.auth.allowNoAuth ? '仅适合隔离的本机开发环境' : '未携带有效凭证的请求会被拒绝'}
+                status={form.auth.allowNoAuth ? 'error' : 'ok'}
+              />
+              <RuntimeFact label="Legacy Token 变量" value={form.auth.tokenEnvVar} hint="只显示变量名，不暴露值" mono />
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Rate Limits Tab */}
-        <TabsContent value="ratelimits">
+        <TabsContent value="limits">
           <Card>
             <CardHeader>
-              <CardTitle>限流设置</CardTitle>
-              <CardDescription>配置请求限流和超时参数</CardDescription>
+              <CardTitle>请求与流边界</CardTitle>
+              <CardDescription>并发、请求体和超时是启动参数；此处不表示 API Key 的 USD 周期预算。</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>最大并发请求数</Label>
-                  <Input
-                    type="number"
-                    value={form.rateLimits.maxConcurrentRequests}
-                    onChange={(e) => setForm({ ...form, rateLimits: { ...form.rateLimits, maxConcurrentRequests: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>最大请求体大小（字节）</Label>
-                  <Input
-                    type="number"
-                    value={form.rateLimits.maxRequestBodyBytes}
-                    onChange={(e) => setForm({ ...form, rateLimits: { ...form.rateLimits, maxRequestBodyBytes: Number(e.target.value) } })}
-                  />
-                  <p className="text-xs text-muted-foreground">{formatBytes(form.rateLimits.maxRequestBodyBytes)}</p>
-                </div>
-                <div className="space-y-2">
-                  <Label>请求超时（秒）</Label>
-                  <Input
-                    type="number"
-                    value={form.rateLimits.requestTimeoutSecs}
-                    onChange={(e) => setForm({ ...form, rateLimits: { ...form.rateLimits, requestTimeoutSecs: Number(e.target.value) } })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>流空闲超时（秒）</Label>
-                  <Input
-                    type="number"
-                    value={form.rateLimits.streamIdleTimeoutSecs}
-                    onChange={(e) => setForm({ ...form, rateLimits: { ...form.rateLimits, streamIdleTimeoutSecs: Number(e.target.value) } })}
-                  />
-                </div>
-              </div>
+            <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <RuntimeFact label="并发请求上限" value={String(form.rateLimits.maxConcurrentRequests)} hint="服务级并发层" />
+              <RuntimeFact label="请求体上限" value={formatBytes(form.rateLimits.maxRequestBodyBytes)} hint="超过时返回 413" />
+              <RuntimeFact label="非流式 / 握手超时" value={`${form.rateLimits.requestTimeoutSecs} 秒`} hint="SSE 建立后不作为总时限" />
+              <RuntimeFact label="SSE 空闲超时" value={`${form.rateLimits.streamIdleTimeoutSecs} 秒`} hint="每个上游数据块会重置" />
             </CardContent>
           </Card>
         </TabsContent>
@@ -299,53 +293,79 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
         {/* Providers Tab */}
         <TabsContent value="providers">
           <Card>
-            <CardHeader>
-              <CardTitle>提供商凭证</CardTitle>
-              <CardDescription>管理各提供商的 API Key 配置状态</CardDescription>
+            <CardHeader className="flex-col items-start justify-between gap-3 space-y-0 sm:flex-row">
+              <div>
+                <CardTitle>Provider 连接检查</CardTitle>
+                <CardDescription>这里验证当前运行凭证与模型发现；凭证变量、账号池和模型目录在 Provider 页面管理。</CardDescription>
+              </div>
+              <Button asChild variant="outline" size="sm" className="w-full shrink-0 sm:w-auto">
+                <Link to="/models"><Route className="mr-2 h-4 w-4" />Provider 管理</Link>
+              </Button>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                {form.gateway.providerOrder.map((providerId) => (
-                  <ProviderCredentialRow
-                    key={providerId}
-                    providerId={providerId}
-                    displayName={providerById.get(providerId)?.displayName || providerId}
-                    apiKeyEnv={providerById.get(providerId)?.apiKeyEnv || `${providerId.toUpperCase()}_API_KEY`}
-                    isDefault={providerId === form.gateway.defaultProvider}
-                    status={providerById.get(providerId)?.status || 'inactive'}
-                    lastTest={testResults[providerId] || providerById.get(providerId)?.lastTest || null}
-                    isTesting={testingProviderId === providerId}
-                    isDisabled={testConnection.isPending}
-                    baseUrl={providerById.get(providerId)?.baseUrl || ''}
-                    hasApiKey={providerById.get(providerId)?.hasApiKey || false}
-                    apiKeyRequired={providerById.get(providerId)?.apiKeyRequired ?? true}
-                    modelCount={providerById.get(providerId)?.models.length || 0}
-                    onTest={() => handleTestProvider(providerId)}
-                  />
-                ))}
-              </div>
+              {providersLoading ? (
+                <div className="flex items-center justify-center py-12 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载 Provider…</div>
+              ) : providersError && providers.length === 0 ? (
+                <ErrorState
+                  title="Provider 状态加载失败"
+                  message={providersError instanceof Error ? providersError.message : '无法读取 Provider 目录。'}
+                  onRetry={() => void refetchProviders()}
+                />
+              ) : orderedProviderIds.length === 0 ? (
+                <EmptyState
+                  icon={Plug}
+                  title="暂无 Provider"
+                  description="请先在 Provider 与模型页面添加上游接入。"
+                  action={<Button asChild size="sm"><Link to="/models">前往 Provider 管理</Link></Button>}
+                />
+              ) : (
+                <div className="space-y-3">
+                  {orderedProviderIds.map((providerId) => {
+                    const provider = providerById.get(providerId)
+                    return (
+                      <ProviderCredentialRow
+                        key={providerId}
+                        providerId={providerId}
+                        displayName={provider?.displayName || providerId}
+                        apiKeyEnv={provider?.apiKeyEnv || `${providerId.toUpperCase()}_API_KEY`}
+                        isDefault={providerId === form.gateway.defaultProvider}
+                        status={provider?.status || 'inactive'}
+                        readiness={provider ? providerReadiness(provider, providerId === form.gateway.defaultProvider) : null}
+                        lastTest={testResults[providerId] || provider?.lastTest || null}
+                        isTesting={testingProviderId === providerId}
+                        isDisabled={!canOperate || !provider || testConnection.isPending}
+                        baseUrl={provider?.baseUrl || ''}
+                        hasApiKey={provider?.hasApiKey || false}
+                        apiKeyRequired={provider?.apiKeyRequired ?? true}
+                        modelCount={provider?.models.length || 0}
+                        onTest={() => handleTestProvider(providerId)}
+                      />
+                    )
+                  })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="operations">
           <div className="grid gap-4 lg:grid-cols-3">
-            <RuntimeCard runtime={form.runtime} />
+            <RuntimeCard runtime={form.runtime} onCopy={handleCopy} />
             <ConfigReloadCard
               isPending={reloadConfig.isPending}
-              isDisabled={currentUser?.role !== 'admin'}
+              isDisabled={!canOperate}
               warningCount={form.setup?.issues.filter((issue) => issue.severity === 'warning').length ?? 0}
-              providerCount={form.gateway.providerOrder.length}
+              providerCount={orderedProviderIds.length}
               defaultProvider={form.gateway.defaultProvider}
-              onReload={handleReloadConfig}
+              onReload={() => setShowReloadConfirm(true)}
             />
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Database className="h-4 w-4" />
-                  数据备份
+                  诊断快照
                 </CardTitle>
-                <CardDescription>导出控制面快照</CardDescription>
+                <CardDescription>导出脱敏控制面数据；不可用于恢复</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="rounded-md border bg-muted/40 p-3 text-sm">
@@ -359,13 +379,14 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
                   </div>
                 </div>
                 <Button
-                  onClick={handleExportBackup}
-                  disabled={exportBackup.isPending || currentUser?.role !== 'admin'}
+                  onClick={() => setShowExportConfirm(true)}
+                  disabled={exportBackup.isPending || !canOperate}
                   className="w-full"
                 >
                   {exportBackup.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                  导出备份
+                  导出诊断快照
                 </Button>
+                {!canOperate && <p className="text-xs text-muted-foreground">需要管理员权限。</p>}
               </CardContent>
             </Card>
           </div>
@@ -379,11 +400,121 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
               <CardDescription>最近 {auditEvents?.events.length ?? 0} / {auditEvents?.total ?? 0} 条</CardDescription>
             </CardHeader>
             <CardContent>
-              <AuditList events={auditEvents?.events ?? []} />
+              {auditLoading ? (
+                <div className="flex items-center justify-center py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载审计事件…</div>
+              ) : auditError ? (
+                <ErrorState
+                  title="审计事件加载失败"
+                  message={auditError instanceof Error ? auditError.message : '无法读取审计记录。'}
+                  onRetry={() => void refetchAudit()}
+                />
+              ) : (
+                <AuditList events={auditEvents?.events ?? []} />
+              )}
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
+
+      <OperationConfirmDialog
+        open={showReloadConfirm}
+        onOpenChange={setShowReloadConfirm}
+        title="确认热加载运行配置"
+        description="此操作会立即重新读取 Provider、基础凭证引用、Base URL、模型目录和别名，并写入审计记录；需要重启的服务参数不会改变。"
+        confirmLabel="确认热加载"
+        isPending={reloadConfig.isPending}
+        onConfirm={handleReloadConfig}
+      />
+
+      <OperationConfirmDialog
+        open={showExportConfirm}
+        onOpenChange={setShowExportConfirm}
+        title="导出诊断快照"
+        description="快照不包含明文密钥，但会包含用户、用量和控制面配置。请仅保存到受控位置，并按敏感运维数据处理。"
+        confirmLabel="确认导出"
+        isPending={exportBackup.isPending}
+        onConfirm={handleExportBackup}
+      />
+    </div>
+  )
+}
+
+function SettingsOverview({
+  settings,
+  providers,
+  providersLoading,
+  onOpenProviders,
+  onOpenOperations,
+}: {
+  settings: SystemSettings
+  providers: Provider[]
+  providersLoading: boolean
+  onOpenProviders: () => void
+  onOpenOperations: () => void
+}) {
+  const defaultProvider = providers.find((provider) => provider.id === settings.gateway.defaultProvider)
+  const readiness = defaultProvider ? providerReadiness(defaultProvider, true) : null
+  const ready = settings.setup?.ready ?? Boolean(defaultProvider && settings.auth.enabled)
+  const activeProviders = providers.filter((provider) => provider.status === 'active').length
+
+  return (
+    <Card className="border-primary/20">
+      <CardContent className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-[1.2fr_repeat(3,minmax(0,1fr))_auto] xl:items-center">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">运行状态</p>
+            <Badge variant={ready ? 'success' : 'destructive'}>{ready ? '基础检查通过' : '需要处理'}</Badge>
+          </div>
+          <p className="mt-2 truncate text-lg font-semibold">{settings.runtime?.apiEndpoint || settings.server.bindAddress}</p>
+          <p className="mt-1 text-xs text-muted-foreground">此页反映当前进程，不会直接改写 .env 或 config.toml。</p>
+        </div>
+        <OverviewFact label="默认 Provider" value={settings.gateway.defaultProvider || '未配置'} detail={readiness?.label || '未找到'} />
+        <OverviewFact
+          label="Provider"
+          value={providersLoading ? '加载中…' : `${activeProviders} / ${providers.length}`}
+          detail={providersLoading ? '正在读取运行目录' : '启用 / 总数'}
+        />
+        <OverviewFact label="API 认证" value={settings.auth.enabled ? '已启用' : '未启用'} detail={settings.auth.allowNoAuth ? '允许匿名访问' : '拒绝匿名访问'} />
+        <div className="flex flex-wrap gap-2 xl:max-w-[180px] xl:justify-end">
+          <Button variant="outline" size="sm" onClick={onOpenProviders}>检查 Provider</Button>
+          <Button variant="outline" size="sm" onClick={onOpenOperations}>查看运维</Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function OverviewFact({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-md border bg-muted/20 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold">{value}</p>
+      <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p>
+    </div>
+  )
+}
+
+function RuntimeFact({
+  label,
+  value,
+  hint,
+  mono,
+  status,
+}: {
+  label: string
+  value: string
+  hint: string
+  mono?: boolean
+  status?: 'ok' | 'error'
+}) {
+  return (
+    <div className="rounded-lg border bg-muted/20 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+        {status && <Badge variant={status === 'ok' ? 'success' : 'destructive'}>{status === 'ok' ? '安全' : '注意'}</Badge>}
+      </div>
+      <p className={mono ? 'mt-2 break-all font-mono text-sm font-semibold' : 'mt-2 text-lg font-semibold'}>{value}</p>
+      <p className="mt-2 break-words text-xs text-muted-foreground">{hint}</p>
     </div>
   )
 }
@@ -394,27 +525,31 @@ function SetupChecklist({
   defaultProvider,
   defaultProviderReady,
   authEnabled,
+  onNavigate,
 }: {
   setup: SystemSettings['setup']
   activeProviderCount: number
   defaultProvider: string
   defaultProviderReady: boolean
   authEnabled: boolean
+  onNavigate: (checkId: string) => void
 }) {
   const checks = setup?.checks ?? fallbackSetupChecks({ activeProviderCount, defaultProvider, defaultProviderReady, authEnabled })
   const errorCount = checks.filter((check) => check.status === 'error').length
+  const issues = setup?.issues ?? []
   const warningCount = checks.filter((check) => check.status === 'warning').length
+    + issues.filter((issue) => issue.severity === 'warning').length
   const ready = setup?.ready ?? errorCount === 0
 
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 space-y-0">
         <div>
           <CardTitle className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4" />
             上线检查
           </CardTitle>
-          <CardDescription>{ready ? '核心链路已具备可用条件' : `${errorCount} 项需要处理`}</CardDescription>
+          <CardDescription>{ready ? '基础配置检查已通过；实际调用仍以连接测试和请求日志为准' : `${errorCount} 项需要处理`}</CardDescription>
         </div>
         <Badge variant={ready ? 'success' : 'destructive'}>
           {ready ? '可用' : '需处理'}
@@ -423,30 +558,56 @@ function SetupChecklist({
       <CardContent>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {checks.map((check) => (
-            <div key={check.id} className="flex min-h-20 items-start gap-3 rounded-lg border p-3">
+            <button
+              key={check.id}
+              type="button"
+              className="flex min-h-20 items-start gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => onNavigate(check.id)}
+              aria-label={`查看 ${check.label} 详情：${check.detail}`}
+            >
               <div className="mt-0.5">{statusIcon(check.status)}</div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium">{check.label}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{check.detail}</p>
               </div>
-            </div>
+              <span className="text-xs text-primary">查看</span>
+            </button>
           ))}
         </div>
-        {warningCount > 0 && (
-          <p className="mt-3 text-xs text-yellow-700 dark:text-yellow-300">{warningCount} 项配置存在告警</p>
+        {issues.length > 0 && (
+          <div className="mt-4 space-y-2" aria-label="配置校验问题">
+            {issues.map((issue, index) => (
+              <div
+                key={`${issue.severity}:${issue.message}:${index}`}
+                className={issue.severity === 'error'
+                  ? 'flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200'
+                  : 'flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200'}
+              >
+                {issue.severity === 'error' ? <CircleAlert className="h-4 w-4 shrink-0" /> : <AlertTriangle className="h-4 w-4 shrink-0" />}
+                <span>{issue.message}</span>
+              </div>
+            ))}
+          </div>
         )}
+        {warningCount > 0 && <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">共 {warningCount} 条警告；运行可用不代表每个 Provider 都已验收。</p>}
       </CardContent>
     </Card>
   )
 }
 
-function RuntimeCard({ runtime }: { runtime?: SystemSettings['runtime'] }) {
+function RuntimeCard({
+  runtime,
+  onCopy,
+}: {
+  runtime?: SystemSettings['runtime']
+  onCopy: (label: string, value: string) => void
+}) {
   const rows = [
-    ['API', runtime?.apiEndpoint || 'http://127.0.0.1:17878/v1/messages'],
-    ['Models', runtime?.modelsEndpoint || 'http://127.0.0.1:17878/v1/models'],
-    ['Admin', runtime?.adminEndpoint || 'http://127.0.0.1:17878/admin'],
-    ['Control', runtime?.controlDataPath || '未配置'],
-    ['Auth', runtime?.authDataPath || '未配置'],
+    ['API', runtime?.apiEndpoint, '后端未上报'],
+    ['Models', runtime?.modelsEndpoint, '后端未上报'],
+    ['Admin', runtime?.adminEndpoint, '后端未上报'],
+    ['Control', runtime?.controlDataPath, runtime ? '未配置' : '后端未上报'],
+    ['Auth', runtime?.authDataPath, runtime ? '未配置' : '后端未上报'],
   ] as const
 
   return (
@@ -459,16 +620,18 @@ function RuntimeCard({ runtime }: { runtime?: SystemSettings['runtime'] }) {
         <CardDescription>端点和本地数据文件</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        {rows.map(([label, value]) => (
+        {rows.map(([label, value, fallback]) => (
           <div key={label} className="flex items-center gap-2 rounded-md border px-3 py-2">
             <span className="w-16 shrink-0 text-xs font-medium text-muted-foreground">{label}</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">{value}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">{value || fallback}</span>
             <Button
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              onClick={() => copyText(value)}
+              onClick={() => value && onCopy(label, value)}
+              disabled={!value}
               aria-label={`复制 ${label}`}
+              title={value ? `复制 ${label}` : `${label} ${fallback}`}
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
@@ -501,7 +664,7 @@ function ConfigReloadCard({
           <RefreshCw className="h-4 w-4" />
           配置热加载
         </CardTitle>
-        <CardDescription>重新读取 provider、密钥、Base URL 与模型列表</CardDescription>
+        <CardDescription>重新读取 provider、基础密钥、Base URL、模型与别名</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
@@ -511,7 +674,7 @@ function ConfigReloadCard({
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-muted-foreground">默认路由</span>
-            <span className="max-w-40 truncate font-mono text-xs">{defaultProvider}</span>
+            <span className="max-w-40 truncate font-mono text-xs">{defaultProvider || '未配置'}</span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-muted-foreground">校验告警</span>
@@ -519,7 +682,7 @@ function ConfigReloadCard({
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          监听端口、并发层、请求体上限、HTTP 超时和可信代理仍需重启后端。
+          监听端口、限流/并发层、请求体上限、HTTP 超时、安全/会话、存储、可信代理与新账号环境变量仍需重启。
         </p>
         <Button
           onClick={onReload}
@@ -530,6 +693,7 @@ function ConfigReloadCard({
           {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
           热重载配置
         </Button>
+        {isDisabled && <p className="text-xs text-muted-foreground">需要管理员权限；热加载会写入审计记录。</p>}
       </CardContent>
     </Card>
   )
@@ -560,12 +724,51 @@ function AuditList({ events }: { events: AuditEvent[] }) {
   )
 }
 
+function OperationConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  isPending,
+  onConfirm,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  description: string
+  confirmLabel: string
+  isPending: boolean
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!isPending) onOpenChange(nextOpen) }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>取消</Button>
+          <Button onClick={onConfirm} disabled={isPending}>
+            {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function InlineNotice({ type, message }: { type: 'success' | 'error'; message: string }) {
   const Icon = type === 'success' ? CheckCircle2 : CircleAlert
   return (
-    <div className={type === 'success'
-      ? 'flex items-start gap-2 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200'
-      : 'flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200'}
+    <div
+      role={type === 'error' ? 'alert' : 'status'}
+      aria-live={type === 'error' ? 'assertive' : 'polite'}
+      className={type === 'success'
+        ? 'flex items-start gap-2 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200'
+        : 'flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200'}
     >
       <Icon className="mt-0.5 h-4 w-4 shrink-0" />
       <span>{message}</span>
@@ -586,6 +789,7 @@ function ProviderCredentialRow({
   hasApiKey,
   apiKeyRequired,
   modelCount,
+  readiness,
   onTest,
 }: {
   providerId: string
@@ -600,6 +804,7 @@ function ProviderCredentialRow({
   hasApiKey: boolean
   apiKeyRequired: boolean
   modelCount: number
+  readiness: ReturnType<typeof providerReadiness> | null
   onTest: () => void
 }) {
   const displayStatus = lastTest ? (lastTest.success ? 'success' : 'error') : status
@@ -621,8 +826,13 @@ function ProviderCredentialRow({
             {lastTest.message} · {formatTestTime(lastTest.testedAt)}
           </p>
         )}
+        {!lastTest && readiness && (
+          <p className={readiness.level === 'ready' ? 'text-xs text-green-700 dark:text-green-300' : 'text-xs text-amber-700 dark:text-amber-300'}>
+            {readiness.label} · {readiness.nextStep}
+          </p>
+        )}
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className="hidden text-xs text-muted-foreground sm:inline">{modelCount} models</span>
         <StatusBadge status={displayStatus} />
         <Button
@@ -631,6 +841,7 @@ function ProviderCredentialRow({
           onClick={onTest}
           disabled={isDisabled}
           aria-label={`测试 ${providerId} 连接`}
+          title={isDisabled && !isTesting ? '需要管理员权限、有效 Provider，或等待当前测试完成' : undefined}
         >
           {isTesting ? (
             <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -690,10 +901,6 @@ function statusIcon(status: SetupCheck['status'] | AuditEvent['severity']) {
   return <CircleAlert className="h-4 w-4 text-red-600" />
 }
 
-async function copyText(text: string) {
-  await navigator.clipboard.writeText(text)
-}
-
 function downloadBackup(backup: BackupExport) {
   const generatedAt = Number(backup.generatedAt)
   const date = Number.isFinite(generatedAt) ? new Date(generatedAt) : new Date()
@@ -702,7 +909,7 @@ function downloadBackup(backup: BackupExport) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `modelport-backup-${stamp}.json`
+  anchor.download = `modelport-diagnostic-snapshot-${stamp}.json`
   anchor.click()
   URL.revokeObjectURL(url)
 }

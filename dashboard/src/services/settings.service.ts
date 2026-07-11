@@ -15,6 +15,21 @@ export const settingsService = {
     return mockDelay(mockSettingsStore)
   },
 
+  updateDefaultProvider: async (providerId: string): Promise<void> => {
+    if (!isMockMode) {
+      await api.put('/admin/settings', { gateway: { defaultProvider: providerId } })
+      return
+    }
+    mockSettingsStore = {
+      ...mockSettingsStore,
+      gateway: {
+        ...mockSettingsStore.gateway,
+        defaultProvider: providerId,
+      },
+    }
+    await mockDelay(undefined)
+  },
+
   testProviderConnection: (providerId: string): Promise<{ success: boolean; message: string; testedAt?: string; models?: string[]; modelCount?: number }> => {
     if (!isMockMode) return api.post('/admin/settings/test-provider', { providerId })
     const provider = mockProviders.find((item) => item.id === providerId)
@@ -83,7 +98,7 @@ export const settingsService = {
   },
 
   exportBackup: (): Promise<BackupExport> => {
-    if (!isMockMode) return api.get('/admin/backup')
+    if (!isMockMode) return api.post('/admin/backup')
     return mockDelay({
       schemaVersion: 1,
       service: 'model-port',

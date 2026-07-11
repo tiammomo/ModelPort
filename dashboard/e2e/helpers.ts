@@ -37,7 +37,7 @@ export async function login(page: Page, env = requireE2EEnv()) {
   await page.locator('#password').fill(env.adminPassword)
   await page.getByRole('button', { name: /^登录$/ }).click()
   await expect(page).toHaveURL(/\/dashboard$/)
-  await expect(page.getByText('今日请求量')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible()
 }
 
 export function csrfHeaders() {
@@ -51,6 +51,17 @@ export function dateTimeLocal(timestamp: number): string {
 }
 
 export async function cleanupE2EUsers(page: Page, prefix = 'e2e_') {
+  const keysResponse = await page.request.get('/admin/api-keys')
+  if (keysResponse.ok()) {
+    const keys = await keysResponse.json() as Array<{ id: string; name: string; username?: string }>
+    for (const key of keys) {
+      if (!key.name.startsWith(prefix) && !key.username?.startsWith(prefix)) continue
+      await page.request.delete(`/admin/api-keys/${encodeURIComponent(key.id)}`, {
+        headers: csrfHeaders(),
+      }).catch(() => undefined)
+    }
+  }
+
   const usersResponse = await page.request.get('/admin/users')
   if (!usersResponse.ok()) return
   const users = await usersResponse.json() as Array<{ id: string; username: string }>

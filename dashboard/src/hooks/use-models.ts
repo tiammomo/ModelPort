@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { modelsService } from '@/services/models.service'
+import { withDefaultProvider } from '@/features/models/default-provider'
 import { queryKeys } from './use-dashboard'
-import type { Provider, ProviderCredentialPoolMode, ProviderCredentialWritePayload, ProviderWritePayload } from '@/types'
+import type { Provider, ProviderCredentialPoolMode, ProviderCredentialWritePayload, ProviderWritePayload, SystemSettings } from '@/types'
 
 export function useProviders() {
   return useQuery({
@@ -220,9 +221,24 @@ export function useUpdateDefaultProvider() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (providerId: string) => modelsService.updateDefaultProvider(providerId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.providers })
-      qc.invalidateQueries({ queryKey: queryKeys.settings })
+    onMutate: async (providerId) => {
+      await qc.cancelQueries({ queryKey: queryKeys.settings })
+      const previousSettings = qc.getQueryData<SystemSettings>(queryKeys.settings)
+      qc.setQueryData<SystemSettings>(queryKeys.settings, (current) =>
+        current ? withDefaultProvider(current, providerId) : current,
+      )
+      return { previousSettings }
+    },
+    onError: (_error, _providerId, context) => {
+      if (context?.previousSettings) {
+        qc.setQueryData(queryKeys.settings, context.previousSettings)
+      }
+    },
+    onSettled: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.providers }),
+        qc.invalidateQueries({ queryKey: queryKeys.settings }),
+      ])
     },
   })
 }

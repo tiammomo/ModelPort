@@ -32,8 +32,8 @@ export const mockProviders: Provider[] = [
       failureKind: 'account',
       accountIssue: 'insufficient_balance',
       rechargeRequired: true,
-      rechargeBadge: '代充值',
-      recommendedAction: '上游账号余额不足，可为该渠道处理代充值后重试，或切换到另一个账号/Provider。',
+      rechargeBadge: '等待充值',
+      recommendedAction: '上游账号余额不足，请为该渠道充值后重试，或切换到另一个账号/Provider。',
     },
   },
   {

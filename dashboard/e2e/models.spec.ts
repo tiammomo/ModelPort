@@ -37,7 +37,7 @@ test.describe('models', () => {
 
   test('models page shows the standard DeepSeek model', async ({ page }) => {
     await page.goto('/models')
-    await expect(page.getByRole('heading', { name: '模型管理' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Provider 与模型' })).toBeVisible()
     await expect(page.getByText('deepseek-v4-flash').first()).toBeVisible()
     await expect(page.getByText(/DeepSeek/).first()).toBeVisible()
   })

@@ -53,14 +53,14 @@ test.describe('users and API keys', () => {
 
     const dialog = page.getByRole('dialog', { name: '编辑用户' })
     await expect(dialog).toBeVisible()
-    await dialog.getByPlaceholder('输入邮箱').fill(updatedEmail)
-    await dialog.getByPlaceholder('留空不修改').fill('e2e-password-updated-12345')
-    await dialog.getByRole('button', { name: '保存' }).click()
+    await dialog.getByLabel('邮箱').fill(updatedEmail)
+    await dialog.getByLabel('新密码').fill('e2e-password-updated-12345')
+    await dialog.getByRole('button', { name: '保存更改' }).click()
     await expect(dialog).toBeHidden()
     await expect(page.getByRole('row').filter({ hasText: updatedEmail })).toBeVisible()
 
     await page.goto('/api-keys')
-    await page.getByPlaceholder('搜索名称、用户或 Key...').fill(keyName)
+    await page.getByPlaceholder('搜索名称、用户、密钥标识或项目').fill(keyName)
     const keyRow = page.getByRole('row').filter({ hasText: keyName })
     await expect(keyRow).toBeVisible()
     await expect(keyRow).toContainText(username)
@@ -75,5 +75,37 @@ test.describe('users and API keys', () => {
     const savedKey = apiKeys.find((apiKey) => apiKey.name === keyName)
     expect(savedKey?.allowedModels).toContain('deepseek-v4-flash')
     expect(savedKey?.allowedProviders).toContain('deepseek')
+  })
+
+  test('new client key reveal provides one-time ready-to-copy Anthropic settings', async ({ page }) => {
+    const suffix = Date.now()
+    const username = `e2e_reveal_${suffix}`
+    const createUserResponse = await page.request.post('/admin/users', {
+      headers: csrfHeaders(),
+      data: {
+        username,
+        email: `${username}@modelport.local`,
+        password: 'e2e-password-12345',
+        role: 'user',
+        status: 'active',
+      },
+    })
+    expect(createUserResponse.ok()).toBeTruthy()
+
+    await page.goto('/api-keys')
+    await page.getByRole('button', { name: '创建密钥' }).click()
+    const dialog = page.getByRole('dialog', { name: '创建 API 密钥' })
+    await dialog.locator('#create-key-user').click()
+    await page.getByRole('option', { name: new RegExp(username) }).click()
+    await dialog.getByLabel('名称').fill(`e2e_reveal_key_${suffix}`)
+    await dialog.getByRole('button', { name: '创建密钥' }).click()
+
+    const revealedKey = dialog.locator('#new-api-key')
+    await expect(revealedKey).toHaveValue(/^sk-mp-/)
+    await expect(dialog.getByText('完整密钥只显示这一次。', { exact: false })).toBeVisible()
+    await expect(dialog.getByText('Claude Code / Anthropic SDK')).toBeVisible()
+    await expect(dialog.getByText(/OpenAI-compatible 是上游适配能力/)).toBeVisible()
+    await dialog.getByRole('button', { name: '已保存，关闭' }).click()
+    await expect(dialog).toBeHidden()
   })
 })

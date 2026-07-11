@@ -100,7 +100,8 @@ export interface ProviderWritePayload {
   displayName?: string
   protocol?: ProviderProtocol
   baseUrl?: string
-  apiKeyEnv?: string | null
+  apiKeyEnv?: string
+  clearApiKeyEnv?: boolean
   apiKeyRequired?: boolean
   defaultModel?: string
   models?: string[]

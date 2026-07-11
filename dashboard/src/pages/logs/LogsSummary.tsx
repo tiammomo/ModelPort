@@ -20,24 +20,24 @@ export function SummaryMetric({
   tone: 'sky' | 'emerald' | 'amber' | 'rose'
 }) {
   const tones = {
-    sky: 'bg-sky-50 text-sky-700 ring-sky-100',
-    emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
-    amber: 'bg-amber-50 text-amber-700 ring-amber-100',
-    rose: 'bg-rose-50 text-rose-700 ring-rose-100',
+    sky: 'bg-sky-50 text-sky-700 ring-sky-100 dark:bg-sky-950/40 dark:text-sky-300 dark:ring-sky-900',
+    emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900',
+    amber: 'bg-amber-50 text-amber-700 ring-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-900',
+    rose: 'bg-rose-50 text-rose-700 ring-rose-100 dark:bg-rose-950/40 dark:text-rose-300 dark:ring-rose-900',
   }
 
   return (
-    <div className="rounded-lg border bg-card p-4 shadow-sm">
+    <div className="rounded-lg border bg-card p-3 shadow-sm sm:p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-1 truncate font-mono text-2xl font-semibold tracking-tight">{value}</p>
+          <p className="mt-1 truncate font-mono text-xl font-semibold tracking-tight sm:text-2xl">{value}</p>
         </div>
-        <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ring-1', tones[tone])}>
-          <Icon className="h-5 w-5" />
+        <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 sm:h-10 sm:w-10', tones[tone])}>
+          <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
         </div>
       </div>
-      <p className="mt-3 truncate text-xs text-muted-foreground">{helper}</p>
+      <p className="mt-2 truncate text-xs text-muted-foreground sm:mt-3">{helper}</p>
     </div>
   )
 }
@@ -55,7 +55,7 @@ export function LogsSummaryGrid({
   const cacheTokens = (summary?.totalCacheWriteTokens || 0) + (summary?.totalCacheReadTokens || 0)
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
       <SummaryMetric
         label="消耗费用"
         value={formatMoney(summary?.totalCostEstimate || 0, 4)}
@@ -71,14 +71,14 @@ export function LogsSummaryGrid({
         tone="emerald"
       />
       <SummaryMetric
-        label="Tokens"
+        label="Token"
         value={formatInteger(summary?.totalTokens || 0)}
         helper={`TPM ${formatInteger(summary?.tpm || 0)} · RPM ${(summary?.rpm || 0).toFixed(2)}`}
         icon={Gauge}
         tone="amber"
       />
       <SummaryMetric
-        label="缓存"
+        label="缓存 Token"
         value={formatInteger(cacheTokens)}
         helper={`读 ${formatInteger(summary?.totalCacheReadTokens || 0)} / 写 ${formatInteger(summary?.totalCacheWriteTokens || 0)}`}
         icon={DatabaseZap}

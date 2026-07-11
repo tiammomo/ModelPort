@@ -1,4 +1,5 @@
-export const isMockMode = import.meta.env.VITE_MODELPORT_MOCK === '1'
+// Mock data is a development aid and must never be baked into production builds.
+export const isMockMode = import.meta.env.DEV && import.meta.env.VITE_MODELPORT_MOCK === '1'
 
 export function cloneMock<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T

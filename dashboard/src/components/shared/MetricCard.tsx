@@ -29,7 +29,7 @@ export function MetricCard({
   if (loading) {
     return (
       <Card className={cn('transition-all duration-200', className)}>
-        <CardContent className="p-5">
+        <CardContent className="p-4 sm:p-5">
           <div className="flex items-start gap-4">
             <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
             <div className="min-w-0 flex-1 space-y-2">
@@ -48,23 +48,23 @@ export function MetricCard({
   return (
     <Card
       className={cn(
-        'group transition-all duration-200 hover:shadow-md hover:-translate-y-0.5',
+        'group transition-all duration-200 motion-safe:hover:-translate-y-0.5 motion-safe:hover:shadow-md',
         className,
       )}
     >
-      <CardContent className="p-5">
-        <div className="flex items-start gap-4">
+      <CardContent className="p-4 sm:p-5">
+        <div className="flex items-start gap-2.5 sm:gap-4">
           {Icon && (
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors group-hover:bg-primary/20">
-              <Icon className="h-5 w-5" />
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors group-hover:bg-primary/20 sm:h-10 sm:w-10">
+              <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
           )}
 
           <div className="min-w-0 flex-1">
             <div className="flex items-end justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-sm font-medium text-muted-foreground">{title}</p>
-                <div className="mt-4 break-words text-2xl font-bold leading-tight tabular-nums tracking-tight">
+                <p className="whitespace-nowrap text-xs font-medium text-muted-foreground sm:text-sm">{title}</p>
+                <div className="mt-2 whitespace-nowrap text-lg font-bold leading-tight tabular-nums tracking-tight sm:mt-3 sm:text-2xl">
                   {numericValue !== undefined ? (
                     <AnimatedNumber value={numericValue} />
                   ) : (
@@ -73,7 +73,7 @@ export function MetricCard({
                 </div>
               </div>
               {sparkline && sparkline.length > 0 && (
-                <Sparkline data={sparkline} width={72} height={28} className="shrink-0 opacity-70" />
+                <Sparkline data={sparkline} width={52} height={28} className="hidden shrink-0 opacity-70 xl:block" />
               )}
             </div>
 

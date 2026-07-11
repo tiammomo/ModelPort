@@ -14,6 +14,7 @@ import type {
 import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay } from '@/lib/mock-mode'
 import { mockAliases, mockProviders } from '@/mock'
+import { settingsService } from './settings.service'
 
 let mockAliasStore = [...mockAliases]
 let mockProviderStore: Provider[] = mockProviders.map((provider) => ({
@@ -48,7 +49,7 @@ export const modelsService = {
       source: 'control',
       protocol: payload.protocol || 'openai-compat',
       baseUrl: payload.baseUrl || '',
-      apiKeyEnv: payload.apiKeyEnv || null,
+      apiKeyEnv: payload.clearApiKeyEnv ? null : payload.apiKeyEnv || null,
       apiKeyRequired: payload.apiKeyRequired ?? true,
       defaultModel: payload.defaultModel || models[0] || '',
       models,
@@ -75,13 +76,14 @@ export const modelsService = {
     if (!isMockMode) return api.put(`/admin/providers/${encodeURIComponent(providerId)}`, payload)
     const current = mockProviderStore.find((item) => item.id === providerId)
     if (!current) throw new Error('供应商不存在')
+    const { clearApiKeyEnv, ...providerPatch } = payload
     const models = normalizedModels(payload.models ?? current.models, payload.defaultModel ?? current.defaultModel)
     const next: Provider = {
       ...current,
-      ...payload,
+      ...providerPatch,
       id: providerId,
       displayName: payload.displayName ?? current.displayName,
-      apiKeyEnv: payload.apiKeyEnv ?? current.apiKeyEnv,
+      apiKeyEnv: clearApiKeyEnv ? null : payload.apiKeyEnv ?? current.apiKeyEnv,
       defaultModel: payload.defaultModel ?? current.defaultModel,
       models,
       modelPrefixes: payload.modelPrefixes ?? current.modelPrefixes,
@@ -295,10 +297,8 @@ export const modelsService = {
     await api.put('/admin/settings', { gateway: { providerOrder: order } })
   },
 
-  updateDefaultProvider: async (providerId: string): Promise<void> => {
-    if (isMockMode) return mockDelay(undefined)
-    await api.put('/admin/settings', { gateway: { defaultProvider: providerId } })
-  },
+  updateDefaultProvider: (providerId: string): Promise<void> =>
+    settingsService.updateDefaultProvider(providerId),
 }
 
 function mockCredential(providerId: string, payload: ProviderCredentialWritePayload, active = false): ProviderCredential {

@@ -5,6 +5,7 @@ export type StreamMode = 'stream' | 'non-stream'
 
 export interface RequestLog {
   id: string
+  requestId?: string | null
   timestamp: string
   userId: string
   username: string
@@ -56,6 +57,7 @@ export interface RequestLog {
 
 export interface LogFilters {
   userId?: string
+  apiKeyId?: string
   model?: string
   provider?: string
   group?: string
@@ -87,6 +89,8 @@ export interface LatencyStats {
   p99: number
   avg: number
   max: number
+  sampleCount?: number
+  percentilesEstimated?: boolean
   byModel: Record<string, { p50: number; p95: number; avg: number }>
   byProvider: Record<string, { p50: number; p95: number; avg: number }>
 }

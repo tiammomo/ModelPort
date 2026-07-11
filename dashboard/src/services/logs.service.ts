@@ -3,6 +3,8 @@ import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay } from '@/lib/mock-mode'
 import { mockLogs } from '@/mock'
 
+type LogsResponse = { logs: RequestLog[]; total: number; summary: LogSummary }
+
 const latencyValues = mockLogs.map((log) => log.latencyMs).sort((a, b) => a - b)
 
 function percentile(values: number[], p: number) {
@@ -69,19 +71,55 @@ function summarizeLogs(logs: RequestLog[]): LogSummary {
   }
 }
 
+function appendFilter(params: URLSearchParams, name: string, value?: string) {
+  const normalized = value?.trim()
+  if (normalized) params.set(name, normalized)
+}
+
+function appendEpochMillis(params: URLSearchParams, name: string, value?: string) {
+  if (!value) return
+  const timestamp = new Date(value).getTime()
+  if (Number.isFinite(timestamp)) params.set(name, String(timestamp))
+}
+
+function logsPath(filters: LogFilters | undefined, page: number, pageSize: number) {
+  const params = new URLSearchParams()
+  params.set('page', String(Math.max(1, Math.trunc(page))))
+  params.set('pageSize', String(Math.min(500, Math.max(1, Math.trunc(pageSize)))))
+  appendFilter(params, 'status', filters?.status)
+  appendFilter(params, 'provider', filters?.provider)
+  appendFilter(params, 'model', filters?.model)
+  appendFilter(params, 'userId', filters?.userId)
+  appendFilter(params, 'apiKeyId', filters?.apiKeyId)
+  appendEpochMillis(params, 'dateFrom', filters?.dateFrom)
+  appendEpochMillis(params, 'dateTo', filters?.dateTo)
+  appendFilter(params, 'search', filters?.search)
+  appendFilter(params, 'username', filters?.username)
+  appendFilter(params, 'group', filters?.group)
+  appendFilter(params, 'stream', filters?.stream)
+  return `/admin/logs?${params.toString()}`
+}
+
 export const logsService = {
   getLogs: async (
     filters?: LogFilters,
     page = 1,
     pageSize = 20
-  ): Promise<{ logs: RequestLog[]; total: number; summary: LogSummary }> => {
-    const data = isMockMode
-      ? { logs: mockLogs, total: mockLogs.length }
-      : await api.get<{ logs: RequestLog[]; total: number }>('/admin/logs')
-    let filtered = data.logs
+  ): Promise<LogsResponse> => {
+    if (!isMockMode) {
+      return api.get<LogsResponse>(logsPath(filters, page, pageSize))
+    }
+
+    let filtered = mockLogs
 
     if (filters?.userId) filtered = filtered.filter((log) => log.userId === filters.userId)
-    if (filters?.model) filtered = filtered.filter((log) => log.model.includes(filters.model!))
+    if (filters?.apiKeyId) filtered = filtered.filter((log) => log.apiKeyId === filters.apiKeyId)
+    if (filters?.model) {
+      const model = filters.model.toLowerCase()
+      filtered = filtered.filter(
+        (log) => log.model.toLowerCase().includes(model) || log.resolvedModel.toLowerCase().includes(model),
+      )
+    }
     if (filters?.provider) filtered = filtered.filter((log) => log.provider === filters.provider)
     if (filters?.group) filtered = filtered.filter((log) => (log.group || log.apiKeyGroup || '').includes(filters.group!))
     if (filters?.username) filtered = filtered.filter((log) => log.username.includes(filters.username!))
@@ -100,12 +138,17 @@ export const logsService = {
       filtered = filtered.filter(
         (log) =>
           log.id.toLowerCase().includes(search) ||
+          (log.requestId || '').toLowerCase().includes(search) ||
+          log.userId.toLowerCase().includes(search) ||
           log.username.toLowerCase().includes(search) ||
           log.model.toLowerCase().includes(search) ||
           log.resolvedModel.toLowerCase().includes(search) ||
           log.provider.toLowerCase().includes(search) ||
+          (log.apiKeyId || '').toLowerCase().includes(search) ||
           (log.apiKeyName || '').toLowerCase().includes(search) ||
-          (log.group || log.apiKeyGroup || '').toLowerCase().includes(search)
+          (log.group || log.apiKeyGroup || '').toLowerCase().includes(search) ||
+          (log.errorMessage || '').toLowerCase().includes(search) ||
+          (log.detail || '').toLowerCase().includes(search)
       )
     }
 
@@ -113,16 +156,17 @@ export const logsService = {
     const summary = summarizeLogs(filtered)
     const start = (page - 1) * pageSize
     const result = { logs: filtered.slice(start, start + pageSize), total, summary }
-    return isMockMode ? mockDelay(result) : result
+    return mockDelay(result)
   },
 
   getLogById: async (id: string): Promise<RequestLog> => {
-    const data = isMockMode
-      ? { logs: mockLogs, total: mockLogs.length }
-      : await api.get<{ logs: RequestLog[]; total: number }>('/admin/logs')
-    const log = data.logs.find((item) => item.id === id)
+    if (!isMockMode) {
+      return api.get<RequestLog>(`/admin/logs/${encodeURIComponent(id)}`)
+    }
+
+    const log = mockLogs.find((item) => item.id === id)
     if (!log) throw new Error('日志不存在')
-    return isMockMode ? mockDelay(log) : log
+    return mockDelay(log)
   },
 
   getLatencyStats: (): Promise<LatencyStats> =>

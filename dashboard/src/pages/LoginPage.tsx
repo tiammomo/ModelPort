@@ -1,5 +1,5 @@
-import { useState, type ElementType } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, type ElementType } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,7 @@ import {
   Code2,
   Database,
   Eye,
+  EyeOff,
   Globe,
   KeyRound,
   Layers3,
@@ -156,13 +157,43 @@ function GatewayTopology() {
   )
 }
 
+function readSessionValue(key: string): string {
+  try {
+    return window.sessionStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+function safeReturnPath(value: string | null | undefined): string {
+  if (!value || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/login')) return ''
+  return value
+}
+
 export function LoginPage() {
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState(() => window.localStorage.getItem('modelport_last_username') || '')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [capsLock, setCapsLock] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [sessionNotice] = useState(() => readSessionValue('modelport_auth_notice'))
+  const [storedReturnTo] = useState(() => readSessionValue('modelport_return_to'))
   const login = useAuthStore((s) => s.login)
   const navigate = useNavigate()
+  const location = useLocation()
+  const from = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)?.from
+  const locationReturnTo = from?.pathname ? `${from.pathname}${from.search || ''}${from.hash || ''}` : ''
+  const returnTo = safeReturnPath(locationReturnTo) || safeReturnPath(storedReturnTo) || '/dashboard'
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.removeItem('modelport_auth_notice')
+      window.sessionStorage.removeItem('modelport_return_to')
+    } catch {
+      // Session storage can be unavailable in hardened browser contexts.
+    }
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -176,7 +207,8 @@ export function LoginPage() {
 
     try {
       await login(username.trim(), password)
-      navigate('/dashboard')
+      window.localStorage.setItem('modelport_last_username', username.trim())
+      navigate(returnTo, { replace: true })
     } catch {
       setError('登录失败，请检查用户名或密码')
     } finally {
@@ -185,9 +217,9 @@ export function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#eef3f7] bg-[linear-gradient(to_right,rgba(15,23,42,0.045)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,0.04)_1px,transparent_1px)] [background-size:52px_52px] px-5 py-8 sm:px-8">
+    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-[#eef3f7] bg-[linear-gradient(to_right,rgba(15,23,42,0.045)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,0.04)_1px,transparent_1px)] [background-size:52px_52px] px-5 py-8 sm:px-8">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(34,211,238,0.12),transparent_32%),radial-gradient(circle_at_82%_18%,rgba(14,165,233,0.10),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.72),rgba(226,232,240,0.72))]" />
-      <Card className="relative grid h-auto min-h-[640px] w-full max-w-[1380px] overflow-hidden border-slate-200/80 bg-[#f8fbfd] shadow-[0_32px_90px_rgba(15,23,42,0.16)] lg:min-h-[730px] lg:grid-cols-[1.42fr_0.88fr]">
+      <Card className="relative grid h-auto min-h-[560px] w-full max-w-[1380px] overflow-hidden border-slate-200/80 bg-[#f8fbfd] shadow-[0_32px_90px_rgba(15,23,42,0.16)] lg:min-h-[730px] lg:grid-cols-[1.42fr_0.88fr]">
         <div className="relative hidden min-h-[730px] flex-col justify-between overflow-hidden bg-[#08111b] p-10 text-white xl:p-12 lg:flex">
           <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(148,163,184,0.055)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,0.045)_1px,transparent_1px)] [background-size:48px_48px]" />
           <div className="pointer-events-none absolute inset-x-0 top-0 h-52 bg-[radial-gradient(circle_at_54%_18%,rgba(34,211,238,0.13),transparent_42%)]" />
@@ -218,7 +250,7 @@ export function LoginPage() {
               <CapabilityCell icon={Code2} label="Anthropic-compatible" />
               <CapabilityCell icon={Boxes} label="OpenAI-compatible" tone="blue" />
               <CapabilityCell icon={Wrench} label="Tool Use" />
-              <CapabilityCell icon={Eye} label="Trace Ready" tone="emerald" />
+              <CapabilityCell icon={Eye} label="Request Logs" tone="emerald" />
               <CapabilityCell icon={Shuffle} label="Fallback" tone="amber" />
               <CapabilityCell icon={Database} label="Local Models" />
             </div>
@@ -229,7 +261,7 @@ export function LoginPage() {
           </div>
         </div>
 
-        <div className="relative flex min-h-[640px] items-center justify-center border-l border-slate-200 bg-[#f8fbfd] px-7 py-10 sm:px-10 lg:min-h-[730px]">
+        <div className="relative flex min-h-[560px] items-center justify-center border-l border-slate-200 bg-[#f8fbfd] px-7 py-10 sm:px-10 lg:min-h-[730px]">
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(160deg,rgba(255,255,255,0.78),rgba(226,232,240,0.28)_54%,rgba(255,255,255,0.52))]" />
           <div className="relative w-full max-w-[360px]">
             <CardHeader className="items-center px-0 pb-8 text-center">
@@ -238,11 +270,16 @@ export function LoginPage() {
               </div>
               <div className="space-y-1.5">
                 <p className="text-2xl font-semibold text-slate-950">ModelPort</p>
-                <p className="text-sm text-slate-500">Admin Console</p>
+                <p className="text-sm text-slate-500">大模型网关管理控制台</p>
               </div>
             </CardHeader>
 
             <CardContent className="px-0">
+              {sessionNotice && (
+                <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  {sessionNotice}
+                </div>
+              )}
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="username" className="text-xs font-medium text-slate-700">用户名</Label>
@@ -256,6 +293,9 @@ export function LoginPage() {
                       onChange={(e) => setUsername(e.target.value)}
                       disabled={loading}
                       autoComplete="username"
+                      autoFocus={!username}
+                      aria-invalid={!!error}
+                      aria-describedby={error ? 'login-error' : undefined}
                       className="h-11 rounded-lg border-slate-200 bg-white/90 pl-9 pr-4 text-sm text-slate-950 shadow-[0_8px_18px_rgba(15,23,42,0.05)] placeholder:text-slate-400 focus-visible:border-cyan-500/70 focus-visible:ring-cyan-500/15"
                     />
                   </div>
@@ -266,17 +306,33 @@ export function LoginPage() {
                     <KeyRound className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                     <Input
                       id="password"
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       placeholder="请输入密码"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      onKeyDown={(e) => setCapsLock(e.getModifierState('CapsLock'))}
+                      onKeyUp={(e) => setCapsLock(e.getModifierState('CapsLock'))}
                       disabled={loading}
                       autoComplete="current-password"
-                      className="h-11 rounded-lg border-slate-200 bg-white/90 pl-9 pr-4 text-sm text-slate-950 shadow-[0_8px_18px_rgba(15,23,42,0.05)] placeholder:text-slate-400 focus-visible:border-cyan-500/70 focus-visible:ring-cyan-500/15"
+                      autoFocus={!!username}
+                      aria-invalid={!!error}
+                      aria-describedby={error ? 'login-error' : capsLock ? 'caps-lock-warning' : undefined}
+                      className="h-11 rounded-lg border-slate-200 bg-white/90 pl-9 pr-10 text-sm text-slate-950 shadow-[0_8px_18px_rgba(15,23,42,0.05)] placeholder:text-slate-400 focus-visible:border-cyan-500/70 focus-visible:ring-cyan-500/15"
                     />
+                    <button
+                      type="button"
+                      className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/30"
+                      onClick={() => setShowPassword((current) => !current)}
+                      aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
                   </div>
+                  {capsLock && (
+                    <p id="caps-lock-warning" className="text-xs text-amber-700">大写锁定已开启</p>
+                  )}
                   {error && (
-                    <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                    <p id="login-error" role="alert" aria-live="polite" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                       {error}
                     </p>
                   )}
@@ -288,19 +344,19 @@ export function LoginPage() {
                   disabled={loading}
                 >
                   {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                  登录
+                  {loading ? '正在登录…' : '登录'}
                 </Button>
                 <div className="flex items-center gap-3 pt-3 text-xs text-slate-400">
                   <div className="h-px flex-1 bg-slate-200" />
                   <ShieldCheck className="h-4 w-4 text-slate-400" />
                   <div className="h-px flex-1 bg-slate-200" />
                 </div>
-                <p className="text-center text-xs text-slate-500">本地部署 · 仅管理员访问 · 安全可靠</p>
+                <p className="text-center text-xs text-slate-500">连接当前 ModelPort 实例 · 会话 Cookie 鉴权</p>
               </form>
             </CardContent>
           </div>
         </div>
       </Card>
-    </div>
+    </main>
   )
 }

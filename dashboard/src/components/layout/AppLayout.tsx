@@ -21,11 +21,28 @@ export function AppLayout() {
   const isMobile = useIsMobile()
   const [mobileOpen, setMobileOpen] = useState(false)
 
+  useEffect(() => {
+    if (!mobileOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileOpen(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [mobileOpen])
+
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-dvh overflow-hidden bg-muted/10">
+      <a
+        href="#main-content"
+        className="fixed left-3 top-3 z-[100] -translate-y-20 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-lg transition-transform focus:translate-y-0"
+      >
+        跳到主要内容
+      </a>
       {/* Mobile backdrop */}
       {isMobile && mobileOpen && (
-        <div
+        <button
+          type="button"
+          aria-label="关闭导航菜单"
           className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm animate-fade-in"
           onClick={() => setMobileOpen(false)}
         />
@@ -34,12 +51,13 @@ export function AppLayout() {
       {/* Sidebar */}
       {isMobile ? (
         <div
+          id="mobile-navigation"
           className={cn(
             'fixed inset-y-0 left-0 z-50 transition-transform duration-300',
             mobileOpen ? 'translate-x-0' : '-translate-x-full',
           )}
         >
-          <Sidebar onNavigate={() => setMobileOpen(false)} />
+          <Sidebar mobile onNavigate={() => setMobileOpen(false)} />
         </div>
       ) : (
         <Sidebar />
@@ -47,9 +65,15 @@ export function AppLayout() {
 
       {/* Main content */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Header onMenuClick={() => setMobileOpen(true)} isMobile={isMobile} />
-        <main className="flex-1 overflow-y-auto p-4 md:p-6">
-          <Outlet />
+        <Header
+          onMenuClick={() => setMobileOpen(true)}
+          isMobile={isMobile}
+          mobileMenuOpen={mobileOpen}
+        />
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto px-4 py-5 outline-none md:px-6 md:py-6">
+          <div className="mx-auto w-full max-w-[1600px]">
+            <Outlet />
+          </div>
         </main>
       </div>
 

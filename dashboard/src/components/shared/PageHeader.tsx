@@ -12,13 +12,13 @@ interface PageHeaderProps {
 
 export function PageHeader({ title, description, action }: PageHeaderProps) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
-        <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
-        {description && <p className="text-muted-foreground">{description}</p>}
+        <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+        {description && <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">{description}</p>}
       </div>
       {action && (
-        <Button onClick={action.onClick} className="shrink-0">
+        <Button onClick={action.onClick} className="w-full shrink-0 sm:w-auto">
           {action.icon && <action.icon className="mr-2 h-4 w-4" />}
           {action.label}
         </Button>

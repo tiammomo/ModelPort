@@ -11,15 +11,17 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { isMockMode } from '@/lib/mock-mode'
-import { Moon, Sun, Monitor, LogOut, User, Menu, Search } from 'lucide-react'
+import { ROLE_LABELS } from '@/lib/constants'
+import { Moon, Sun, Monitor, LogOut, Menu, Search } from 'lucide-react'
 import { useState } from 'react'
 
 interface HeaderProps {
   onMenuClick?: () => void
   isMobile?: boolean
+  mobileMenuOpen?: boolean
 }
 
-export function Header({ onMenuClick, isMobile }: HeaderProps) {
+export function Header({ onMenuClick, isMobile, mobileMenuOpen }: HeaderProps) {
   const currentUser = useAuthStore((s) => s.currentUser)
   const logout = useAuthStore((s) => s.logout)
   const theme = useAppStore((s) => s.theme)
@@ -30,13 +32,22 @@ export function Header({ onMenuClick, isMobile }: HeaderProps) {
 
   // Keyboard shortcut hint for command palette
   const [isMac] = useState(() => navigator.platform.includes('Mac'))
+  const openCommandPalette = () => document.dispatchEvent(new CustomEvent('modelport:open-command-palette'))
 
   return (
     <header className="flex h-14 items-center justify-between border-b border-border/50 bg-background/80 backdrop-blur-xl px-4 md:px-6">
       <div className="flex items-center gap-3 min-w-0">
         {isMobile && (
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onMenuClick}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={onMenuClick}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-navigation"
+          >
             <Menu className="h-4 w-4" />
+            <span className="sr-only">打开导航菜单</span>
           </Button>
         )}
         <div className="min-w-0">
@@ -55,19 +66,26 @@ export function Header({ onMenuClick, isMobile }: HeaderProps) {
           variant="outline"
           size="sm"
           className="hidden h-8 gap-2 text-xs text-muted-foreground md:flex"
-          onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
+          onClick={openCommandPalette}
+          aria-label="打开快速导航"
         >
           <Search className="h-3.5 w-3.5" />
-          <span>搜索...</span>
+          <span>快速跳转</span>
           <kbd className="pointer-events-none ml-1 select-none rounded border bg-muted px-1 text-[10px] font-medium">
             {isMac ? '⌘' : 'Ctrl+'}K
           </kbd>
         </Button>
 
+        {isMobile && (
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={openCommandPalette} aria-label="打开快速导航">
+            <Search className="h-4 w-4" />
+          </Button>
+        )}
+
         {/* Theme toggle */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
+            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="切换界面主题">
               <ThemeIcon className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -90,7 +108,7 @@ export function Header({ onMenuClick, isMobile }: HeaderProps) {
         {/* User menu */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+            <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="打开账户菜单">
               <Avatar className="h-8 w-8 ring-2 ring-primary/20">
                 <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
                   {currentUser?.username?.charAt(0).toUpperCase() || 'U'}
@@ -107,13 +125,11 @@ export function Header({ onMenuClick, isMobile }: HeaderProps) {
                 <p className="text-xs leading-none text-muted-foreground">
                   {currentUser?.email || ''}
                 </p>
+                <p className="pt-1 text-xs font-medium text-primary">
+                  {ROLE_LABELS[currentUser?.role || ''] || currentUser?.role || '未知角色'}
+                </p>
               </div>
             </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem>
-              <User className="mr-2 h-4 w-4" />
-              个人资料
-            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
               <LogOut className="mr-2 h-4 w-4" />

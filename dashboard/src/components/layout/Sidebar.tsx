@@ -1,6 +1,8 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { useAppStore } from '@/stores'
-import { NAV_ITEMS } from '@/lib/constants'
+import { useAppStore, useAuthStore } from '@/stores'
+import { NAV_SECTIONS, navItemsForRole } from '@/lib/constants'
+import { api } from '@/lib/api-client'
+import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
@@ -13,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
+  X,
 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -31,19 +34,32 @@ const iconMap: Record<string, React.ElementType> = {
 
 interface SidebarProps {
   onNavigate?: () => void
+  mobile?: boolean
 }
 
-export function Sidebar({ onNavigate }: SidebarProps) {
+export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const collapsed = useAppStore((s) => s.sidebarCollapsed)
   const toggle = useAppStore((s) => s.toggleSidebar)
+  const role = useAuthStore((s) => s.currentUser?.role)
   const location = useLocation()
+  const isCollapsed = mobile ? false : collapsed
+  const navItems = navItemsForRole(role)
+  const { data: liveness, isError: livenessError } = useQuery({
+    queryKey: ['gateway-liveness'],
+    queryFn: () => api.get<{ status: string }>('/livez'),
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+    retry: 1,
+  })
+  const connected = !livenessError && liveness?.status === 'ok'
 
   return (
     <TooltipProvider delayDuration={0}>
       <aside
+        aria-label="主导航"
         className={cn(
           'flex h-screen flex-col border-r border-border/50 bg-sidebar/80 backdrop-blur-xl text-sidebar-foreground transition-all duration-200',
-          collapsed ? 'w-14' : 'w-56',
+          isCollapsed ? 'w-14' : mobile ? 'w-64' : 'w-56',
         )}
       >
         {/* Logo */}
@@ -51,15 +67,30 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Zap className="h-4 w-4" />
           </div>
-          {!collapsed && (
+          {!isCollapsed && (
             <span className="text-lg font-bold tracking-tight">ModelPort</span>
+          )}
+          {mobile && (
+            <Button variant="ghost" size="icon" onClick={onNavigate} className="ml-auto h-8 w-8" aria-label="关闭导航菜单">
+              <X className="h-4 w-4" />
+            </Button>
           )}
         </div>
 
         {/* Navigation */}
         <ScrollArea className="flex-1 py-3">
-          <nav className="flex flex-col gap-1 px-2">
-            {NAV_ITEMS.map((item) => {
+          <nav className="flex flex-col gap-3 px-2">
+            {NAV_SECTIONS.map((section) => {
+              const sectionItems = navItems.filter((item) => item.section === section)
+              if (sectionItems.length === 0) return null
+              return (
+                <div key={section} className="space-y-1">
+                  {!isCollapsed && (
+                    <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sidebar-foreground/40">
+                      {section}
+                    </p>
+                  )}
+                  {sectionItems.map((item) => {
               const Icon = iconMap[item.icon]
               const isActive =
                 location.pathname === item.path ||
@@ -85,11 +116,11 @@ export function Sidebar({ onNavigate }: SidebarProps) {
                       )}
                     />
                   )}
-                  {!collapsed && <span>{item.label}</span>}
+                  {!isCollapsed && <span>{item.label}</span>}
                 </NavLink>
               )
 
-              if (collapsed) {
+              if (isCollapsed) {
                 return (
                   <Tooltip key={item.path}>
                     <TooltipTrigger asChild>{link}</TooltipTrigger>
@@ -101,6 +132,9 @@ export function Sidebar({ onNavigate }: SidebarProps) {
               }
 
               return link
+                  })}
+                </div>
+              )
             })}
           </nav>
         </ScrollArea>
@@ -109,18 +143,17 @@ export function Sidebar({ onNavigate }: SidebarProps) {
 
         {/* Status indicator + collapse toggle */}
         <div className="flex items-center justify-between p-2">
-          {!collapsed && (
-            <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-              </span>
-              运行中
+          {!isCollapsed && (
+            <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground" title={connected ? '网关健康检查正常' : '暂时无法确认网关状态'}>
+              <span className={cn('h-2 w-2 shrink-0 rounded-full', connected ? 'bg-emerald-500' : livenessError ? 'bg-rose-500' : 'bg-amber-500')} />
+              <span className="truncate">{connected ? '网关已连接' : livenessError ? '连接异常' : '正在检查'}</span>
             </div>
           )}
-          <Button variant="ghost" size="icon" onClick={toggle} className="h-8 w-8 shrink-0">
-            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-          </Button>
+          {!mobile && (
+            <Button variant="ghost" size="icon" onClick={toggle} className="h-8 w-8 shrink-0" aria-label={isCollapsed ? '展开侧栏' : '收起侧栏'}>
+              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </Button>
+          )}
         </div>
       </aside>
     </TooltipProvider>

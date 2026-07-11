@@ -12,6 +12,7 @@ import {
   useDiscoverProviderModels,
   useSelectProviderCredential,
   useSetProviderDisabled,
+  useSettings,
   useToggleModel,
   useUpdateDefaultModel,
   useUpdateDefaultProvider,
@@ -19,10 +20,13 @@ import {
   useUpdateProviderCredential,
   useUpdateProviderCredentialPoolMode,
 } from '@/hooks'
+import { useAuthStore } from '@/stores'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { TableToolbar } from '@/components/shared/TableToolbar'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { LoadingPage } from '@/components/shared/LoadingPage'
+import { ErrorState } from '@/components/shared/ErrorState'
+import { EmptyState } from '@/components/shared/EmptyState'
 import { PaginationBar } from '@/components/shared/PaginationBar'
 import { toast } from 'sonner'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -39,7 +43,6 @@ import { Switch } from '@/components/ui/switch'
 import { PROVIDER_PROTOCOL_LABELS } from '@/lib/constants'
 import { cn, formatNumber, formatRelativeTime } from '@/lib/utils'
 import { paginateItems } from '@/lib/pagination'
-import { ApiError } from '@/lib/api-client'
 import {
   MODEL_FAMILIES,
   PROVIDER_TEMPLATES,
@@ -49,11 +52,47 @@ import {
   type ProviderTemplate,
 } from '@/lib/model-catalog'
 import {
+  CREDENTIAL_POOL_MODE_LABELS,
+  DEFAULT_CREDENTIAL_FORM,
+  DEFAULT_PROVIDER_FORM,
+  PROVIDER_OPERATIONAL_FILTERS,
+  credentialPayloadFromForm,
+  credentialToForm,
+  defaultToolStreamingArguments,
+  defaultToolUseForProviderForm,
+  dependencyLabel,
+  modelRouteTitle,
+  providerDeleteBlockedFromError,
+  providerDisplayTitle,
+  providerFilterCount,
+  providerIdentity,
+  providerInventoryGroups,
+  providerInventoryItems,
+  providerIsDegraded,
+  providerIsHealthy,
+  providerModelGroups,
+  providerNeedsRecharge,
+  providerPayloadFromForm,
+  providerRuntimeState,
+  providerToForm,
+  type ProviderCredentialFormState,
+  type ProviderFormState,
+  type ProviderInventoryGroup,
+  type ProviderOperationalFilter,
+} from '@/features/models/model-data'
+import {
+  providerReadiness,
+  validateAliasForm,
+  validateCredentialForm,
+  validateProviderForm,
+  type ProviderReadinessLevel,
+} from '@/features/models/operator-state'
+import {
   AlertTriangle,
-  ArrowUpDown,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Copy,
   FileText,
   KeyRound,
@@ -76,11 +115,8 @@ import type {
   Provider,
   ProviderCredential,
   ProviderCredentialPoolMode,
-  ProviderCredentialWritePayload,
   ProviderDeleteBlocked,
-  ProviderModelInventory,
   ProviderProtocol,
-  ProviderWritePayload,
   ToolStreamingArguments,
 } from '@/types'
 
@@ -94,147 +130,28 @@ interface ModelRow {
   model: string
   family: string
   channels: ModelChannel[]
-  activeChannels: number
-  defaultChannel: ModelChannel
+  enabledChannels: number
+  preferredChannel: ModelChannel
 }
-
-interface ProviderFormState {
-  id: string
-  displayName: string
-  protocol: ProviderProtocol
-  baseUrl: string
-  apiKeyEnv: string
-  apiKeyRequired: boolean
-  defaultModel: string
-  models: string
-  modelPrefixes: string
-  passthroughUnknownModels: boolean
-  maxTokensField: MaxTokensField
-  deduplicateStreamText: boolean
-  bufferStreamText: boolean
-  fidelityMode: FidelityMode
-  toolUseSupported: boolean
-  toolChoice: boolean
-  parallelToolCalls: boolean
-  toolStreamingArguments: ToolStreamingArguments
-  disabled: boolean
-}
-
-interface ProviderCredentialFormState {
-  id: string
-  name: string
-  apiKeyEnv: string
-  baseUrl: string
-  status: 'active' | 'disabled'
-}
-
-interface ProviderInventoryGroup {
-  title: string
-  brand: string
-  originClassName: string
-  items: ProviderModelInventory[]
-}
-
-type ProviderOperationalFilter = 'all' | 'healthy' | 'degraded' | 'recharge'
 
 const ALL = '__all__'
-const PROVIDER_OPERATIONAL_FILTERS: Array<{ value: ProviderOperationalFilter; label: string }> = [
-  { value: 'all', label: '全部' },
-  { value: 'healthy', label: '健康' },
-  { value: 'degraded', label: '异常' },
-  { value: 'recharge', label: '待代充值' },
-]
-const DEFAULT_PROVIDER_FORM: ProviderFormState = {
-  id: '',
-  displayName: '',
-  protocol: 'openai-compat',
-  baseUrl: '',
-  apiKeyEnv: '',
-  apiKeyRequired: true,
-  defaultModel: '',
-  models: '',
-  modelPrefixes: '',
-  passthroughUnknownModels: false,
-  maxTokensField: 'max_completion_tokens',
-  deduplicateStreamText: false,
-  bufferStreamText: false,
-  fidelityMode: 'best_effort',
-  toolUseSupported: true,
-  toolChoice: true,
-  parallelToolCalls: true,
-  toolStreamingArguments: 'delta',
-  disabled: false,
-}
-
-const DEFAULT_CREDENTIAL_FORM: ProviderCredentialFormState = {
-  id: '',
-  name: '',
-  apiKeyEnv: '',
-  baseUrl: '',
-  status: 'active',
-}
-const CREDENTIAL_POOL_MODE_LABELS: Record<ProviderCredentialPoolMode, string> = {
-  manual: '手动',
-  failover: '故障切换',
-  round_robin: '轮询',
-}
-const PROVIDER_BRAND_NAMES: Record<string, string> = {
-  deepseek: 'DeepSeek',
-  deepseek_openai: 'DeepSeek',
-  mimo: '小米 MiMo',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic Claude',
-  openrouter: 'OpenRouter',
-  gemini: 'Google Gemini',
-  dashscope: '阿里云百炼 Qwen',
-  kimi: 'Moonshot Kimi',
-  zhipu: '智谱 GLM',
-  xai: 'xAI Grok',
-  groq: 'Groq',
-  mistral: 'Mistral AI',
-  ark: '火山方舟 Doubao',
-  ollama: 'Ollama',
-  sglang: 'SGLang',
-  vllm: 'vLLM',
-  llamacpp: 'llama.cpp',
-}
-const OFFICIAL_PROVIDER_HOSTS: Record<string, string[]> = {
-  deepseek: ['api.deepseek.com'],
-  deepseek_openai: ['api.deepseek.com'],
-  mimo: ['api.xiaomimimo.com'],
-  openai: ['api.openai.com'],
-  anthropic: ['api.anthropic.com'],
-  gemini: ['generativelanguage.googleapis.com'],
-  dashscope: ['dashscope.aliyuncs.com'],
-  kimi: ['api.moonshot.cn'],
-  zhipu: ['open.bigmodel.cn'],
-  xai: ['api.x.ai'],
-  groq: ['api.groq.com'],
-  mistral: ['api.mistral.ai'],
-  ark: ['ark.cn-beijing.volces.com'],
-}
-const LOCAL_PROVIDER_IDS = new Set(['ollama', 'local_sglang', 'local_vllm', 'local_llamacpp'])
-const AGGREGATOR_PROVIDER_IDS = new Set(['openrouter'])
-const MODEL_FAMILY_BRAND_NAMES: Record<string, string> = {
-  OpenAI: 'OpenAI',
-  Claude: 'Anthropic Claude',
-  DeepSeek: 'DeepSeek',
-  Gemini: 'Google Gemini',
-  Qwen: 'Qwen',
-  Kimi: 'Moonshot Kimi',
-  GLM: '智谱 GLM',
-  Grok: 'xAI Grok',
-  Llama: 'Llama',
-  Mistral: 'Mistral AI',
-  Doubao: 'Doubao',
-  Mimo: '小米 MiMo',
-  Local: '本地模型',
-  Custom: '自定义模型',
-}
 
 export function ModelsPage() {
-  const { data: providers = [], isLoading } = useProviders()
-  const { data: aliases = [] } = useAliases()
+  const {
+    data: providers = [],
+    isLoading,
+    error: providersError,
+    refetch: refetchProviders,
+  } = useProviders()
+  const {
+    data: settings,
+    isLoading: settingsLoading,
+    error: settingsError,
+    refetch: refetchSettings,
+  } = useSettings()
+  const { data: aliases = [], error: aliasesError, refetch: refetchAliases } = useAliases()
+  const currentUser = useAuthStore((state) => state.currentUser)
+  const canManage = currentUser?.role === 'admin'
   const createAlias = useCreateAlias()
   const deleteAlias = useDeleteAlias()
   const discoverModels = useDiscoverProviderModels()
@@ -257,6 +174,9 @@ export function ModelsPage() {
   const [discoveringProvider, setDiscoveringProvider] = useState<string | null>(null)
   const [showAliasDialog, setShowAliasDialog] = useState(false)
   const [showProviderDialog, setShowProviderDialog] = useState(false)
+  const [aliasSubmitAttempted, setAliasSubmitAttempted] = useState(false)
+  const [providerSubmitAttempted, setProviderSubmitAttempted] = useState(false)
+  const [credentialSubmitAttempted, setCredentialSubmitAttempted] = useState(false)
   const [credentialDialogProvider, setCredentialDialogProvider] = useState<Provider | null>(null)
   const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null)
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
@@ -265,8 +185,8 @@ export function ModelsPage() {
   const [credentialForm, setCredentialForm] = useState<ProviderCredentialFormState>(DEFAULT_CREDENTIAL_FORM)
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
   const [deleteBlock, setDeleteBlock] = useState<ProviderDeleteBlocked | null>(null)
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
   const [aliasForm, setAliasForm] = useState({ alias: '', target: '' })
-  const [defaultProvider, setDefaultProvider] = useState(providers[0]?.id || 'mimo')
   const [search, setSearch] = useState('')
   const [family, setFamily] = useState(ALL)
   const [providerFilter, setProviderFilter] = useState<ProviderOperationalFilter>('all')
@@ -274,9 +194,16 @@ export function ModelsPage() {
   const [modelPageSize, setModelPageSize] = useState(20)
   const [aliasPage, setAliasPage] = useState(1)
   const [aliasPageSize, setAliasPageSize] = useState(20)
+  const [activeTab, setActiveTab] = useState('library')
+  const [aliasDeleteTarget, setAliasDeleteTarget] = useState<string | null>(null)
+  const [credentialDeleteTarget, setCredentialDeleteTarget] = useState<{
+    provider: Provider
+    credential: ProviderCredential
+  } | null>(null)
 
   const configuredProviderIds = useMemo(() => new Set(providers.map((provider) => provider.id)), [providers])
   const activeProviders = providers.filter((provider) => provider.status === 'active')
+  const defaultProvider = settings?.gateway.defaultProvider.trim() ?? ''
   const rechargeProviders = useMemo(() => providers.filter(providerNeedsRecharge), [providers])
   const degradedProviders = useMemo(() => providers.filter(providerIsDegraded), [providers])
   const filteredProviders = useMemo(() => providers.filter((provider) => {
@@ -295,6 +222,15 @@ export function ModelsPage() {
     ),
   })), [providers])
   const toolUseProviderCount = capabilityRows.filter((row) => row.toolUse.supported).length
+  const defaultProviderRecord = providers.find((provider) => provider.id === defaultProvider)
+  const providerStates = useMemo(
+    () => providers.map((provider) => ({
+      provider,
+      readiness: providerReadiness(provider, provider.id === defaultProvider),
+    })),
+    [defaultProvider, providers],
+  )
+  const attentionProviderCount = providerStates.filter(({ readiness }) => readiness.level !== 'ready').length
 
   const modelRows = useMemo<ModelRow[]>(() => {
     const rows = new Map<string, ModelChannel[]>()
@@ -318,8 +254,8 @@ export function ModelsPage() {
           model,
           family: guessModelFamily(model),
           channels: sortedChannels,
-          activeChannels: sortedChannels.filter((channel) => channel.provider.status === 'active').length,
-          defaultChannel: sortedChannels[0],
+          enabledChannels: sortedChannels.filter((channel) => channel.provider.status === 'active').length,
+          preferredChannel: sortedChannels.find((channel) => channel.provider.status === 'active') ?? sortedChannels[0],
         }
       })
       .sort((a, b) => a.family.localeCompare(b.family) || a.model.localeCompare(b.model))
@@ -358,13 +294,28 @@ export function ModelsPage() {
         enabled: bulkToggleModels.variables.enabled,
       }
     : null
+  const providerValidation = useMemo(() => validateProviderForm(providerForm), [providerForm])
+  const credentialValidation = useMemo(
+    () => validateCredentialForm(credentialForm, !editingCredential),
+    [credentialForm, editingCredential],
+  )
+  const aliasValidation = useMemo(
+    () => validateAliasForm(aliasForm.alias, aliasForm.target),
+    [aliasForm.alias, aliasForm.target],
+  )
 
   const copyText = async (text: string) => {
-    await navigator.clipboard.writeText(text)
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('已复制到剪贴板')
+    } catch {
+      toast.error('复制失败，请手动复制')
+    }
   }
 
   const openAliasDialog = (alias = '', target = '') => {
     setAliasForm({ alias, target })
+    setAliasSubmitAttempted(false)
     setShowAliasDialog(true)
   }
 
@@ -380,12 +331,14 @@ export function ModelsPage() {
   const openCreateProviderDialog = () => {
     setEditingProvider(null)
     setProviderForm(DEFAULT_PROVIDER_FORM)
+    setProviderSubmitAttempted(false)
     setShowProviderDialog(true)
   }
 
   const openEditProviderDialog = (provider: Provider) => {
     setEditingProvider(provider)
     setProviderForm(providerToForm(provider))
+    setProviderSubmitAttempted(false)
     setShowProviderDialog(true)
   }
 
@@ -393,21 +346,30 @@ export function ModelsPage() {
     setShowProviderDialog(false)
     setEditingProvider(null)
     setProviderForm(DEFAULT_PROVIDER_FORM)
+    setProviderSubmitAttempted(false)
   }
 
   const openCredentialDialog = (provider: Provider, credential?: ProviderCredential) => {
     setCredentialDialogProvider(provider)
     setEditingCredential(credential ?? null)
     setCredentialForm(credentialToForm(provider, credential))
+    setCredentialSubmitAttempted(false)
   }
 
   const closeCredentialDialog = () => {
     setCredentialDialogProvider(null)
     setEditingCredential(null)
     setCredentialForm(DEFAULT_CREDENTIAL_FORM)
+    setCredentialSubmitAttempted(false)
   }
 
   const handleSubmitProvider = () => {
+    setProviderSubmitAttempted(true)
+    if (!providerValidation.valid) {
+      toast.error('请先修正表单中的错误')
+      focusFirstInvalidDialogField()
+      return
+    }
     const payload = providerPayloadFromForm(providerForm, !editingProvider)
     const options = {
       onSuccess: (provider: Provider) => {
@@ -426,6 +388,12 @@ export function ModelsPage() {
 
   const handleSubmitCredential = () => {
     if (!credentialDialogProvider) return
+    setCredentialSubmitAttempted(true)
+    if (!credentialValidation.valid) {
+      toast.error('请先修正账号表单中的错误')
+      focusFirstInvalidDialogField()
+      return
+    }
     const data = credentialPayloadFromForm(credentialForm, !editingCredential)
     const options = {
       onSuccess: () => {
@@ -471,9 +439,14 @@ export function ModelsPage() {
     })
   }
 
-  const handleDeleteProviderCredential = (provider: Provider, credential: ProviderCredential) => {
+  const handleDeleteProviderCredential = () => {
+    if (!credentialDeleteTarget) return
+    const { provider, credential } = credentialDeleteTarget
     deleteProviderCredential.mutate({ providerId: provider.id, credentialId: credential.id }, {
-      onSuccess: () => toast.success(`已删除账号 ${credential.name}`),
+      onSuccess: () => {
+        toast.success(`已删除账号 ${credential.name}`)
+        setCredentialDeleteTarget(null)
+      },
       onError: (error) => toast.error(error instanceof Error ? error.message : '删除账号失败'),
     })
   }
@@ -485,6 +458,7 @@ export function ModelsPage() {
         toast.success(`已删除供应商 ${deleteTarget.displayName}`)
         setDeleteTarget(null)
         setDeleteBlock(null)
+        setDeleteConfirmation('')
       },
       onError: (error) => {
         const blocked = providerDeleteBlockedFromError(error)
@@ -532,6 +506,15 @@ export function ModelsPage() {
     })
   }
 
+  const handleSetDefaultProvider = (providerId: string) => {
+    updateDefault.mutate(providerId, {
+      onSuccess: () => toast.success(`默认供应商已设为 ${providerId}`),
+      onError: (error) => toast.error(
+        error instanceof Error ? error.message : '更新默认供应商失败',
+      ),
+    })
+  }
+
   const handleModelPageChange = (page: number) => {
     setModelPage(Math.min(Math.max(page, 1), modelWindow.totalPages))
     setExpandedModel(null)
@@ -556,18 +539,53 @@ export function ModelsPage() {
     return <LoadingPage />
   }
 
+  if (providersError && providers.length === 0) {
+    return (
+      <ErrorState
+        title="Provider 数据加载失败"
+        message={errorMessage(providersError, '无法读取 Provider 与模型目录，请检查会话和后端状态。')}
+        onRetry={() => void refetchProviders()}
+      />
+    )
+  }
+
   return (
     <div className="space-y-6">
-      <PageHeader title="模型管理" description="按模型查看所有渠道，生成供应商配置和路由别名" />
+      <PageHeader
+        title="Provider 与模型"
+        description="管理上游接入、凭证账号、模型目录、别名和默认路由"
+      />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {!canManage && (
+        <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-100" role="status">
+          <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-medium">当前为只读视图</p>
+            <p className="mt-1 text-xs opacity-80">只有管理员可以修改 Provider、凭证、模型状态、别名和默认路由；复制路由与查看诊断不受影响。</p>
+          </div>
+        </div>
+      )}
+
+      <ProviderRoutingOverview
+        defaultProvider={defaultProviderRecord}
+        defaultProviderId={defaultProvider}
+        readiness={defaultProviderRecord ? providerReadiness(defaultProviderRecord, true) : null}
+        routeState={settingsLoading ? 'loading' : settingsError && !settings ? 'error' : 'loaded'}
+        providerCount={providers.length}
+        attentionCount={attentionProviderCount}
+        canManage={canManage}
+        onOpenProviders={() => setActiveTab('providers')}
+        onOpenRouting={() => setActiveTab('routing')}
+      />
+
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Card>
           <CardContent className="flex items-center gap-3 p-4">
             <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Layers3 className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">已配置模型</p>
+              <p className="text-sm text-muted-foreground">唯一模型</p>
               <p className="text-2xl font-semibold">{formatNumber(modelRows.length)}</p>
             </div>
           </CardContent>
@@ -578,7 +596,7 @@ export function ModelsPage() {
               <KeyRound className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">活跃供应商</p>
+              <p className="text-sm text-muted-foreground">启用 Provider</p>
               <p className="text-2xl font-semibold">{activeProviders.length} / {providers.length}</p>
             </div>
           </CardContent>
@@ -589,7 +607,7 @@ export function ModelsPage() {
               <Route className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">渠道映射</p>
+              <p className="text-sm text-muted-foreground">模型渠道</p>
               <p className="text-2xl font-semibold">{formatNumber(totalConfiguredModels)}</p>
             </div>
           </CardContent>
@@ -600,22 +618,24 @@ export function ModelsPage() {
               <AlertTriangle className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">待代充值</p>
-              <p className="text-2xl font-semibold">{rechargeProviders.length}</p>
+              <p className="text-sm text-muted-foreground">需要处理</p>
+              <p className="text-2xl font-semibold">{attentionProviderCount}</p>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      <Tabs defaultValue="library">
-        <TabsList>
-          <TabsTrigger value="library">模型库</TabsTrigger>
-          <TabsTrigger value="templates">一键配置</TabsTrigger>
-          <TabsTrigger value="providers">供应商</TabsTrigger>
-          <TabsTrigger value="capabilities">能力矩阵</TabsTrigger>
-          <TabsTrigger value="aliases">别名</TabsTrigger>
-          <TabsTrigger value="routing">路由优先级</TabsTrigger>
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <div className="overflow-x-auto pb-1">
+          <TabsList className="h-auto min-w-max justify-start">
+            <TabsTrigger value="library">模型与路由</TabsTrigger>
+            <TabsTrigger value="providers">Provider 与凭证</TabsTrigger>
+            <TabsTrigger value="capabilities">协议能力</TabsTrigger>
+            <TabsTrigger value="aliases">别名</TabsTrigger>
+            <TabsTrigger value="routing">默认路由</TabsTrigger>
+            <TabsTrigger value="templates">配置模板</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="library" className="space-y-4">
           <TableToolbar>
@@ -623,6 +643,7 @@ export function ModelsPage() {
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 className="pl-8"
+                aria-label="搜索模型、Provider 或渠道"
                 placeholder="搜索模型、供应商或渠道..."
                 value={search}
                 onChange={(event) => {
@@ -640,7 +661,7 @@ export function ModelsPage() {
                 setExpandedModel(null)
               }}
             >
-              <SelectTrigger className="w-[180px]"><SelectValue placeholder="全部模型系列" /></SelectTrigger>
+            <SelectTrigger className="w-[180px]" aria-label="筛选模型系列"><SelectValue placeholder="全部模型系列" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>全部模型系列</SelectItem>
                 {MODEL_FAMILIES.map((item) => (
@@ -657,7 +678,7 @@ export function ModelsPage() {
                   <TableRow>
                     <TableHead>模型</TableHead>
                     <TableHead>系列</TableHead>
-                    <TableHead>默认渠道</TableHead>
+                    <TableHead>首选渠道（配置）</TableHead>
                     <TableHead className="text-center">供应商</TableHead>
                     <TableHead className="text-right">路由</TableHead>
                   </TableRow>
@@ -665,7 +686,21 @@ export function ModelsPage() {
                 <TableBody>
                   {filteredModelRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">没有匹配的模型</TableCell>
+                      <TableCell colSpan={5} className="p-0">
+                        <EmptyState
+                          icon={Layers3}
+                          title={providers.length === 0 ? '尚未配置 Provider' : '没有匹配的模型'}
+                          description={providers.length === 0
+                            ? '先添加 Provider，再发现或填写上游模型。'
+                            : '清除搜索词或切换模型系列后重试。'}
+                          action={canManage && providers.length === 0 ? (
+                            <Button size="sm" onClick={() => { setActiveTab('providers'); openCreateProviderDialog() }}>
+                              <Plus className="mr-2 h-4 w-4" />
+                              添加 Provider
+                            </Button>
+                          ) : undefined}
+                        />
+                      </TableCell>
                     </TableRow>
                   ) : modelWindow.items.map((row) => (
                     <Fragment key={row.model}>
@@ -677,6 +712,8 @@ export function ModelsPage() {
                               size="icon"
                               className="h-7 w-7"
                               onClick={() => setExpandedModel(expandedModel === row.model ? null : row.model)}
+                              aria-expanded={expandedModel === row.model}
+                              aria-label={`${expandedModel === row.model ? '收起' : '展开'} ${row.model} 的渠道`}
                             >
                               {expandedModel === row.model ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                             </Button>
@@ -686,23 +723,25 @@ export function ModelsPage() {
                         <TableCell><Badge variant="outline">{row.family}</Badge></TableCell>
                         <TableCell>
                           <div className="space-y-1">
-                            <p className="text-sm font-medium">{modelRouteTitle(row.defaultChannel.provider, row.model)}</p>
-                            <p className="text-xs text-muted-foreground">{row.defaultChannel.provider.id}</p>
+                            <p className="text-sm font-medium">{modelRouteTitle(row.preferredChannel.provider, row.model)}</p>
+                            <p className="text-xs text-muted-foreground">{row.preferredChannel.provider.id}</p>
                           </div>
                         </TableCell>
                         <TableCell className="text-center">
-                          <Badge variant={row.activeChannels > 0 ? 'success' : 'secondary'}>
-                            {row.activeChannels} / {row.channels.length} 活跃
+                          <Badge variant={row.enabledChannels > 0 ? 'success' : 'secondary'}>
+                            {row.enabledChannels} / {row.channels.length} 已启用
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => void copyText(row.defaultChannel.routeName)}
+                            className="max-w-[220px]"
+                            onClick={() => void copyText(row.preferredChannel.routeName)}
+                            aria-label={`复制路由 ${row.preferredChannel.routeName}`}
                           >
                             <Copy className="mr-2 h-4 w-4" />
-                            {row.defaultChannel.routeName}
+                            <span className="truncate">{row.preferredChannel.routeName}</span>
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -728,10 +767,10 @@ export function ModelsPage() {
                                       <Copy className="mr-2 h-4 w-4" />
                                       复制路由名
                                     </Button>
-                                    <Button variant="ghost" size="sm" onClick={() => openAliasDialog(row.model, channel.routeName)}>
+                                    {canManage && <Button variant="ghost" size="sm" onClick={() => openAliasDialog(row.model, channel.routeName)}>
                                       <Plus className="mr-2 h-4 w-4" />
                                       设为别名
-                                    </Button>
+                                    </Button>}
                                   </div>
                                 </div>
                               ))}
@@ -763,7 +802,7 @@ export function ModelsPage() {
         <TabsContent value="templates" className="space-y-4">
           <TableToolbar>
             <div className="text-sm text-muted-foreground">
-              选择模板后复制 TOML 或 env 配置，重启后即可出现在模型库里。
+              模板只生成 TOML 与环境变量片段，不会修改运行中配置；保存文件并重启后才生效。
             </div>
           </TableToolbar>
           <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -803,12 +842,12 @@ export function ModelsPage() {
 
         <TabsContent value="providers" className="space-y-4">
           <TableToolbar
-            actions={(
+            actions={canManage ? (
               <Button onClick={openCreateProviderDialog}>
                 <Plus className="mr-2 h-4 w-4" />
-                新增供应商
+                新增 Provider
               </Button>
-            )}
+            ) : undefined}
           >
             <div className="flex flex-wrap items-center gap-2">
               {PROVIDER_OPERATIONAL_FILTERS.map((filter) => (
@@ -833,14 +872,23 @@ export function ModelsPage() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filteredProviders.length === 0 ? (
               <Card className="md:col-span-2 xl:col-span-3">
-                <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                  当前筛选下没有供应商
+                <CardContent className="p-0">
+                  <EmptyState
+                    icon={KeyRound}
+                    title={providers.length === 0 ? '尚未配置 Provider' : '当前筛选没有结果'}
+                    description={providers.length === 0 ? '添加首个上游接入后，才能配置凭证和模型目录。' : '切换状态筛选以查看其他 Provider。'}
+                    action={canManage && providers.length === 0 ? (
+                      <Button size="sm" onClick={openCreateProviderDialog}><Plus className="mr-2 h-4 w-4" />新增 Provider</Button>
+                    ) : undefined}
+                  />
                 </CardContent>
               </Card>
             ) : filteredProviders.map((provider) => (
               <ProviderCard
                 key={provider.id}
                 provider={provider}
+                isDefault={provider.id === defaultProvider}
+                canManage={canManage}
                 expanded={expandedProvider === provider.id}
                 className={expandedProvider === provider.id ? 'md:col-span-2 xl:col-span-3' : undefined}
                 discovering={discoveringProvider === provider.id && discoverModels.isPending}
@@ -848,14 +896,18 @@ export function ModelsPage() {
                 onToggleList={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
                 onEdit={() => openEditProviderDialog(provider)}
                 onToggleProvider={() => handleSetProviderDisabled(provider)}
-                onDelete={() => { setDeleteTarget(provider); setDeleteBlock(null) }}
+                onDelete={() => {
+                  setDeleteTarget(provider)
+                  setDeleteBlock(null)
+                  setDeleteConfirmation('')
+                }}
                 onCopy={copyText}
                 onAlias={openAliasDialog}
                 onCreateCredential={() => openCredentialDialog(provider)}
                 onEditCredential={(credential) => openCredentialDialog(provider, credential)}
                 onSelectCredential={(credentialId) => handleSelectProviderCredential(provider, credentialId)}
                 onUpdateCredentialPoolMode={(mode) => handleUpdateProviderCredentialPoolMode(provider, mode)}
-                onDeleteCredential={(credential) => handleDeleteProviderCredential(provider, credential)}
+                onDeleteCredential={(credential) => setCredentialDeleteTarget({ provider, credential })}
                 onToggleModel={(model, enabled) => handleToggleProviderModel(provider, model, enabled)}
                 onBulkToggleModels={(enabled) => handleBulkToggleProviderModels(provider, enabled)}
                 onSetDefaultModel={(model) => handleSetDefaultModel(provider, model)}
@@ -960,7 +1012,7 @@ export function ModelsPage() {
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusBadge status={providerRuntimeState(provider)} />
-                          {providerNeedsRecharge(provider) && <Badge variant="warning">代充值</Badge>}
+                          {providerNeedsRecharge(provider) && <Badge variant="warning">等待充值</Badge>}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -973,19 +1025,29 @@ export function ModelsPage() {
 
         <TabsContent value="aliases" className="space-y-4">
           <TableToolbar
-            actions={(
+            actions={canManage ? (
               <Button onClick={() => openAliasDialog()}>
                 <Plus className="mr-2 h-4 w-4" />
                 新建别名
               </Button>
-            )}
+            ) : undefined}
           >
             <div className="text-sm text-muted-foreground">
               共 {aliases.length} 个模型别名；别名目标可以写成 provider:model。
             </div>
           </TableToolbar>
 
-          <Card>
+          {aliasesError && aliases.length === 0 ? (
+            <Card>
+              <CardContent>
+                <ErrorState
+                  title="别名加载失败"
+                  message={errorMessage(aliasesError, '无法读取模型别名。')}
+                  onRetry={() => void refetchAliases()}
+                />
+              </CardContent>
+            </Card>
+          ) : <Card>
             <CardContent className="p-0">
               <Table>
                 <TableHeader>
@@ -998,23 +1060,28 @@ export function ModelsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {aliasWindow.items.map((alias) => (
+                  {aliasWindow.items.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="p-0">
+                        <EmptyState icon={Route} title="暂无模型别名" description="别名可以为稳定的客户端模型名绑定明确的 provider:model 路由。" />
+                      </TableCell>
+                    </TableRow>
+                  ) : aliasWindow.items.map((alias) => (
                     <TableRow key={alias.alias}>
                       <TableCell className="font-mono font-medium">{alias.alias}</TableCell>
                       <TableCell className="text-muted-foreground">{alias.target}</TableCell>
                       <TableCell>{alias.resolvedProvider}</TableCell>
                       <TableCell className="font-mono text-sm">{alias.resolvedModel}</TableCell>
                       <TableCell>
-                        <Button
+                        {canManage && <Button
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-destructive"
-                          onClick={() => deleteAlias.mutate(alias.alias, {
-                            onError: (error) => toast.error(error instanceof Error ? error.message : '删除别名失败'),
-                          })}
+                          onClick={() => setAliasDeleteTarget(alias.alias)}
+                          aria-label={`删除别名 ${alias.alias}`}
                         >
                           <Trash2 className="h-4 w-4" />
-                        </Button>
+                        </Button>}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -1034,10 +1101,21 @@ export function ModelsPage() {
                 onPageSizeChange={handleAliasPageSizeChange}
               />
             </CardFooter>
-          </Card>
+          </Card>}
         </TabsContent>
 
         <TabsContent value="routing" className="space-y-4">
+          {settingsError && !settings ? (
+            <Card>
+              <CardContent>
+                <ErrorState
+                  title="默认路由加载失败"
+                  message={errorMessage(settingsError, '无法读取当前默认 Provider 与路由顺序。')}
+                  onRetry={() => void refetchSettings()}
+                />
+              </CardContent>
+            </Card>
+          ) : (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -1051,9 +1129,13 @@ export function ModelsPage() {
               </p>
               <div className="space-y-2">
                 <Label>默认提供商</Label>
-                <Select value={defaultProvider} onValueChange={(value) => { setDefaultProvider(value); updateDefault.mutate(value, { onError: (error) => toast.error(error instanceof Error ? error.message : '更新默认供应商失败') }) }}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
+                <Select
+                  value={defaultProvider || undefined}
+                  disabled={!canManage || !settings || updateDefault.isPending || activeProviders.length === 0}
+                  onValueChange={handleSetDefaultProvider}
+                >
+                  <SelectTrigger className="w-full" aria-label="默认 Provider">
+                    <SelectValue placeholder="加载默认供应商…" />
                   </SelectTrigger>
                   <SelectContent>
                     {activeProviders.map((provider) => (
@@ -1064,77 +1146,105 @@ export function ModelsPage() {
               </div>
 
               <div className="space-y-2">
-                <Label>供应商优先级</Label>
+                <div>
+                  <Label>Provider 解析顺序</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">此处仅展示当前有效顺序；请通过部署配置或设置 API 调整，不支持拖拽。</p>
+                </div>
                 <div className="space-y-1">
                   {providers.map((provider, index) => (
                     <div key={provider.id} className="flex items-center gap-3 rounded-md border px-3 py-2">
                       <span className="w-6 text-sm text-muted-foreground">{index + 1}</span>
                       <span className="min-w-0 flex-1 truncate text-sm font-medium">{providerDisplayTitle(provider)}</span>
                       <StatusBadge status={provider.status} />
-                      <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
                     </div>
                   ))}
                 </div>
               </div>
             </CardContent>
           </Card>
+          )}
         </TabsContent>
       </Tabs>
 
-      <Dialog open={showAliasDialog} onOpenChange={setShowAliasDialog}>
+      <Dialog
+        open={showAliasDialog}
+        onOpenChange={(open) => {
+          setShowAliasDialog(open)
+          if (!open) setAliasSubmitAttempted(false)
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>新建别名</DialogTitle>
             <DialogDescription>创建模型别名以简化路由配置</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>别名</Label>
-              <Input value={aliasForm.alias} onChange={(event) => setAliasForm({ ...aliasForm, alias: event.target.value })} placeholder="例如: sonnet" />
-            </div>
-            <div className="space-y-2">
-              <Label>目标</Label>
-              <Input value={aliasForm.target} onChange={(event) => setAliasForm({ ...aliasForm, target: event.target.value })} placeholder="例如: openrouter:anthropic/claude-sonnet-4.6" />
-            </div>
+            <Field label="别名" htmlFor="model-alias" error={aliasSubmitAttempted ? aliasValidation.errors.alias : undefined} description="客户端使用的稳定模型名；不能包含冒号。">
+              <Input id="model-alias" value={aliasForm.alias} onChange={(event) => setAliasForm({ ...aliasForm, alias: event.target.value })} placeholder="例如: sonnet" aria-invalid={aliasSubmitAttempted && Boolean(aliasValidation.errors.alias)} />
+            </Field>
+            <Field label="目标路由" htmlFor="model-alias-target" error={aliasSubmitAttempted ? aliasValidation.errors.target : undefined} description="使用 provider:model 可固定上游渠道。">
+              <Input id="model-alias-target" value={aliasForm.target} onChange={(event) => setAliasForm({ ...aliasForm, target: event.target.value })} placeholder="例如: openrouter:anthropic/claude-sonnet-4.6" aria-invalid={aliasSubmitAttempted && Boolean(aliasValidation.errors.target)} />
+            </Field>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAliasDialog(false)}>取消</Button>
             <Button onClick={() => {
-              createAlias.mutate(aliasForm, {
-                onSuccess: () => { setShowAliasDialog(false); setAliasForm({ alias: '', target: '' }) },
+              setAliasSubmitAttempted(true)
+              if (!aliasValidation.valid) {
+                toast.error('请先修正别名和目标路由')
+                focusFirstInvalidDialogField()
+                return
+              }
+              createAlias.mutate({ alias: aliasForm.alias.trim(), target: aliasForm.target.trim() }, {
+                onSuccess: () => {
+                  toast.success(`已保存别名 ${aliasForm.alias.trim()}`)
+                  setShowAliasDialog(false)
+                  setAliasForm({ alias: '', target: '' })
+                  setAliasSubmitAttempted(false)
+                },
                 onError: (error) => toast.error(error instanceof Error ? error.message : '创建别名失败'),
               })
-            }} disabled={createAlias.isPending || !aliasForm.alias || !aliasForm.target}>创建</Button>
+            }} disabled={createAlias.isPending}>
+              {createAlias.isPending ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />保存中</> : '保存别名'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog open={showProviderDialog} onOpenChange={(open) => { if (open) setShowProviderDialog(true); else closeProviderDialog() }}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-h-[94vh] w-[calc(100vw-2rem)] max-w-3xl overflow-hidden">
           <DialogHeader>
             <DialogTitle>{editingProvider ? '编辑供应商' : '新增供应商'}</DialogTitle>
             <DialogDescription>
               供应商配置会写入控制面存储并立即参与运行时路由，无需重启后端。
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="max-h-[68vh] pr-3">
+          <ScrollArea className="max-h-[70vh] pr-3">
             <div className="grid gap-4 md:grid-cols-2">
-              <Field label="供应商 ID">
+              <FormSectionHeader
+                title="1. Provider 身份与端点"
+                description="定义稳定 ID、协议、上游根地址和默认凭证引用。真实密钥不会写入控制面。"
+              />
+              <Field label="Provider ID" htmlFor="provider-id" error={providerSubmitAttempted ? providerValidation.errors.id : undefined} description={editingProvider ? '稳定标识，创建后不可修改。' : '用于 provider:model 路由，只支持小写字母、数字、- 和 _。'} required>
                 <Input
+                  id="provider-id"
                   value={providerForm.id}
                   disabled={!!editingProvider}
-                  onChange={(event) => setProviderForm({ ...providerForm, id: event.target.value })}
+                  onChange={(event) => setProviderForm({ ...providerForm, id: event.target.value.toLowerCase() })}
                   placeholder="例如: siliconflow"
+                  aria-invalid={providerSubmitAttempted && Boolean(providerValidation.errors.id)}
+                  aria-required="true"
                 />
               </Field>
-              <Field label="显示名称">
+              <Field label="显示名称" htmlFor="provider-display-name" description="留空时使用 Provider ID。">
                 <Input
+                  id="provider-display-name"
                   value={providerForm.displayName}
                   onChange={(event) => setProviderForm({ ...providerForm, displayName: event.target.value })}
                   placeholder="例如: 第三方 · OpenAI"
                 />
               </Field>
-              <Field label="协议">
+              <Field label="上游协议" description="选择上游实际实现的协议；客户端入口始终保持 Anthropic Messages 契约。" required>
                 <Select
                   value={providerForm.protocol}
                   onValueChange={(value) => {
@@ -1150,37 +1260,49 @@ export function ModelsPage() {
                     })
                   }}
                 >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="上游协议"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="openai-compat">OpenAI 兼容</SelectItem>
                     <SelectItem value="anthropic">Anthropic</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="API Key 环境变量">
+              <Field label="默认 API Key 环境变量" htmlFor="provider-api-key-env" error={providerSubmitAttempted ? providerValidation.errors.apiKeyEnv : undefined} description="这里只保存变量名；清空会显式移除旧引用。">
                 <Input
+                  id="provider-api-key-env"
                   value={providerForm.apiKeyEnv}
                   onChange={(event) => setProviderForm({ ...providerForm, apiKeyEnv: event.target.value })}
                   placeholder="例如: SILICONFLOW_API_KEY"
+                  aria-invalid={providerSubmitAttempted && Boolean(providerValidation.errors.apiKeyEnv)}
                 />
               </Field>
-              <Field label="Base URL" className="md:col-span-2">
+              <Field label="API Base URL" htmlFor="provider-base-url" className="md:col-span-2" error={providerSubmitAttempted ? providerValidation.errors.baseUrl : undefined} description="填写 API 根路径，不要包含 /chat/completions、/messages、查询参数或凭证。" required>
                 <Input
+                  id="provider-base-url"
                   value={providerForm.baseUrl}
                   onChange={(event) => setProviderForm({ ...providerForm, baseUrl: event.target.value })}
                   placeholder="https://example.com/v1"
+                  aria-invalid={providerSubmitAttempted && Boolean(providerValidation.errors.baseUrl)}
+                  aria-required="true"
                 />
               </Field>
-              <Field label="默认模型">
+              <FormSectionHeader
+                title="2. 模型目录与请求字段"
+                description="默认模型决定显式 provider 路由的回退；模型列表控制目录与可见性。"
+              />
+              <Field label="默认模型" htmlFor="provider-default-model" error={providerSubmitAttempted ? providerValidation.errors.defaultModel : undefined} description="保存时会自动加入模型列表。" required>
                 <Input
+                  id="provider-default-model"
                   value={providerForm.defaultModel}
                   onChange={(event) => setProviderForm({ ...providerForm, defaultModel: event.target.value })}
                   placeholder="例如: gpt-4o-mini"
+                  aria-invalid={providerSubmitAttempted && Boolean(providerValidation.errors.defaultModel)}
+                  aria-required="true"
                 />
               </Field>
-              <Field label="Max Tokens 字段">
+              <Field label="Max Tokens 字段" description="按上游兼容性选择请求字段名。">
                 <Select value={providerForm.maxTokensField} onValueChange={(value) => setProviderForm({ ...providerForm, maxTokensField: value as MaxTokensField })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Max Tokens 字段"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="max_completion_tokens">max_completion_tokens</SelectItem>
                     <SelectItem value="max_tokens">max_tokens</SelectItem>
@@ -1188,24 +1310,35 @@ export function ModelsPage() {
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="模型列表" className="md:col-span-2">
+              <Field label="模型列表" htmlFor="provider-models" className="md:col-span-2" description="每行或逗号分隔；发现模型后会与目录合并。">
                 <textarea
+                  id="provider-models"
                   className="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   value={providerForm.models}
                   onChange={(event) => setProviderForm({ ...providerForm, models: event.target.value })}
                   placeholder={'每行一个模型，或用逗号分隔\ndeepseek-v4-flash\ngpt-4o-mini'}
                 />
               </Field>
-              <Field label="模型前缀" className="md:col-span-2">
+              <Field label="模型前缀" htmlFor="provider-model-prefixes" className="md:col-span-2" description="可选；用于接受匹配前缀的模型名，不等同于已发现模型。">
                 <Input
+                  id="provider-model-prefixes"
                   value={providerForm.modelPrefixes}
                   onChange={(event) => setProviderForm({ ...providerForm, modelPrefixes: event.target.value })}
                   placeholder="可选，例如 openai/, anthropic/"
                 />
               </Field>
-              <Field label="保真模式">
+              <FormSectionHeader
+                title="3. 协议兼容与能力声明"
+                description="这些开关描述适配器行为，不代表上游已通过真实 Tool Use 或流式验收。"
+              />
+              <Field label="保真模式" error={providerSubmitAttempted ? providerValidation.errors.fidelityMode : undefined} description="严格无损会拒绝无法无损映射的请求。">
                 <Select value={providerForm.fidelityMode} onValueChange={(value) => setProviderForm({ ...providerForm, fidelityMode: value as FidelityMode })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger
+                    aria-label="保真模式"
+                    aria-invalid={providerSubmitAttempted && Boolean(providerValidation.errors.fidelityMode)}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="best_effort">尽量无损</SelectItem>
                     <SelectItem value="strict">严格无损</SelectItem>
@@ -1213,12 +1346,12 @@ export function ModelsPage() {
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="Tool Use 参数流">
+              <Field label="Tool Use 参数流" description="native 直通；delta/cumulative/best_effort 用于 OpenAI-compatible 参数片段。">
                 <Select
                   value={providerForm.toolStreamingArguments}
                   onValueChange={(value) => setProviderForm({ ...providerForm, toolStreamingArguments: value as ToolStreamingArguments })}
                 >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Tool Use 参数流"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="native">native</SelectItem>
                     <SelectItem value="delta">delta</SelectItem>
@@ -1227,7 +1360,7 @@ export function ModelsPage() {
                   </SelectContent>
                 </Select>
               </Field>
-              <div className="space-y-3 rounded-md border bg-muted/20 p-3 md:col-span-2">
+              <div className="space-y-3 rounded-md border bg-muted/20 p-3 md:col-span-2" aria-label="Provider 能力开关">
                 <SwitchRow
                   label="需要 API Key"
                   checked={providerForm.apiKeyRequired}
@@ -1284,15 +1417,25 @@ export function ModelsPage() {
                   onCheckedChange={(disabled) => setProviderForm({ ...providerForm, disabled })}
                 />
               </div>
+              {providerValidation.warnings.length > 0 && (
+                <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100 md:col-span-2" role="status">
+                  <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" />保存前请确认</div>
+                  <ul className="list-disc space-y-1 pl-5 text-xs">
+                    {providerValidation.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                  </ul>
+                </div>
+              )}
             </div>
           </ScrollArea>
           <DialogFooter>
             <Button variant="outline" onClick={closeProviderDialog}>取消</Button>
             <Button
               onClick={handleSubmitProvider}
-              disabled={createProvider.isPending || updateProvider.isPending || !providerForm.id || !providerForm.baseUrl || !providerForm.defaultModel}
+              disabled={createProvider.isPending || updateProvider.isPending}
             >
-              {createProvider.isPending || updateProvider.isPending ? '保存中' : '保存'}
+              {createProvider.isPending || updateProvider.isPending
+                ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />保存中</>
+                : editingProvider ? '保存 Provider' : '创建 Provider'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1308,33 +1451,44 @@ export function ModelsPage() {
           </DialogHeader>
           <div className="space-y-4">
             {!editingCredential && (
-              <Field label="账号 ID">
+              <Field label="账号 ID" htmlFor="credential-id" error={credentialSubmitAttempted ? credentialValidation.errors.id : undefined} description="用于账号池选择，创建后不可修改。" required>
                 <Input
+                  id="credential-id"
                   value={credentialForm.id}
-                  onChange={(event) => setCredentialForm({ ...credentialForm, id: event.target.value })}
+                  onChange={(event) => setCredentialForm({ ...credentialForm, id: event.target.value.toLowerCase() })}
                   placeholder="例如: account-a"
+                  aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.id)}
+                  aria-required="true"
                 />
               </Field>
             )}
-            <Field label="显示名称">
+            <Field label="显示名称" htmlFor="credential-name" error={credentialSubmitAttempted ? credentialValidation.errors.name : undefined} required>
               <Input
+                id="credential-name"
                 value={credentialForm.name}
                 onChange={(event) => setCredentialForm({ ...credentialForm, name: event.target.value })}
                 placeholder="例如: Mimo 主账号"
+                aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.name)}
+                aria-required="true"
               />
             </Field>
-            <Field label="API Key 环境变量">
+            <Field label="API Key 环境变量" htmlFor="credential-api-key-env" error={credentialSubmitAttempted ? credentialValidation.errors.apiKeyEnv : undefined} description="只保存变量名；新增变量后必须重启进程才能读取。" required>
               <Input
+                id="credential-api-key-env"
                 value={credentialForm.apiKeyEnv}
                 onChange={(event) => setCredentialForm({ ...credentialForm, apiKeyEnv: event.target.value })}
                 placeholder="例如: MIMO_OPENAI_API_KEY_ALT"
+                aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.apiKeyEnv)}
+                aria-required="true"
               />
             </Field>
-            <Field label="Base URL">
+            <Field label="账号专用 Base URL" htmlFor="credential-base-url" error={credentialSubmitAttempted ? credentialValidation.errors.baseUrl : undefined} description="可选；用于同一 Provider 下的不同上游入口，留空沿用 Provider。">
               <Input
+                id="credential-base-url"
                 value={credentialForm.baseUrl}
                 onChange={(event) => setCredentialForm({ ...credentialForm, baseUrl: event.target.value })}
                 placeholder="可选，不填则沿用供应商 Base URL"
+                aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.baseUrl)}
               />
             </Field>
             <div className="rounded-md border bg-muted/20 p-3">
@@ -1344,6 +1498,12 @@ export function ModelsPage() {
                 onCheckedChange={(checked) => setCredentialForm({ ...credentialForm, status: checked ? 'active' : 'disabled' })}
               />
             </div>
+            {credentialValidation.warnings.length > 0 && (
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100" role="status">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{credentialValidation.warnings.join(' ')}</span>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={closeCredentialDialog}>取消</Button>
@@ -1352,17 +1512,23 @@ export function ModelsPage() {
               disabled={
                 createProviderCredential.isPending
                 || updateProviderCredential.isPending
-                || !credentialForm.name.trim()
-                || !credentialForm.apiKeyEnv.trim()
               }
             >
-              {createProviderCredential.isPending || updateProviderCredential.isPending ? '保存中' : '保存'}
+              {createProviderCredential.isPending || updateProviderCredential.isPending
+                ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />保存中</>
+                : editingCredential ? '保存账号' : '新增账号'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteBlock(null) } }}>
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteTarget(null)
+          setDeleteBlock(null)
+          setDeleteConfirmation('')
+        }
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>删除供应商</DialogTitle>
@@ -1374,20 +1540,39 @@ export function ModelsPage() {
             <p className="text-sm">
               确认删除 <span className="font-semibold">{deleteTarget?.displayName}</span>？
             </p>
+            <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Provider、账号池、模型覆盖和健康记录会被移除；基础配置中的 Provider 会留下禁用墓碑。首次删除会先检查默认路由、别名和访问策略依赖。
+              强制删除会清理别名与路由控制项，但不会自动改写 API Key 或团队中的 allowedProviders 策略。
+            </div>
             {deleteBlock && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                <div className="flex items-center gap-2 font-medium">
-                  <AlertTriangle className="h-4 w-4" />
-                  发现 {deleteBlock.dependencies.length} 个依赖
+              <div className="space-y-3">
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <div className="flex items-center gap-2 font-medium">
+                    <AlertTriangle className="h-4 w-4" />
+                    发现 {deleteBlock.dependencies.length} 个依赖
+                  </div>
+                  <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+                    {deleteBlock.dependencies.map((dependency, idx) => (
+                      <div key={`${dependency.type}:${dependency.id}:${idx}`} className="rounded bg-background/70 px-2 py-1.5">
+                        <span className="font-medium">{dependencyLabel(dependency.type)}</span>
+                        {dependency.name || dependency.id ? <span className="ml-2 font-mono text-xs">{dependency.name || dependency.id}</span> : null}
+                        {dependency.field && <span className="ml-2 text-xs opacity-75">{dependency.field}</span>}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="mt-3 max-h-48 space-y-2 overflow-auto">
-                  {deleteBlock.dependencies.map((dependency, idx) => (
-                    <div key={`${dependency.type}:${dependency.id}:${idx}`} className="rounded bg-background/70 px-2 py-1.5">
-                      <span className="font-medium">{dependencyLabel(dependency.type)}</span>
-                      {dependency.name || dependency.id ? <span className="ml-2 font-mono text-xs">{dependency.name || dependency.id}</span> : null}
-                      {dependency.field && <span className="ml-2 text-xs opacity-75">{dependency.field}</span>}
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  <Label htmlFor="provider-delete-confirm">
+                    输入 <code className="rounded bg-muted px-1.5 py-0.5">{deleteTarget?.id}</code> 确认强制删除
+                  </Label>
+                  <Input
+                    id="provider-delete-confirm"
+                    value={deleteConfirmation}
+                    onChange={(event) => setDeleteConfirmation(event.target.value)}
+                    placeholder={deleteTarget?.id}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
                 </div>
               </div>
             )}
@@ -1395,14 +1580,73 @@ export function ModelsPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => { setDeleteTarget(null); setDeleteBlock(null) }}>取消</Button>
             {deleteBlock ? (
-              <Button variant="destructive" onClick={() => handleDeleteProvider(true)} disabled={deleteProvider.isPending}>
-                强制删除
+              <Button
+                variant="destructive"
+                onClick={() => handleDeleteProvider(true)}
+                disabled={deleteProvider.isPending || deleteConfirmation !== deleteTarget?.id}
+              >
+                {deleteProvider.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                强制删除 Provider
               </Button>
             ) : (
               <Button variant="destructive" onClick={() => handleDeleteProvider(false)} disabled={deleteProvider.isPending}>
-                删除
+                {deleteProvider.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                检查依赖并删除
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!credentialDeleteTarget} onOpenChange={(open) => { if (!open) setCredentialDeleteTarget(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除上游账号</DialogTitle>
+            <DialogDescription>账号配置和健康记录会删除；真实环境变量不会被修改。</DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border bg-muted/30 p-3 text-sm">
+            <p className="font-medium">{credentialDeleteTarget?.credential.name}</p>
+            <p className="mt-1 font-mono text-xs text-muted-foreground">{credentialDeleteTarget?.credential.apiKeyEnv}</p>
+            {credentialDeleteTarget?.credential.active && (
+              <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">这是当前账号；删除后系统会选择其他可用账号，若没有候选则 Provider 可能不可路由。</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCredentialDeleteTarget(null)}>取消</Button>
+            <Button variant="destructive" onClick={handleDeleteProviderCredential} disabled={deleteProviderCredential.isPending}>
+              {deleteProviderCredential.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              删除账号
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!aliasDeleteTarget} onOpenChange={(open) => { if (!open) setAliasDeleteTarget(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除模型别名</DialogTitle>
+            <DialogDescription>使用该别名的客户端将不再解析到原目标。</DialogDescription>
+          </DialogHeader>
+          <p className="text-sm">确认删除别名 <code className="rounded bg-muted px-2 py-1">{aliasDeleteTarget}</code>？</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAliasDeleteTarget(null)}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteAlias.isPending}
+              onClick={() => {
+                if (!aliasDeleteTarget) return
+                deleteAlias.mutate(aliasDeleteTarget, {
+                  onSuccess: () => {
+                    toast.success(`已删除别名 ${aliasDeleteTarget}`)
+                    setAliasDeleteTarget(null)
+                  },
+                  onError: (error) => toast.error(error instanceof Error ? error.message : '删除别名失败'),
+                })
+              }}
+            >
+              {deleteAlias.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              删除别名
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1454,297 +1698,150 @@ export function ModelsPage() {
   )
 }
 
-function providerDisplayTitle(provider: Provider) {
-  const identity = providerIdentity(provider)
-  const groups = providerModelGroups(provider)
-  if (groups.length > 1) return `${identity.origin} · 多模型渠道`
-  if (groups.length === 1) return groups[0].title
-  return `${identity.origin} · ${identity.brand}`
-}
+function ProviderRoutingOverview({
+  defaultProvider,
+  defaultProviderId,
+  readiness,
+  routeState,
+  providerCount,
+  attentionCount,
+  canManage,
+  onOpenProviders,
+  onOpenRouting,
+}: {
+  defaultProvider?: Provider
+  defaultProviderId: string
+  readiness: ReturnType<typeof providerReadiness> | null
+  routeState: 'loading' | 'error' | 'loaded'
+  providerCount: number
+  attentionCount: number
+  canManage: boolean
+  onOpenProviders: () => void
+  onOpenRouting: () => void
+}) {
+  const credentialReady = defaultProvider
+    ? defaultProvider.hasApiKey || !defaultProvider.apiKeyRequired
+    : false
 
-function providerIdentity(provider: Provider) {
-  const origin = providerOrigin(provider)
-  return {
-    origin,
-    brand: PROVIDER_BRAND_NAMES[provider.id] ?? compactProviderName(provider.displayName),
-    originClassName: providerOriginClassName(origin),
-  }
-}
+  return (
+    <Card className="overflow-hidden border-primary/20">
+      <CardContent className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto] lg:items-center">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">当前默认路由</p>
+            {readiness && <ReadinessBadge level={readiness.level} label={readiness.label} />}
+          </div>
+          {routeState === 'loading' ? (
+            <>
+              <p className="mt-2 text-lg font-semibold">正在读取默认路由</p>
+              <p className="mt-1 text-sm text-muted-foreground">等待当前运行设置返回。</p>
+            </>
+          ) : routeState === 'error' ? (
+            <>
+              <p className="mt-2 text-lg font-semibold">默认路由状态不可用</p>
+              <p className="mt-1 text-sm text-muted-foreground">打开“默认路由”查看错误并重试。</p>
+            </>
+          ) : defaultProvider ? (
+            <>
+              <p className="mt-2 truncate text-lg font-semibold">{providerDisplayTitle(defaultProvider)}</p>
+              <p className="mt-1 truncate font-mono text-sm text-muted-foreground">
+                {defaultProvider.id}:{defaultProvider.defaultModel}
+              </p>
+            </>
+          ) : defaultProviderId ? (
+            <>
+              <p className="mt-2 text-lg font-semibold">默认 Provider 不在当前目录</p>
+              <p className="mt-1 truncate font-mono text-sm text-muted-foreground">{defaultProviderId}</p>
+            </>
+          ) : (
+            <>
+              <p className="mt-2 text-lg font-semibold">尚未形成默认路由</p>
+              <p className="mt-1 text-sm text-muted-foreground">添加并启用 Provider 后，再选择默认入口。</p>
+            </>
+          )}
+        </div>
 
-function modelRouteTitle(provider: Provider, model: string) {
-  const origin = providerOrigin(provider)
-  return `${origin} · ${modelOwnerBrand(model)}`
-}
+        {routeState === 'loaded' ? (
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <RouteStage label="Provider" ready={Boolean(defaultProvider && defaultProvider.status === 'active')} />
+            <RouteStage label="凭证" ready={credentialReady} />
+            <RouteStage label="模型" ready={Boolean(defaultProvider?.models.length)} />
+          </div>
+        ) : (
+          <div className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
+            路由检查暂不可用
+          </div>
+        )}
 
-function modelOwnerBrand(model: string) {
-  const family = guessModelFamily(model)
-  return MODEL_FAMILY_BRAND_NAMES[family] ?? family
-}
-
-function providerModelGroups(provider: Provider) {
-  const groups = new Map<string, { title: string; brand: string; originClassName: string; models: string[] }>()
-  const origin = providerOrigin(provider)
-  const originClassName = providerOriginClassName(origin)
-
-  for (const model of provider.models) {
-    const brand = modelOwnerBrand(model)
-    const title = `${origin} · ${brand}`
-    const group = groups.get(title) || { title, brand, originClassName, models: [] }
-    group.models.push(model)
-    groups.set(title, group)
-  }
-
-  return Array.from(groups.values()).sort((a, b) => b.models.length - a.models.length || a.brand.localeCompare(b.brand))
-}
-
-function providerInventoryGroups(provider: Provider): ProviderInventoryGroup[] {
-  const inventory = providerInventoryItems(provider)
-  const groups = new Map<string, ProviderInventoryGroup>()
-  const origin = providerOrigin(provider)
-  const originClassName = providerOriginClassName(origin)
-
-  for (const item of inventory) {
-    const brand = item.family || modelOwnerBrand(item.model)
-    const title = `${origin} · ${brand}`
-    const group = groups.get(title) || { title, brand, originClassName, items: [] }
-    group.items.push(item)
-    groups.set(title, group)
-  }
-
-  return Array.from(groups.values()).sort((a, b) => b.items.length - a.items.length || a.brand.localeCompare(b.brand))
-}
-
-function providerInventoryItems(provider: Provider): ProviderModelInventory[] {
-  const inventory: ProviderModelInventory[] = provider.modelInventory && provider.modelInventory.length > 0
-    ? provider.modelInventory
-    : provider.models.map((model): ProviderModelInventory => ({
-        model,
-        status: 'active',
-        default: model === provider.defaultModel,
-      }))
-
-  return [...inventory].sort((a, b) => {
-    const aDefault = a.model === provider.defaultModel ? 0 : 1
-    const bDefault = b.model === provider.defaultModel ? 0 : 1
-    if (aDefault !== bDefault) return aDefault - bDefault
-    if (a.status !== b.status) return a.status === 'active' ? -1 : 1
-    return a.model.localeCompare(b.model)
-  })
-}
-
-function providerOrigin(provider: Provider) {
-  const host = providerHost(provider)
-  if (LOCAL_PROVIDER_IDS.has(provider.id) || isLocalHost(host)) return '本地'
-  if (provider.id === 'custom') return '自定义'
-  if (AGGREGATOR_PROVIDER_IDS.has(provider.id)) return '聚合平台'
-  if ((OFFICIAL_PROVIDER_HOSTS[provider.id] || []).some((officialHost) => hostMatches(host, officialHost))) {
-    return '官方'
-  }
-  return '第三方'
-}
-
-function providerOriginClassName(origin: string) {
-  if (origin === '官方') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (origin === '第三方') return 'border-amber-200 bg-amber-50 text-amber-700'
-  if (origin === '本地') return 'border-sky-200 bg-sky-50 text-sky-700'
-  if (origin === '聚合平台') return 'border-violet-200 bg-violet-50 text-violet-700'
-  return 'border-slate-200 bg-slate-50 text-slate-700'
-}
-
-function providerHost(provider: Provider) {
-  try {
-    return new URL(provider.baseUrl).hostname.toLowerCase().replace(/^www\./, '')
-  } catch {
-    return ''
-  }
-}
-
-function hostMatches(host: string, expected: string) {
-  return host === expected || host.endsWith(`.${expected}`)
-}
-
-function isLocalHost(host: string) {
-  return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1'
-}
-
-function compactProviderName(value: string) {
-  return value
-    .replace(/\bOfficial\b/gi, '')
-    .replace(/\bOpenAI[- ]Compatible\b/gi, 'OpenAI 兼容')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function providerToForm(provider: Provider): ProviderFormState {
-  const toolUse = provider.toolUse ?? defaultToolUseForProviderForm(
-    provider.id,
-    provider.protocol,
-    provider.deduplicateStreamText,
-  )
-
-  return {
-    id: provider.id,
-    displayName: provider.displayName,
-    protocol: provider.protocol,
-    baseUrl: provider.baseUrl,
-    apiKeyEnv: provider.apiKeyEnv || '',
-    apiKeyRequired: provider.apiKeyRequired,
-    defaultModel: provider.defaultModel,
-    models: provider.models.join('\n'),
-    modelPrefixes: provider.modelPrefixes.join(', '),
-    passthroughUnknownModels: provider.passthroughUnknownModels,
-    maxTokensField: provider.maxTokensField,
-    deduplicateStreamText: provider.deduplicateStreamText,
-    bufferStreamText: provider.bufferStreamText,
-    fidelityMode: provider.fidelityMode || 'best_effort',
-    toolUseSupported: toolUse.supported,
-    toolChoice: toolUse.toolChoice,
-    parallelToolCalls: toolUse.parallelToolCalls,
-    toolStreamingArguments: toolUse.streamingArguments,
-    disabled: provider.status === 'disabled',
-  }
-}
-
-function credentialToForm(provider: Provider, credential?: ProviderCredential): ProviderCredentialFormState {
-  if (!credential) {
-    return {
-      ...DEFAULT_CREDENTIAL_FORM,
-      apiKeyEnv: provider.apiKeyEnv ? `${provider.apiKeyEnv}_ALT` : '',
-    }
-  }
-  return {
-    id: credential.id,
-    name: credential.name,
-    apiKeyEnv: credential.apiKeyEnv,
-    baseUrl: credential.baseUrl || '',
-    status: credential.status,
-  }
-}
-
-function providerPayloadFromForm(form: ProviderFormState, includeId: boolean): ProviderWritePayload {
-  return {
-    ...(includeId ? { id: form.id.trim() } : {}),
-    displayName: form.displayName.trim() || form.id.trim(),
-    protocol: form.protocol,
-    baseUrl: form.baseUrl.trim(),
-    apiKeyEnv: form.apiKeyEnv.trim() || null,
-    apiKeyRequired: form.apiKeyRequired,
-    defaultModel: form.defaultModel.trim(),
-    models: parseList(form.models),
-    modelPrefixes: parseList(form.modelPrefixes),
-    passthroughUnknownModels: form.passthroughUnknownModels,
-    maxTokensField: form.maxTokensField,
-    deduplicateStreamText: form.deduplicateStreamText,
-    bufferStreamText: form.bufferStreamText,
-    fidelityMode: form.fidelityMode,
-    toolUse: {
-      supported: form.toolUseSupported,
-      toolChoice: form.toolChoice,
-      parallelToolCalls: form.parallelToolCalls,
-      streamingArguments: form.toolStreamingArguments,
-    },
-    disabled: form.disabled,
-  }
-}
-
-function credentialPayloadFromForm(
-  form: ProviderCredentialFormState,
-  includeId: boolean,
-): ProviderCredentialWritePayload {
-  return {
-    ...(includeId && form.id.trim() ? { id: form.id.trim() } : {}),
-    name: form.name.trim(),
-    apiKeyEnv: form.apiKeyEnv.trim(),
-    baseUrl: form.baseUrl.trim() || null,
-    status: form.status,
-  }
-}
-
-function parseList(value: string): string[] {
-  return Array.from(new Set(
-    value
-      .split(/[\n,]/)
-      .map((item) => item.trim())
-      .filter(Boolean),
-  ))
-}
-
-function defaultToolUseForProviderForm(
-  providerId: string,
-  protocol: ProviderProtocol,
-  deduplicateStreamText: boolean,
-): NonNullable<Provider['toolUse']> {
-  return {
-    supported: true,
-    toolChoice: true,
-    parallelToolCalls: !LOCAL_PROVIDER_IDS.has(providerId),
-    streamingArguments: defaultToolStreamingArguments(protocol, deduplicateStreamText, providerId),
-  }
-}
-
-function defaultToolStreamingArguments(
-  protocol: ProviderProtocol,
-  deduplicateStreamText: boolean,
-  providerId: string,
-): ToolStreamingArguments {
-  if (protocol === 'anthropic') return 'native'
-  if (deduplicateStreamText) return 'cumulative'
-  if (LOCAL_PROVIDER_IDS.has(providerId) || providerId === 'custom') return 'best_effort'
-  return 'delta'
-}
-
-function providerNeedsRecharge(provider: Provider): boolean {
-  return Boolean(
-    provider.health?.rechargeRequired
-    || provider.credentials?.some((credential) => credential.health?.rechargeRequired),
+        <div className="flex flex-wrap gap-2 lg:max-w-[220px] lg:justify-end">
+          <Button variant="outline" size="sm" onClick={onOpenProviders}>
+            查看 Provider
+          </Button>
+          {canManage && (
+            <Button size="sm" onClick={onOpenRouting}>
+              管理默认路由
+            </Button>
+          )}
+          <p className="w-full text-xs text-muted-foreground lg:text-right">
+            {providerCount} 个 Provider · {attentionCount} 个需处理
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
-function providerRuntimeState(provider: Provider): 'healthy' | 'degraded' | 'cooldown' {
-  return provider.runtimeStatus || provider.health?.status || 'healthy'
+function RouteStage({ label, ready }: { label: string; ready: boolean }) {
+  return (
+    <div className={cn(
+      'rounded-md border px-2 py-2 text-xs',
+      ready
+        ? 'border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200'
+        : 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-200',
+    )}>
+      {ready ? <CheckCircle2 className="mx-auto mb-1 h-4 w-4" /> : <CircleAlert className="mx-auto mb-1 h-4 w-4" />}
+      {label}
+    </div>
+  )
 }
 
-function providerIsHealthy(provider: Provider): boolean {
-  return provider.status === 'active'
-    && providerRuntimeState(provider) === 'healthy'
-    && !providerNeedsRecharge(provider)
+function ReadinessBadge({ level, label }: { level: ProviderReadinessLevel; label: string }) {
+  const variant = level === 'ready'
+    ? 'success'
+    : level === 'blocked'
+      ? 'destructive'
+      : level === 'attention'
+        ? 'warning'
+        : 'secondary'
+  return <Badge variant={variant}>{label}</Badge>
 }
 
-function providerIsDegraded(provider: Provider): boolean {
-  return provider.status !== 'active'
-    || providerRuntimeState(provider) !== 'healthy'
-    || providerNeedsRecharge(provider)
-}
-
-function providerFilterCount(
-  filter: ProviderOperationalFilter,
-  providers: Provider[],
-  rechargeProviders: Provider[],
-  degradedProviders: Provider[],
-): number {
-  if (filter === 'recharge') return rechargeProviders.length
-  if (filter === 'healthy') return providers.filter(providerIsHealthy).length
-  if (filter === 'degraded') return degradedProviders.length
-  return providers.length
-}
-
-function providerDeleteBlockedFromError(error: unknown): ProviderDeleteBlocked | null {
-  if (!(error instanceof ApiError) || error.status !== 409) return null
-  const payload = error.payload as Partial<ProviderDeleteBlocked> | undefined
-  if (!payload?.blocked || !Array.isArray(payload.dependencies)) return null
-  return payload as ProviderDeleteBlocked
-}
-
-function dependencyLabel(type: string) {
-  if (type === 'alias') return '模型别名'
-  if (type === 'apiKey') return 'API 密钥'
-  if (type === 'team') return '团队策略'
-  if (type === 'route') return '路由配置'
-  return type
+function ProviderReadinessNotice({ readiness }: { readiness: ReturnType<typeof providerReadiness> }) {
+  const Icon = readiness.level === 'ready' ? CheckCircle2 : readiness.level === 'disabled' ? PowerOff : AlertTriangle
+  return (
+    <div className={cn(
+      'flex items-start gap-3 rounded-md border p-3 text-sm',
+      readiness.level === 'ready' && 'border-green-200 bg-green-50 text-green-900 dark:border-green-900 dark:bg-green-950 dark:text-green-100',
+      readiness.level === 'attention' && 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100',
+      readiness.level === 'blocked' && 'border-red-200 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-100',
+      readiness.level === 'disabled' && 'bg-muted/40 text-muted-foreground',
+    )} role="status">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="font-medium">{readiness.label}</p>
+          <span className="text-xs opacity-75">{readiness.detail}</span>
+        </div>
+        <p className="mt-1 text-xs opacity-80">下一步：{readiness.nextStep}</p>
+      </div>
+    </div>
+  )
 }
 
 function ProviderCard({
   provider,
+  isDefault,
+  canManage,
   expanded,
   className,
   discovering,
@@ -1769,6 +1866,8 @@ function ProviderCard({
   defaultModelMutationKey,
 }: {
   provider: Provider
+  isDefault: boolean
+  canManage: boolean
   expanded: boolean
   className?: string
   discovering: boolean
@@ -1813,7 +1912,8 @@ function ProviderCard({
   const disabledModelCount = inventoryItems.length - enabledModelCount
   const disableCandidateCount = inventoryItems.filter((item) => item.status !== 'disabled' && item.model !== provider.defaultModel).length
   const isBulkUpdating = bulkModelMutation?.providerId === provider.id
-  const rechargeBadge = provider.health?.rechargeRequired ? provider.health.rechargeBadge || '代充值' : null
+  const rechargeBadge = provider.health?.rechargeRequired ? provider.health.rechargeBadge || '等待充值' : null
+  const readiness = providerReadiness(provider, isDefault)
 
   return (
     <Card className={cn('overflow-hidden transition-all', className)} data-testid={`provider-card-${provider.id}`}>
@@ -1825,6 +1925,7 @@ function ProviderCard({
               <Badge variant="outline" className={identity.originClassName}>{identity.origin}</Badge>
               <Badge variant="outline">{PROVIDER_PROTOCOL_LABELS[provider.protocol]}</Badge>
               <code className="rounded bg-muted px-2 py-1 text-xs">{provider.id}</code>
+              {isDefault && <Badge variant="outline">默认 Provider</Badge>}
               {runtimeStatus && <StatusBadge status={runtimeStatus} />}
               {rechargeBadge && <Badge variant="warning">{rechargeBadge}</Badge>}
             </div>
@@ -1836,7 +1937,7 @@ function ProviderCard({
         <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
           <InfoRow label="Base URL" value={provider.baseUrl} mono />
           <InfoRow label="默认模型" value={provider.defaultModel} mono />
-          <InfoRow label="可路由列表" value={`${provider.models.length} 个模型`} />
+          <InfoRow label="启用模型目录" value={`${provider.models.length} 个模型`} />
           {modelGroups.length > 0 && (
             <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 pt-1">
               <span className="text-xs text-muted-foreground">模型归属</span>
@@ -1851,9 +1952,11 @@ function ProviderCard({
           )}
         </div>
 
+        <ProviderReadinessNotice readiness={readiness} />
+
         <div className="flex flex-wrap gap-2">
           <Badge variant={routeReady ? 'success' : credentialReady ? 'secondary' : 'destructive'}>
-            {routeReady ? '可路由' : credentialReady ? '未激活' : '缺少密钥'}
+            {routeReady ? '配置已启用' : credentialReady ? '未激活' : '缺少密钥'}
           </Badge>
           {provider.fidelityMode && <Badge variant="outline">{fidelityModeLabel(provider.fidelityMode)}</Badge>}
           {provider.toolUse?.supported && <Badge variant="outline">Tool Use</Badge>}
@@ -1891,9 +1994,9 @@ function ProviderCard({
               <Select
                 value={credentialPoolMode}
                 onValueChange={(value) => onUpdateCredentialPoolMode(value as ProviderCredentialPoolMode)}
-                disabled={credentialBusy || credentials.length === 0}
+                disabled={!canManage || credentialBusy || credentials.length === 0}
               >
-                <SelectTrigger className="h-9 min-w-0">
+                <SelectTrigger className="h-9 min-w-0" aria-label={`${displayTitle} 账号池策略`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1902,10 +2005,10 @@ function ProviderCard({
                   <SelectItem value="round_robin">轮询</SelectItem>
                 </SelectContent>
               </Select>
-              <Button variant="outline" size="sm" onClick={onCreateCredential}>
+              {canManage && <Button variant="outline" size="sm" onClick={onCreateCredential}>
                 <Plus className="h-3.5 w-3.5" />
                 新增
-              </Button>
+              </Button>}
             </div>
           </div>
           {credentials.length === 0 ? (
@@ -1920,9 +2023,9 @@ function ProviderCard({
               <Select
                 value={activeCredential?.id || provider.activeCredentialId || credentials[0]?.id}
                 onValueChange={onSelectCredential}
-                disabled={credentialBusy}
+                disabled={!canManage || credentialBusy}
               >
-                <SelectTrigger>
+                <SelectTrigger aria-label={`${displayTitle} 当前账号`}>
                   <SelectValue placeholder="选择账号" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1939,11 +2042,11 @@ function ProviderCard({
                     <Badge variant={activeCredential.hasApiKey ? 'success' : 'destructive'}>
                       {activeCredential.hasApiKey ? 'Key 可用' : 'Key 缺失'}
                     </Badge>
-                    <Button variant="outline" size="sm" onClick={() => onEditCredential(activeCredential)} disabled={credentialBusy}>
+                    {canManage && <Button variant="outline" size="sm" onClick={() => onEditCredential(activeCredential)} disabled={credentialBusy}>
                       <Pencil className="h-3.5 w-3.5" />
                       编辑
-                    </Button>
-                    <Button
+                    </Button>}
+                    {canManage && <Button
                       variant="outline"
                       size="sm"
                       className="text-destructive hover:text-destructive"
@@ -1952,7 +2055,7 @@ function ProviderCard({
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       删除
-                    </Button>
+                    </Button>}
                   </>
                 )}
               </div>
@@ -1972,7 +2075,7 @@ function ProviderCard({
                 {credentials.map((credential) => {
                   const health = credential.health
                   const healthStatus = health?.status ?? (credential.hasApiKey ? 'healthy' : 'degraded')
-                  const credentialRechargeBadge = health?.rechargeRequired ? health.rechargeBadge || '代充值' : null
+                  const credentialRechargeBadge = health?.rechargeRequired ? health.rechargeBadge || '等待充值' : null
                   return (
                     <div key={credential.id} className="grid gap-2 rounded-md border bg-background/70 px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto]">
                       <div className="min-w-0">
@@ -2010,7 +2113,7 @@ function ProviderCard({
         </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
-          <Button
+          {canManage && <Button
             size="sm"
             onClick={onDiscover}
             disabled={discovering || !credentialReady}
@@ -2018,7 +2121,7 @@ function ProviderCard({
           >
             {discovering ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
             {discovering ? '发现中' : '发现模型'}
-          </Button>
+          </Button>}
           <Button
             variant="outline"
             size="sm"
@@ -2031,18 +2134,18 @@ function ProviderCard({
             {expanded ? '收起列表' : '查看列表'}
             {expanded ? <ChevronDown className="ml-auto h-4 w-4" /> : <ChevronRight className="ml-auto h-4 w-4" />}
           </Button>
-          <Button variant="outline" size="sm" onClick={onEdit}>
+          {canManage && <Button variant="outline" size="sm" onClick={onEdit}>
             <Pencil className="mr-2 h-4 w-4" />
             编辑
-          </Button>
-          <Button variant="outline" size="sm" onClick={onToggleProvider}>
+          </Button>}
+          {canManage && <Button variant="outline" size="sm" onClick={onToggleProvider}>
             {provider.status === 'disabled' ? <Power className="mr-2 h-4 w-4" /> : <PowerOff className="mr-2 h-4 w-4" />}
             {provider.status === 'disabled' ? '恢复' : '禁用'}
-          </Button>
-          <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={onDelete}>
+          </Button>}
+          {canManage && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={onDelete}>
             <Trash2 className="mr-2 h-4 w-4" />
             删除
-          </Button>
+          </Button>}
         </div>
 
         {!credentialReady && (
@@ -2064,7 +2167,7 @@ function ProviderCard({
             <div className="flex items-center gap-2 font-medium">
               {lastTest.success ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
               <span>
-                {lastTest.success ? `最近发现 ${discoveredCount ?? provider.models.length} 个模型，已合并到可路由列表` : '上次发现失败'}
+                {lastTest.success ? `最近发现 ${discoveredCount ?? provider.models.length} 个模型，已合并到模型目录` : '上次发现失败'}
               </span>
               <span className="ml-auto text-xs font-normal opacity-75">{formatRelativeTime(lastTest.testedAt)}</span>
             </div>
@@ -2076,7 +2179,7 @@ function ProviderCard({
           <div id={modelListId} className="rounded-md border">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2">
               <div>
-                <p className="text-sm font-medium">可路由模型列表</p>
+                <p className="text-sm font-medium">模型目录</p>
                 <p className="text-xs text-muted-foreground">复制路由名或创建别名</p>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
@@ -2085,7 +2188,7 @@ function ProviderCard({
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={isBulkUpdating || disabledModelCount === 0}
+                  disabled={!canManage || isBulkUpdating || disabledModelCount === 0}
                   onClick={() => onBulkToggleModels(true)}
                 >
                   {isBulkUpdating && bulkModelMutation?.enabled ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
@@ -2094,7 +2197,7 @@ function ProviderCard({
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={isBulkUpdating || disableCandidateCount === 0}
+                  disabled={!canManage || isBulkUpdating || disableCandidateCount === 0}
                   onClick={() => onBulkToggleModels(false)}
                 >
                   {isBulkUpdating && !bulkModelMutation?.enabled ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PowerOff className="h-3.5 w-3.5" />}
@@ -2105,7 +2208,7 @@ function ProviderCard({
 
             {inventoryItems.length === 0 ? (
               <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-                暂无可路由模型，可先发现上游模型或在配置文件中补充 models。
+                暂无启用模型，可先发现上游模型或在配置文件中补充 models。
               </div>
             ) : (
               <div className={cn('mx-auto grid w-full max-w-6xl gap-3 p-3', inventoryGroups.length > 1 && 'xl:grid-cols-2')}>
@@ -2116,6 +2219,7 @@ function ProviderCard({
                     provider={provider}
                     defaultModel={provider.defaultModel}
                     compact={inventoryGroups.length > 1}
+                    canManage={canManage}
                     onAlias={onAlias}
                     onCopy={onCopy}
                     onToggleModel={onToggleModel}
@@ -2146,6 +2250,7 @@ function ProviderModelGroupPanel({
   provider,
   defaultModel,
   compact,
+  canManage,
   onCopy,
   onAlias,
   onToggleModel,
@@ -2158,6 +2263,7 @@ function ProviderModelGroupPanel({
   provider: Provider
   defaultModel: string
   compact: boolean
+  canManage: boolean
   onCopy: (value: string) => Promise<void>
   onAlias: (alias?: string, target?: string) => void
   onToggleModel: (model: string, enabled: boolean) => void
@@ -2191,14 +2297,14 @@ function ProviderModelGroupPanel({
                 </div>
                 <Switch
                   checked={enabled}
-                  disabled={modelBusy || bulkUpdating}
+                  disabled={!canManage || modelBusy || bulkUpdating}
                   onCheckedChange={(checked) => onToggleModel(item.model, checked)}
                   aria-label={`${enabled ? '禁用' : '启用'} ${item.model}`}
                 />
                 <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => void onCopy(routeName)} aria-label={`复制 ${routeName}`}>
                   <Copy className="h-3.5 w-3.5" />
                 </Button>
-                {enabled && item.model !== defaultModel && (
+                {canManage && enabled && item.model !== defaultModel && (
                   <Button
                     variant="outline"
                     size="sm"
@@ -2209,10 +2315,10 @@ function ProviderModelGroupPanel({
                     默认
                   </Button>
                 )}
-                <Button variant="outline" size="sm" className="shrink-0" disabled={!enabled} onClick={() => onAlias(item.model, routeName)}>
+                {canManage && <Button variant="outline" size="sm" className="shrink-0" disabled={!enabled} onClick={() => onAlias(item.model, routeName)}>
                   <Plus className="mr-1 h-3.5 w-3.5" />
                   别名
-                </Button>
+                </Button>}
               </div>
             )
           })}
@@ -2242,11 +2348,47 @@ function credentialHealthVariant(status: string): 'success' | 'warning' {
   return 'success'
 }
 
-function Field({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+function FormSectionHeader({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="border-b pb-2 md:col-span-2">
+      <p className="text-sm font-semibold">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+    </div>
+  )
+}
+
+function Field({
+  label,
+  htmlFor,
+  className,
+  description,
+  error,
+  required,
+  children,
+}: {
+  label: string
+  htmlFor?: string
+  className?: string
+  description?: string
+  error?: string
+  required?: boolean
+  children: React.ReactNode
+}) {
   return (
     <div className={cn('space-y-2', className)}>
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>
+        {label}
+        {required && <span className="ml-1 text-destructive" aria-hidden="true">*</span>}
+      </Label>
       {children}
+      {error ? (
+        <p className="flex items-start gap-1 text-xs text-destructive" role="alert">
+          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {error}
+        </p>
+      ) : description ? (
+        <p className="text-xs text-muted-foreground">{description}</p>
+      ) : null}
     </div>
   )
 }
@@ -2281,4 +2423,14 @@ function toolStreamingArgumentsLabel(value: NonNullable<Provider['toolUse']>['st
   if (value === 'cumulative') return '累计恢复'
   if (value === 'best_effort') return 'Best effort'
   return 'Delta'
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+function focusFirstInvalidDialogField() {
+  window.requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus()
+  })
 }
