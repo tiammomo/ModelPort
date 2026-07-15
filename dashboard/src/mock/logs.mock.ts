@@ -55,6 +55,7 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
   const group = randomItem(groups)
   const tokenName = randomItem(tokenNames)
   const latencyMs = randomInt(200, 12000)
+  const clientProtocol = id % 3 === 0 ? 'openai-chat-completions' : 'anthropic-messages'
 
   const timestamp = new Date(Date.now() - hoursAgo * 3600000 - randomInt(0, 3599) * 1000)
 
@@ -74,6 +75,7 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
     resolvedModel: route.model,
     provider: route.provider,
     protocol: route.provider === 'anthropic' || route.provider === 'deepseek' ? 'anthropic' : 'openai-compat',
+    clientProtocol,
     requestType: isSuccess ? 'consume' : 'error',
     stream: isStream ? 'stream' : 'non-stream',
     status: isSuccess ? 'success' : Math.random() > 0.5 ? 'error' : 'timeout',
@@ -98,7 +100,7 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
     firstByteLatencyMs: Math.max(20, Math.round(latencyMs * randomInt(35, 85) / 100)),
     retryCount: isSuccess ? randomInt(0, 1) : randomInt(0, 3),
     clientIp: `10.0.${randomInt(0, 12)}.${randomInt(10, 240)}`,
-    requestPath: '/v1/messages',
+    requestPath: clientProtocol === 'openai-chat-completions' ? '/v1/chat/completions' : '/v1/messages',
     billingMode: 'upstream-returned',
     detail: `模型: ${route.model} · 缓存创建: ${pricing.cacheWritePerMillion}/1M · 缓存命中: ${pricing.cacheReadPerMillion}/1M · 分组: ${group}`,
     errorMessage: isSuccess ? null : randomItem([

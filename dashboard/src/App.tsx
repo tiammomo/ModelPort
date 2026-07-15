@@ -15,6 +15,7 @@ const UsersPage = lazy(() => import('@/pages/UsersPage').then((module) => ({ def
 const QuotasPage = lazy(() => import('@/pages/QuotasPage').then((module) => ({ default: module.QuotasPage })))
 const ModelsPage = lazy(() => import('@/pages/ModelsPage').then((module) => ({ default: module.ModelsPage })))
 const LogsPage = lazy(() => import('@/pages/LogsPage').then((module) => ({ default: module.LogsPage })))
+const EnterprisePage = lazy(() => import('@/pages/EnterprisePage').then((module) => ({ default: module.EnterprisePage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((module) => ({ default: module.SettingsPage })))
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage').then((module) => ({ default: module.NotFoundPage })))
 
@@ -82,6 +83,7 @@ const router = createBrowserRouter([
       { path: 'quotas', element: <RoleRoute roles={['admin']}>{lazyPage(<QuotasPage />)}</RoleRoute> },
       { path: 'models', element: <RoleRoute roles={['admin']}>{lazyPage(<ModelsPage />)}</RoleRoute> },
       { path: 'logs', element: lazyPage(<LogsPage />) },
+      { path: 'enterprise', element: <RoleRoute roles={['admin']}>{lazyPage(<EnterprisePage />)}</RoleRoute> },
       { path: 'settings', element: <RoleRoute roles={['admin']}>{lazyPage(<SettingsPage />)}</RoleRoute> },
     ],
   },

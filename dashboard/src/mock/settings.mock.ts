@@ -39,6 +39,8 @@ export const mockSettings: SystemSettings = {
   },
   runtime: {
     apiEndpoint: 'http://127.0.0.1:17878/v1/messages',
+    anthropicEndpoint: 'http://127.0.0.1:17878/v1/messages',
+    openaiEndpoint: 'http://127.0.0.1:17878/v1/chat/completions',
     modelsEndpoint: 'http://127.0.0.1:17878/v1/models',
     adminEndpoint: 'http://127.0.0.1:17878/admin',
     controlDataPath: '/home/user/.modelport/control-plane.json',

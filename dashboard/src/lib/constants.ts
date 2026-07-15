@@ -6,12 +6,14 @@ export const ROUTES = {
   QUOTAS: "/quotas",
   MODELS: "/models",
   LOGS: "/logs",
+  ENTERPRISE: "/enterprise",
   SETTINGS: "/settings",
 } as const
 
 export const NAV_ITEMS = [
   { path: ROUTES.DASHBOARD, label: "仪表盘", icon: "LayoutDashboard", section: "运行", keywords: "概览 监控 健康", adminOnly: false },
   { path: ROUTES.LOGS, label: "请求日志", icon: "ScrollText", section: "运行", keywords: "请求 错误 trace 延迟 费用", adminOnly: false },
+  { path: ROUTES.ENTERPRISE, label: "企业运行", icon: "ShieldCheck", section: "运行", keywords: "企业 账本 ledger 幂等 租约 attempt tenant", adminOnly: true },
   { path: ROUTES.MODELS, label: "模型与渠道", icon: "Boxes", section: "接入", keywords: "模型 provider 供应商 渠道 路由 凭证", adminOnly: true },
   { path: ROUTES.API_KEYS, label: "API 密钥", icon: "KeyRound", section: "接入", keywords: "api key token 密钥 项目", adminOnly: false },
   { path: ROUTES.USERS, label: "用户管理", icon: "Users", section: "治理", keywords: "用户 角色 权限 账号", adminOnly: true },

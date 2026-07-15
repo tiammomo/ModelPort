@@ -21,6 +21,7 @@ import {
 import type { RequestLog } from '@/types'
 import {
   billingModeLabel,
+  clientProtocolLabel,
   compactDetail,
   costFormula,
   formatInteger,
@@ -295,7 +296,8 @@ function OverviewTab({
         <Badge variant="outline">
           {log.stream === 'stream' ? '流式' : '非流式'}
         </Badge>
-        <Badge variant="outline">{protocolLabel(log.protocol)}</Badge>
+        <Badge variant="outline">Client: {clientProtocolLabel(log.clientProtocol)}</Badge>
+        <Badge variant="outline">Provider: {protocolLabel(log.protocol)}</Badge>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -318,6 +320,8 @@ function OverviewTab({
           copyValue={log.requestPath || undefined}
           mono
         />
+        <DetailLine label="客户端协议" value={clientProtocolLabel(log.clientProtocol)} />
+        <DetailLine label="Provider 协议" value={protocolLabel(log.protocol)} />
         <DetailLine label="流式模式" value={log.stream === 'stream' ? '流式' : '非流式'} />
         <DetailLine label="日志详情" value={compactDetail(log)} />
       </DetailSection>
@@ -364,11 +368,7 @@ function OverviewTab({
 }
 
 function ProtocolTraceTab({ log }: { log: RequestLog }) {
-  const inboundProtocol = log.requestPath?.includes('/v1/chat')
-    ? 'OpenAI Chat'
-    : log.requestPath?.includes('/v1/messages')
-      ? 'Anthropic Messages'
-      : '协议未记录'
+  const inboundProtocol = clientProtocolLabel(log.clientProtocol)
   const providerProtocol = protocolLabel(log.protocol)
   const resolvedModel = log.resolvedModel || log.model
   const routeName = log.channelId ? `${log.channelId}:${resolvedModel}` : resolvedModel
@@ -432,6 +432,7 @@ function ProtocolTraceTab({ log }: { log: RequestLog }) {
           title="客户端摘要（重构）"
           value={{
             path: log.requestPath || null,
+            protocol: log.clientProtocol || null,
             model: log.model,
             stream: log.stream === 'stream',
             user: log.username,

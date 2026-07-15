@@ -53,6 +53,12 @@ export function protocolLabel(value?: string): string {
   return value || 'default'
 }
 
+export function clientProtocolLabel(value?: RequestLog['clientProtocol']): string {
+  if (value === 'openai-chat-completions') return 'OpenAI Chat Completions'
+  if (value === 'anthropic-messages') return 'Anthropic Messages'
+  return '客户端协议未记录'
+}
+
 export function billingModeLabel(value?: string): string {
   if (value === 'upstream-returned') return '上游返回'
   if (value === 'metrics-fallback') return '进程指标回退'

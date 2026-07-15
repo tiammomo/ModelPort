@@ -421,7 +421,8 @@ export function ApiKeysPage() {
         </p>
 
         <div className="mt-4 flex flex-wrap gap-2">
-          <EndpointPill label="Anthropic" tag="默认" value={`${apiBaseUrl}/v1/messages`} onCopy={(value) => void copyText(value, 'Anthropic 端点')} />
+          <EndpointPill label="Anthropic Messages" value={`${apiBaseUrl}/v1/messages`} onCopy={(value) => void copyText(value, 'Anthropic 端点')} />
+          <EndpointPill label="OpenAI Chat" value={`${apiBaseUrl}/v1/chat/completions`} onCopy={(value) => void copyText(value, 'OpenAI 端点')} />
           <EndpointPill label="模型列表" value={`${apiBaseUrl}/v1/models`} onCopy={(value) => void copyText(value, '模型列表端点')} />
           <div className="inline-flex h-8 items-center rounded-md border bg-background px-3 text-xs text-muted-foreground">
             已禁用 {formatNumber(revokedKeys)}
@@ -676,12 +677,17 @@ export function ApiKeysPage() {
               <div className="space-y-3 rounded-md border bg-muted/20 p-3">
                 <div>
                   <p className="text-sm font-medium">接入配置</p>
-                  <p className="mt-1 text-xs text-muted-foreground">复制后把 YOUR_MODEL 替换为模型列表端点返回的模型 ID，或管理员提供的稳定路由别名。OpenAI-compatible 是上游适配能力，不是客户端入口。</p>
+                  <p className="mt-1 text-xs text-muted-foreground">同一把密钥可访问 Anthropic Messages 与 OpenAI Chat Completions；把 YOUR_MODEL 替换为模型列表返回的 ID 或稳定路由别名。</p>
                 </div>
                 <CopySnippet
                   title="Claude Code / Anthropic SDK"
                   value={`ANTHROPIC_BASE_URL=${apiBaseUrl}\nANTHROPIC_AUTH_TOKEN=${newKey}\nANTHROPIC_MODEL=YOUR_MODEL`}
                   onCopy={(value) => void copyText(value, 'Claude Code 配置')}
+                />
+                <CopySnippet
+                  title="OpenAI SDK"
+                  value={`OPENAI_BASE_URL=${apiBaseUrl}/v1\nOPENAI_API_KEY=${newKey}\nOPENAI_MODEL=YOUR_MODEL`}
+                  onCopy={(value) => void copyText(value, 'OpenAI SDK 配置')}
                 />
               </div>
             </div>

@@ -11,10 +11,12 @@ describe('navItemsForRole', () => {
     expect(paths).not.toContain(ROUTES.USERS)
     expect(paths).not.toContain(ROUTES.QUOTAS)
     expect(paths).not.toContain(ROUTES.MODELS)
+    expect(paths).not.toContain(ROUTES.ENTERPRISE)
     expect(paths).not.toContain(ROUTES.SETTINGS)
   })
 
   it('keeps every destination available to administrators', () => {
-    expect(navItemsForRole('admin')).toHaveLength(7)
+    expect(navItemsForRole('admin')).toHaveLength(8)
+    expect(navItemsForRole('admin').map((item) => item.path)).toContain(ROUTES.ENTERPRISE)
   })
 })

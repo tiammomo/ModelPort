@@ -603,7 +603,8 @@ function RuntimeCard({
   onCopy: (label: string, value: string) => void
 }) {
   const rows = [
-    ['API', runtime?.apiEndpoint, '后端未上报'],
+    ['Anthropic', runtime?.anthropicEndpoint || runtime?.apiEndpoint, '后端未上报'],
+    ['OpenAI', runtime?.openaiEndpoint, '后端未上报'],
     ['Models', runtime?.modelsEndpoint, '后端未上报'],
     ['Admin', runtime?.adminEndpoint, '后端未上报'],
     ['Control', runtime?.controlDataPath, runtime ? '未配置' : '后端未上报'],

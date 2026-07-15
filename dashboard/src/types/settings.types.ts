@@ -33,6 +33,8 @@ export interface RateLimitSettings {
 
 export interface RuntimeSettings {
   apiEndpoint: string
+  anthropicEndpoint: string
+  openaiEndpoint: string
   modelsEndpoint: string
   adminEndpoint: string
   controlDataPath?: string | null

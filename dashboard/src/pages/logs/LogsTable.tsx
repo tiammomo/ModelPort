@@ -17,6 +17,7 @@ import {
 import type { RequestLog } from '@/types'
 import {
   billingModeLabel,
+  clientProtocolLabel,
   compactDetail,
   formatCompactTokenCount,
   formatInteger,
@@ -71,7 +72,9 @@ function RouteCell({ log }: { log: RequestLog }) {
         <div className="truncate font-mono" title={log.channelId || log.provider}>
           {log.channelId || log.provider}
         </div>
-        <div>{protocolLabel(log.protocol)}</div>
+        <div title={`客户端 ${clientProtocolLabel(log.clientProtocol)}`}>
+          {protocolLabel(log.protocol)}
+        </div>
       </div>
     </div>
   )

@@ -104,7 +104,7 @@ test.describe('users and API keys', () => {
     await expect(revealedKey).toHaveValue(/^sk-mp-/)
     await expect(dialog.getByText('完整密钥只显示这一次。', { exact: false })).toBeVisible()
     await expect(dialog.getByText('Claude Code / Anthropic SDK')).toBeVisible()
-    await expect(dialog.getByText(/OpenAI-compatible 是上游适配能力/)).toBeVisible()
+    await expect(dialog.getByText(/同一把密钥可访问 Anthropic Messages 与 OpenAI Chat Completions/)).toBeVisible()
     await dialog.getByRole('button', { name: '已保存，关闭' }).click()
     await expect(dialog).toBeHidden()
   })

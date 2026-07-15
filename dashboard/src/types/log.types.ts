@@ -6,6 +6,7 @@ export type StreamMode = 'stream' | 'non-stream'
 export interface RequestLog {
   id: string
   requestId?: string | null
+  attemptId?: string | null
   timestamp: string
   userId: string
   username: string
@@ -20,10 +21,12 @@ export interface RequestLog {
   resolvedModel: string
   provider: string
   protocol: ProviderProtocol
+  clientProtocol?: 'anthropic-messages' | 'openai-chat-completions'
   requestType?: 'consume' | 'error'
   stream: StreamMode
   status: RequestStatus
   statusCode: number
+  terminalReason?: string
   inputTokens: number
   outputTokens: number
   cacheWriteTokens?: number

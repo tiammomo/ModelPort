@@ -1244,7 +1244,7 @@ export function ModelsPage() {
                   placeholder="例如: 第三方 · OpenAI"
                 />
               </Field>
-              <Field label="上游协议" description="选择上游实际实现的协议；客户端入口始终保持 Anthropic Messages 契约。" required>
+              <Field label="上游协议" description="选择上游实际实现的协议；网关会从 Anthropic Messages 或 OpenAI Chat 入口归一化后适配。" required>
                 <Select
                   value={providerForm.protocol}
                   onValueChange={(value) => {
