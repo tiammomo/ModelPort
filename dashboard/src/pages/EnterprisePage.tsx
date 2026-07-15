@@ -39,6 +39,7 @@ import { EmptyState } from '@/components/shared/EmptyState'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { PaginationBar } from '@/components/shared/PaginationBar'
 import { Skeleton } from '@/components/shared/Skeleton'
+import { budgetEventAmountLines } from '@/features/enterprise/budget-events'
 import { cn } from '@/lib/utils'
 import { DEFAULT_ENTERPRISE_BUDGET_SCOPE } from '@/services/enterprise.service'
 import type {
@@ -519,12 +520,27 @@ function BudgetDialog({
 }
 
 function BudgetEventRow({ event }: { event: EnterpriseBudgetEvent }) {
-  const delta = event.reservedDeltaMicrounits + event.settledDeltaMicrounits
+  const amounts = budgetEventAmountLines(event)
   return (
-    <div className="grid gap-2 border-b px-1 py-3 text-xs last:border-b-0 sm:grid-cols-[120px_minmax(0,1fr)_120px] sm:items-center">
+    <div className="grid gap-2 border-b px-1 py-3 text-xs last:border-b-0 sm:grid-cols-[120px_minmax(0,1fr)_150px] sm:items-center">
       <div><p className="font-medium">{budgetEventLabel(event.eventType)}</p><p className="mt-1 text-[10px] text-muted-foreground">{formatDateTime(event.createdAtMs)}</p></div>
       <div className="min-w-0"><p className="truncate text-muted-foreground">{event.reason || event.evidenceSource}</p><p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{event.attemptId || event.actorId || event.eventId}</p></div>
-      <div className="text-right"><p className={cn('font-mono font-semibold', delta < 0 ? 'text-rose-600 dark:text-rose-400' : delta > 0 ? 'text-emerald-600 dark:text-emerald-400' : undefined)}>{formatSignedMoney(delta)}</p><p className="mt-1 text-[10px] text-muted-foreground">{event.evidenceSource}</p></div>
+      <div className="space-y-1 text-right">
+        {amounts.map((amount) => (
+          <div key={amount.dimension} className="flex items-baseline justify-end gap-2">
+            <span className="text-[10px] text-muted-foreground">{amount.label}</span>
+            <span className={cn(
+              'font-mono font-semibold',
+              amount.dimension === 'reserved' && amount.microunits > 0 && 'text-blue-600 dark:text-blue-400',
+              amount.microunits < 0 && 'text-emerald-600 dark:text-emerald-400',
+              amount.dimension === 'settled' && amount.microunits > 0 && 'text-amber-700 dark:text-amber-400',
+            )}>
+              {formatSignedMoney(amount.microunits)}
+            </span>
+          </div>
+        ))}
+        <p className="text-[10px] text-muted-foreground">{event.evidenceSource}</p>
+      </div>
     </div>
   )
 }
@@ -809,7 +825,7 @@ function budgetEventLabel(eventType: EnterpriseBudgetEvent['eventType']) {
   return ({
     reservation_created: '预算预留',
     settled: '用量结算',
-    released: '超时释放',
+    released: '预算释放',
     adjustment: '人工调整',
   })[eventType]
 }
