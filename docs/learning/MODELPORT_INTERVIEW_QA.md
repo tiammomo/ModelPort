@@ -231,7 +231,7 @@ A: 可以分为 `rate_limit`、`account`、`auth`、`transport`、`upstream_prot
 
 ### Q52: Request Logs 记录什么？
 
-A: 记录时间、状态、provider/model、调用身份、状态码、耗时、tokens/费用估算、`billingMode`、网络来源、retry/fallback、有限错误信息和 request ID。`upstream-returned` 与 `local-estimate` 区分 usage provenance；attempt-level preflight 行是零 usage，早期 ingress 拒绝可能没有持久行，但两者都是零 quota/spend。它不保存 prompt、完整请求体、原始 Provider 响应或内部协议 IR；普通 live stream 的最终 usage/状态目前也可能未完成对账。
+A: 记录时间、状态、provider/model、客户端与 Provider 协议、调用身份、状态码、耗时、tokens/费用估算、`billingMode`、网络来源、retry/fallback、有限错误信息和 request/attempt ID。`upstream-returned` 与 `local-estimate` 区分 usage provenance；attempt-level preflight 行是零 usage，早期 ingress 拒绝可能没有持久行，但两者都是零 quota/spend。它不保存 prompt、完整请求体、原始 Provider 响应或内部协议 IR；live stream 会在进程内结算终态和可识别 usage，但进程丢失仍可能留下未对账 attempt。
 
 ### Q53: Metrics 有什么价值？
 

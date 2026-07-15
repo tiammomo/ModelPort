@@ -5,7 +5,7 @@ configuration.
 
 ## Repository Metadata
 
-- Description: `Self-hosted Anthropic-compatible model gateway for Claude Code and VS Code Claude.`
+- Description: `Self-hosted multi-protocol model gateway for Anthropic and OpenAI-compatible clients.`
 - Topics: `claude-code`, `anthropic`, `openai-compatible`, `llm-gateway`,
   `model-router`, `rust`, `vscode`, `deepseek`.
 - License: MIT.

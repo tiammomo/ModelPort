@@ -1,9 +1,10 @@
 # Tool Use Compatibility
 
-ModelPort keeps an Anthropic-compatible Tool Use contract at the client boundary
-and maps it to OpenAI function tools when required. This document describes the
-implemented adapter, validation gates, capability metadata, and known limits;
-it does not certify every configured provider.
+ModelPort accepts Anthropic Tool Use and the scoped OpenAI Chat Completions
+function-tool contract at its client edges. A typed Exchange IR maps either
+edge to Anthropic or OpenAI-compatible Providers. This document describes the
+implemented adapters, validation gates, capability metadata, and known limits;
+it does not certify every configured Provider.
 
 ## Client Contract
 
@@ -14,8 +15,10 @@ Requests may contain:
 - user `tool_result` content blocks;
 - streaming tool-call arguments.
 
-An Anthropic-compatible upstream receives these fields in the Anthropic request
-shape. An OpenAI-compatible upstream uses the mapping below.
+The OpenAI edge accepts function definitions, assistant `tool_calls`, tool-role
+results, named/auto/required/none choices, and `parallel_tool_calls`. An
+Anthropic-compatible upstream receives these as Anthropic Tool Use blocks; an
+OpenAI-compatible upstream receives the native function-tool form.
 
 ## OpenAI-Compatible Mapping
 
@@ -62,13 +65,17 @@ the upstream's own default can still matter. Verify local runtimes in practice.
 
 ## Streaming
 
-ModelPort emits Anthropic-style events:
+For `/v1/messages`, ModelPort emits Anthropic-style events:
 
 - `content_block_start` for text or tool blocks;
 - `content_block_delta` with `text_delta` or `input_json_delta`;
 - `content_block_stop`;
 - `message_delta` with mapped stop reason;
 - `message_stop`.
+
+For `/v1/chat/completions`, native or converted tool calls use OpenAI
+`chat.completion.chunk` deltas with indexed `tool_calls`, function name and
+argument fragments, a `tool_calls` finish reason, and `[DONE]`.
 
 OpenAI tool calls are tracked by upstream call index. Arguments that arrive
 before the function name are buffered. A missing name produces a synthetic
@@ -78,15 +85,16 @@ before the function name are buffered. A missing name produces a synthetic
 best complete JSON object found at stream completion. Anthropic providers use
 native pass-through semantics.
 
-The stream can still end with `event: error` after HTTP 200. A half-written JSON
-argument is not guaranteed recoverable, and a synthetically named tool is a
-compatibility fallback rather than a semantically verified call.
+The stream can still end with an Anthropic error event or OpenAI error data
+after HTTP 200. A half-written JSON argument is not guaranteed recoverable, and
+a synthetically named tool is a compatibility fallback rather than a
+semantically verified call.
 
 The live handshake requires a non-204 2xx response with
 `text/event-stream`. Native Anthropic completion requires `message_stop`;
 OpenAI-compatible completion requires `[DONE]` or `finish_reason`, after which
-ModelPort emits `message_stop`. EOF without that signal is an error, not a
-successful partial Tool Use result.
+ModelPort emits the terminal form expected by the originating client protocol.
+EOF without that signal is an error, not a successful partial Tool Use result.
 
 With `buffer_stream_text=true`, the OpenAI-compatible adapter awaits and maps a
 complete non-stream response before it returns local SSE. Tool blocks are then

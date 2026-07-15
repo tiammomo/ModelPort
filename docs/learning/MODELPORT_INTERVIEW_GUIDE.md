@@ -1,6 +1,6 @@
 # ModelPort 技术面经
 
-> **非规范、基于版本的讲解材料。** 最后复核于 2026-07-11。行为和限制以
+> **非规范、基于版本的讲解材料。** 最后复核于 2026-07-15。行为和限制以
 > [Architecture](../ARCHITECTURE.md)、[API](../API.md) 与
 > [Operations](../OPERATIONS.md) 为准；不要把概念图或建议话术当成已验证能力。
 
@@ -10,11 +10,11 @@
 
 30 秒版本：
 
-> ModelPort 是一个面向个人开发者、小团队和初创团队的本地大模型路由网关。它统一接收客户端请求，管理鉴权、模型路由、Provider 适配、Tool Use、限流预算、请求日志和 Provider 健康状态。它的重点不是做重企业平台，而是用低运维成本把多协议、多 Provider 的模型调用治理起来。
+> ModelPort 正在演进为可自托管的企业级多协议模型网关。它统一接收 Anthropic Messages 与 OpenAI Chat 请求，管理鉴权、租户上下文、模型路由、Provider 适配、Tool Use、限流预算、幂等重试、请求账本和 Provider 健康；当前已经完成关系型请求/尝试基础，但身份、硬预算和完整多实例治理仍在迁移中。
 
 3 分钟版本：
 
-> ModelPort 的核心链路是 Client Apps -> ModelPort Gateway -> Provider Pool。客户端通过 Anthropic-compatible API 接入；网关侧用 Rust + Axum 承接请求，在入口做鉴权、校验、模型解析、限流和配额检查，然后根据 provider 协议选择 Anthropic-compatible 直通或 OpenAI-compatible 转换。非流式请求完成后记录 usage、request log、metrics 和 Provider outcome。普通 live stream 在响应头发出后的完成态、最终 usage 和 health 更新目前还没有完全闭环；buffered stream 会先完成上游但牺牲首字延迟，这是必须主动说明的边界。
+> ModelPort 的核心链路是 Client Apps -> ModelPort Gateway -> Provider Pool。客户端可通过 Anthropic Messages 或当前范围内的 OpenAI Chat Completions 接入；网关侧用 Rust + Axum 把请求解析成 typed Exchange IR，再复用鉴权、校验、模型解析、限流和配额链路，并根据 Provider 协议选择 Anthropic-compatible 或 OpenAI-compatible adapter。请求和 Provider 尝试在上游调用前写入租户级 PostgreSQL 账本；`Idempotency-Key` 防止重复 egress，活跃实例持续续租，进程丢失后由 durable worker 把过期行收敛为不计费的 `unreconciled` 证据。非流式和 live stream 都在终态结算可识别 usage、metrics 与 Provider outcome。
 
 面试完整展开时，可以按下面 5 张图讲。
 
@@ -26,7 +26,7 @@
 
 推荐讲法：
 
-> 我会从 8 个方面介绍这个项目：项目定位、协议层、Tool Use、鉴权与权限、安全治理、稳定性、可观测性、工程化验证。中间这条主链路是核心：客户端进入 ModelPort Gateway，再通过协议适配和策略层路由到不同 Provider。项目定位是个人和小团队，所以我没有一开始引入 Redis、Kubernetes、OIDC 或复杂多租户，而是优先做低运维、高收益的治理能力。
+> 我会从 8 个方面介绍这个项目：企业网关定位、协议层、Tool Use、租户鉴权、安全治理、稳定性、可观测性、工程化验证。中间这条主链路是核心：客户端进入 ModelPort Gateway，再通过协议适配和策略层路由到不同 Provider。项目采用分阶段迁移：先建立 typed Exchange、关系型请求账本、幂等和租约正确性，再逐步迁移 OIDC、RBAC、硬预算、Redis 协调和多副本部署，避免同时引入多个未经验证的分布式边界。
 
 重点强调：
 
@@ -53,7 +53,7 @@
 
 推荐讲法：
 
-> 数据面请求先区分 legacy token 和控制台签发的 API Key；Admin Session 只用于控制面，不参与 `/v1/messages` 鉴权。API Key 每次鉴权会复查 owner 仍是 active 用户。请求经过结构校验（包括必填、正数且有上限的 `max_tokens`）、Model Resolution 和进程内 rate limit，再按候选 Provider 选择 credential、检查 Team/IP/Quota policy，最后进入协议适配。只有实际开始 upstream attempt 才会增加 quota/spend；attempt-level preflight 如果进入 usage recorder 会记零 usage，早期 ingress 拒绝可能没有持久日志。非流式 Provider 返回后做 response mapping 和 usage 记录；普通 live stream 在响应头后的错误只能通过 SSE 事件表达，不能假装已经完成普通 fallback 和精确计费闭环。`buffer_stream_text` 是例外：先完成非流式上游和转换，再创建本地 SSE。
+> 数据面请求先区分 legacy token 和控制台签发的 API Key；Admin Session 只用于控制面，不参与 `/v1/messages` 或 `/v1/chat/completions` 鉴权。API Key 每次鉴权会复查 owner 仍是 active 用户。请求经过对应客户端协议的结构校验、Model Resolution 和进程内 rate limit，再按候选 Provider 选择 credential、检查 Team/IP/Quota policy，最后进入协议适配。只有实际开始 upstream attempt 才会增加 quota/spend；attempt-level preflight 如果进入 usage recorder 会记零 usage，早期 ingress 拒绝可能没有持久日志。非流式 Provider 返回后做 response mapping 和 usage 记录；live stream 在响应头后的错误只能通过 SSE 事件表达，即使终态与 usage 已在进程内结算，也不能假装可以执行普通 fallback 或得到 Provider 账单级精度。
 
 可以按模块展开：
 

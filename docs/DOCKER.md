@@ -65,7 +65,8 @@ deployment with its sample credentials.
 Open:
 
 - Dashboard: `http://127.0.0.1:5173`
-- API: `http://127.0.0.1:17878/v1/messages`
+- Messages API: `http://127.0.0.1:17878/v1/messages`
+- Chat Completions API: `http://127.0.0.1:17878/v1/chat/completions`
 - Liveness: `http://127.0.0.1:17878/livez`
 
 Claude Code uses the host-published backend:
@@ -96,7 +97,8 @@ PostgreSQL and backend data and is irreversible without a backup.
 
 Unless `.env` explicitly sets `MODELPORT_DATABASE_URL`, Compose constructs it
 for the internal PostgreSQL service. An explicit complete URL overrides that
-default. The application stores two `jsonb` documents in `modelport_state`:
+default. During the compatibility migration, the application stores two
+`jsonb` documents in `modelport_state`:
 
 | Namespace | Contents |
 | --- | --- |
@@ -107,9 +109,10 @@ The database is not exposed on host port 5432. If host access is required for
 debugging, add an explicit non-conflicting loopback mapping such as
 `127.0.0.1:15432:5432`.
 
-The current application client uses PostgreSQL `NoTls`; the template assumes
-traffic remains on the private Compose bridge. Do not point it across an
-untrusted network. Native TLS transport is not implemented.
+The application uses SQLx with rustls. Development mode defaults to TLS
+`prefer`, which allows the internal Compose database without provisioning a
+certificate. A remote production database must use `verify-full` plus a trusted
+root; enabling `MODELPORT_ENTERPRISE_MODE=1` enforces that boundary.
 
 Compose interpolation does not percent-encode
 `MODELPORT_POSTGRES_PASSWORD`. Use a long URL-safe value made from letters,
@@ -120,16 +123,32 @@ such as `@`, `:`, `/`, `%`, and `#` are unsafe in the constructed URL when left
 unencoded.
 
 The Compose service always supplies either the explicit or constructed database
-URL. To select the JSON-file backend, remove that environment assignment from a
-Compose override; merely leaving `MODELPORT_DATABASE_URL` out of `.env` selects
-the constructed PostgreSQL default. File-backend paths are
+URL. The default command therefore selects PostgreSQL. To explicitly select the
+single-instance compatibility deployment instead, use the supplied override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.files.yml up -d --build
+```
+
+That override removes PostgreSQL from the active services and supplies empty
+database URLs. File-backend paths are
 `/data/admin-auth.json` and `/data/control-plane.json`. On first PostgreSQL use,
 an empty namespace imports an existing corresponding JSON file.
 
+File mode keeps the normalized request and budget ledger only in process
+memory. It is suitable for development or a small disposable installation, not
+for multi-replica or durable enterprise enforcement. Switch back to the
+recommended PostgreSQL deployment with plain `docker compose up -d --build`.
+
 Persistence currently synchronously replaces the complete logical document on
-state changes, including completed request usage. PostgreSQL avoids file-rewrite
-failure modes but does not turn the design into row-per-event storage. Keep
-usage retention and throughput within the small-team profile.
+auth/control changes, including the compatibility usage log. Separately,
+embedded migrations create normalized tenant, gateway-request, and Provider-
+attempt rows, then add hashed idempotency claims, renewable instance leases,
+transactional budget accounts/reservations, and append-only evidence events.
+Every paid upstream attempt is inserted before egress and finalized at the
+response, stream, or expired-lease terminal state. This ledger is the first
+relational slice; identity, policy, response replay, and the dashboard log query
+still use the compatibility path or remain open.
 
 ## Backup
 
@@ -293,10 +312,12 @@ not embed a credential in the URL.
 - Compose is a single backend instance; rate limits and sessions are not shared.
 - Concurrent-stream permits are also process-local and stay held until each
   downstream response body completes or is dropped.
-- `/readyz` checks auth/control storage but is not an all-Provider gate.
+- `/readyz` checks auth/control storage and the normalized ledger but is not an
+  all-Provider gate.
 - Live-stream completion/final usage and fallback after headers are incomplete.
 - Quota enforcement is not a concurrent reservation transaction.
 - Provider hostname DNS answers are not revalidated by the SSRF guard.
-- PostgreSQL stores complete logical documents rather than normalized usage rows.
+- Auth/control and retained dashboard usage still live in complete compatibility
+  documents; only request/Provider-attempt lifecycle is normalized so far.
 
 These limits are detailed in [Operations](OPERATIONS.md#current-operational-limits).

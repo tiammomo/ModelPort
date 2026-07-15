@@ -17,6 +17,10 @@ the source of truth for behavior and operations.
   reload, troubleshooting, and current operational limitations.
 - [Development](DEVELOPMENT.md): toolchain, local workflow, test layers, and
   documentation maintenance.
+- [Enterprise gateway roadmap](ENTERPRISE_ROADMAP.md): target product,
+  enterprise admission criteria, architecture direction, migration workstreams,
+  and release gates. Roadmap items are proposed unless explicitly marked as
+  shipped elsewhere.
 - [Dashboard experience](DASHBOARD_UX.md): navigation, role behavior, data-truth
   rules, page state contracts, responsive design, and accessibility.
 - [systemd deployment](SYSTEMD.md): hardened single-host installation and data
@@ -27,8 +31,8 @@ the source of truth for behavior and operations.
 ## Technical Core
 
 ModelPort's implemented core is the bounded pipeline summarized in
-[Architecture: Technical Core](ARCHITECTURE.md#technical-core): focused
-Anthropic/OpenAI-compatible adaptation, deterministic model routing, eligible
+[Architecture: Technical Core](ARCHITECTURE.md#technical-core): typed
+Anthropic/OpenAI client edges and Provider adaptation, deterministic model routing, eligible
 fallback, attempt-scoped policy and spend checks, environment-backed Provider
 credentials, persisted control overrides, defensive transport, and
 source-labelled observability. That section also records the non-distributed,
@@ -48,6 +52,7 @@ these limits are part of the design contract rather than optional caveats.
 - [Security policy](../SECURITY.md)
 - [Contributing guide](../CONTRIBUTING.md)
 - [Project guide](PROJECT_GUIDE.md)
+- [Architecture Decision Records](adr/README.md)
 - [Repository and release setup](GITHUB_SETUP.md)
 - [GPT Image 2 proposal](GPT_IMAGE_2_GUIDE.md) — proposed, not implemented
 - [Learning and interview material](learning/README.md) — non-normative
@@ -69,4 +74,4 @@ found. Documentation changes should keep these rules:
 5. Run the checks in [Development](DEVELOPMENT.md#documentation-checks) after
    changing links, commands, provider defaults, or configuration names.
 
-Last reviewed: 2026-07-11.
+Last reviewed: 2026-07-15.

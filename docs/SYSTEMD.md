@@ -46,11 +46,11 @@ backend.
 
 When `MODELPORT_DATABASE_URL` is set, auth and control documents are stored in
 PostgreSQL, but the state directory remains useful for backup files and a
-consistent working directory. The current PostgreSQL client uses `NoTls`; keep
-the database on the same host or a network path protected by an appropriate
-private boundary/tunnel, and never send credentials or state across an
-untrusted network. Native TLS transport is not implemented. Test connectivity
-before switching storage.
+consistent working directory. PostgreSQL access uses SQLx with rustls and
+embedded migrations. For a remote production database, set
+`MODELPORT_ENTERPRISE_MODE=1`, `MODELPORT_DATABASE_TLS_MODE=verify-full`, and a
+trusted `sslrootcert` in the database URL. Test connectivity and migration
+permissions before switching storage.
 
 ## Validate And Observe
 
@@ -79,8 +79,9 @@ curl -fsS -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
   http://127.0.0.1:17878/readyz
 ```
 
-`readyz` checks auth/control storage and returns authenticated diagnostics; it
-does not gate on every Provider. See [Operations](OPERATIONS.md#health-semantics).
+`readyz` checks auth/control storage plus the normalized request/attempt ledger
+and returns authenticated diagnostics; it does not gate on every Provider. See
+[Operations](OPERATIONS.md#health-semantics).
 
 ## Reverse Proxy And Dashboard
 

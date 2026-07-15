@@ -2,7 +2,7 @@
 
 This checklist validates the supported single-host/personal-or-small-team
 profile. It does not prove public multi-tenant safety, all-provider health,
-exact billing, or final live-stream lifecycle accounting.
+exact billing, or crash recovery for an in-flight live-stream lifecycle.
 
 ## Prerequisites
 
@@ -33,8 +33,15 @@ Default mode does not call an upstream model. It checks:
 - complete CLI backup export and deep auth/control validation;
 - cleanup of temporary records.
 
-`readyz` returning success means auth/control storage was readable and detailed
-diagnostics were accessible; it does not prove that every Provider is ready.
+The Rust black-box suite additionally verifies OpenAI Chat Completions bearer
+authentication, non-stream passthrough, OpenAI SSE plus final usage chunks,
+terminal usage reconciliation, OpenAI-to-Anthropic conversion, and explicit
+rejection of unsupported fields. These are fixture-backed contract checks, not
+real-Provider certification.
+
+`readyz` returning success means auth/control storage and the normalized
+request/attempt ledger were reachable and detailed diagnostics were accessible;
+it does not prove that every Provider is ready.
 
 ## Tool Use Adapter Acceptance
 
@@ -69,8 +76,10 @@ text deltas and `event: error`; record the date/commit/result in
 
 An upstream acceptance pass does not close these known limits:
 
-- later live-stream completion/usage/provider outcome is not reconciled into the
-  normal request log and fallback lifecycle;
+- ordinary live-stream terminal state is reconciled in-process, but final
+  Provider usage may remain estimated and post-header fallback is impossible;
+  expired durable leases are terminalized as unbilled `unreconciled` evidence,
+  not reconstructed Provider usage;
 - concurrent quota checks are not transactional reservations;
 - provider hostname DNS answers are not private-range revalidated;
 - persisted control state is synchronously written as a complete document.
@@ -131,10 +140,15 @@ npx playwright install --with-deps chromium
 - Messages/billing: missing, zero, and oversized `max_tokens` rejection;
   canonical API-key/quota usernames; locally rejected requests consuming zero
   quota/spend; correct `billingMode` provenance after a real attempt.
+- Chat Completions: common OpenAI SDK text request, developer/system roles,
+  function tools, bearer authentication, `chat.completion` response shape,
+  standard chunk stream, optional final usage chunk, and cross-protocol routing.
 - Proxy/SSE: right-to-left trusted-hop extraction, Host port preservation,
   strict `text/event-stream` handshake, handshake/error-body/idle timeouts, and
-  missing termination events becoming SSE errors; concurrent-stream exhaustion
-  returns 429 and a permit remains held until body completion/drop.
+  missing termination events becoming SSE errors and terminal request/provider
+  evidence; downstream cancellation becoming 499 without penalizing an already
+  completed upstream; concurrent-stream exhaustion returns 429 and a permit
+  remains held until body completion/drop.
 - Operations: diagnostic export versus complete CLI backup is clearly labelled.
 
 ## Release Evidence

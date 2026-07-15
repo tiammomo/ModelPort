@@ -10,10 +10,15 @@ This document separates two different facts:
 Configuration is not verification. A model listed by `/v1/models` may still be
 unavailable to the account or runtime.
 
+The Protocol column describes the Provider edge, not the client edge. Both
+`/v1/messages` and the documented `/v1/chat/completions` compatibility slice
+can select either Provider protocol when the pre-egress fidelity/capability
+checks accept the request.
+
 ## Built-In Catalog
 
 Defaults below are derived from the built-in catalog in `src/config.rs` as of
-2026-07-11. The shipped `config.example.toml` is a smaller DeepSeek-only example.
+2026-07-15. The shipped `config.example.toml` is a smaller DeepSeek-only example.
 Provider catalogs change; an environment model override is inserted into that
 provider's runtime model list.
 
@@ -114,7 +119,8 @@ it does not certify a provider.
 - Non-local/non-custom Provider bases require HTTPS by default. The explicit
   insecure-HTTP override is only for a trusted internal network because it
   exposes Provider credentials and model traffic in plaintext.
-- Stream errors can occur after headers and are not currently reconciled into
-  the normal provider outcome/fallback lifecycle.
+- Stream errors can occur after headers. The in-process body finalizer records
+  terminal request and Provider outcome evidence, but cannot replay fallback
+  after downstream headers or reconcile an attempt lost with the process.
 - Pricing values are estimates and require separate regression tests in
   `src/pricing.rs`; provider billing remains authoritative.

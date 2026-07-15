@@ -87,7 +87,15 @@ SSE byte guardrails. Rate limiting has its separate explicit disable switch.
 | `MODELPORT_STATE_DIR` | `.modelport` for auth | Base state directory used by the auth store. |
 | `MODELPORT_AUTH_STORE_PATH` | `<state-dir>/admin-auth.json` | File backend override for auth state. |
 | `MODELPORT_CONTROL_STORE` | `.modelport/control-plane.json` | File backend path for control state. |
-| `MODELPORT_DATABASE_URL` | unset | Store both state documents in PostgreSQL instead of files; Compose constructs an internal default unless explicitly overridden. |
+| `MODELPORT_DATABASE_URL` | unset | Store both compatibility state documents in PostgreSQL instead of files and, unless overridden, host the normalized request/attempt ledger. Compose constructs an internal default unless explicitly overridden. |
+| `MODELPORT_ENTERPRISE_DATABASE_URL` | inherits `MODELPORT_DATABASE_URL` | Optional separate PostgreSQL target for the normalized request/attempt ledger and embedded migrations. |
+| `MODELPORT_DATABASE_TLS_MODE` | `prefer`; `verify-full` in enterprise mode | SQLx PostgreSQL TLS mode: `disable`, `allow`, `prefer`, `require`, `verify-ca`, or `verify-full`. Enterprise mode rejects every value except `verify-full`. Certificate options such as `sslrootcert` can be supplied in the PostgreSQL URL. |
+| `MODELPORT_DATABASE_MAX_CONNECTIONS` | `16` | Maximum connections in the normalized ledger pool. Each compatibility-document worker independently caps its pool at one connection. |
+| `MODELPORT_DATABASE_MIN_CONNECTIONS` | `0` | Minimum eagerly maintained PostgreSQL connections, capped at the pool maximum. |
+| `MODELPORT_DATABASE_ACQUIRE_TIMEOUT_SECS` | `10` | Maximum wait to acquire a PostgreSQL connection. |
+| `MODELPORT_LEDGER_LEASE_TTL_SECS` | `300` | Lifetime of a request/attempt ownership lease; minimum 30 seconds. Active requests renew at one-third of this interval. |
+| `MODELPORT_LEDGER_RECONCILE_INTERVAL_SECS` | `60` | Interval for reclaiming expired `started` rows; minimum 5 seconds and strictly smaller than the lease TTL. |
+| `MODELPORT_ENTERPRISE_MODE` | off | Fail-closed production profile. Requires `MODELPORT_DATABASE_URL`; defaults database TLS to `verify-full` and rejects weaker explicit modes. |
 | `MODELPORT_USAGE_LOG_LIMIT` | `5000` | Maximum retained request-usage records in the control document; must be greater than zero. |
 
 Bootstrap variables do not overwrite existing users. Dashboard sessions are
@@ -100,10 +108,26 @@ the response body so a slow or abandoned client continues to occupy capacity
 until completion or body drop. Clients receiving its 429 should honor
 `Retry-After`.
 
-The current PostgreSQL client connects with `NoTls`. Use it only on the same
-host, the private Compose bridge, or another network path already protected by
-an appropriate trust boundary or tunnel; do not send database credentials/state
-over an untrusted network. Native PostgreSQL TLS transport remains future work.
+PostgreSQL access uses SQLx, Tokio, rustls, bounded pools, and embedded
+versioned migrations. Development mode defaults to `prefer` so the private
+Compose database remains usable. For any remote or production database, use
+`verify-full` and provide a trusted root through the PostgreSQL URL. Merely
+using `require` encrypts transport but does not enforce the enterprise hostname
+and certificate policy.
+
+At startup, ModelPort migrates the normalized organization/project/environment,
+gateway-request, and Provider-attempt ledger. Auth and control records remain
+in their compatibility JSON documents during the expand/migrate window. With
+no database URL, those documents use files and the request ledger uses memory;
+this mode is intended for development and tests. `/readyz` verifies all three
+stores.
+
+Each PostgreSQL request and Provider-attempt row carries an instance lease.
+ModelPort renews it throughout non-stream and streaming lifecycles. Startup and
+the periodic reconciler terminalize only expired `started` rows as
+`lease_expired_unreconciled`; because Provider evidence is unknown after a
+crash, those rows retain zero usage and `chargeable=false` pending future
+manual evidence or adjustment.
 
 Compose's default URL directly interpolates `MODELPORT_POSTGRES_PASSWORD`
 without percent-encoding. Prefer a long URL-safe password containing letters,
@@ -199,13 +223,19 @@ byte limits and must still end with the protocol's required termination event.
 | `MODELPORT_MAX_SYSTEM_JSON_CHARS` | `262144` | Maximum serialized system characters. |
 | `MODELPORT_MAX_TOOLS` | `256` | Maximum Tool Use definitions. |
 | `MODELPORT_MAX_TOOLS_JSON_CHARS` | `1048576` | Maximum serialized tools characters. |
-| `MODELPORT_MAX_OUTPUT_TOKENS` | `131072` | Maximum accepted `max_tokens`. |
+| `MODELPORT_MAX_OUTPUT_TOKENS` | `131072` | Maximum accepted Anthropic `max_tokens` or OpenAI `max_completion_tokens`/`max_tokens`. |
 
 Every `POST /v1/messages` request must include integer `max_tokens > 0` and the
 value must be at most `MODELPORT_MAX_OUTPUT_TOKENS`. This is validated locally
 before Provider routing. The Provider's `max_tokens_field` only selects the
 outbound OpenAI-compatible field name; it does not make the client field
 optional or change the global cap.
+
+`POST /v1/chat/completions` accepts optional `max_completion_tokens` or legacy
+`max_tokens`; if both are present they must agree, and any supplied value must
+be positive and within the same global cap. An omitted value uses a bounded
+4096-token local estimate and is rendered explicitly only when the selected
+Provider contract requires it.
 
 A per-window rate value of `0` disables that dimension. Rate limits are
 process-local and reset on restart. Quotas and spend limits are persisted, but

@@ -101,8 +101,9 @@ healthy.
   it was saved before closing the reveal step.
 - The one-time reveal provides ready-to-copy Claude Code/Anthropic client
   environment settings using the real dashboard origin. A model remains an
-  explicit choice from `/v1/models`; the UI does not invent one. OpenAI
-  compatibility describes upstream adaptation, not a second public client API.
+  explicit choice from `/v1/models`; the UI does not invent one. OpenAI SDK
+  clients may use `/v1/chat/completions`; the UI must describe its documented
+  compatibility slice rather than imply complete OpenAI API parity.
 - Prefixes and previews are labelled as identifiers and are never offered as a
   usable secret.
 - List every active rolling spend window and its source. Do not invent usage

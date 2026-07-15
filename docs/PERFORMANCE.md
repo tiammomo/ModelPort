@@ -31,6 +31,9 @@ dated benchmark.
 - Auth and control persistence currently replaces a complete logical JSON
   document synchronously. PostgreSQL stores two `jsonb` rows; file mode rewrites
   JSON files. This is measurable write amplification as usage/audit state grows.
+- Gateway-request and Provider-attempt lifecycle writes use the separate async,
+  pooled, row-oriented ledger; this removes whole-document amplification for
+  those records, but the dashboard usage log has not switched its query source.
 - Log filtering and pagination happen server-side for the HTTP contract, but
   still materialize and scan retained usage rows in memory before slicing the
   page. They reduce response/UI work, not complete-document storage cost.

@@ -7,26 +7,40 @@ behavior lives in [Architecture](ARCHITECTURE.md),
 
 ## Positioning
 
-ModelPort is a self-hosted Anthropic-compatible routing and adaptation layer for
-Claude Code, VS Code Claude, and API clients, with a lightweight control plane
-for one host or a small team.
+ModelPort's target product is a self-hosted enterprise model gateway: a
+multi-protocol data plane and governed multi-tenant control plane for enterprise
+applications, developer tools, hosted model Providers, and private inference.
 
-It should remain:
+The current implementation remains a single-host and small-team gateway. It
+must not be marketed as enterprise ready until the admission criteria in the
+[Enterprise Gateway Roadmap](ENTERPRISE_ROADMAP.md) have implementation and
+release evidence.
 
-- easier to deploy and understand than an enterprise AI platform;
+It should evolve toward:
+
+- Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses client
+  contracts sharing one governance pipeline;
+- organization/project tenancy, enterprise identity, transactional budgets,
+  auditable usage, and resource-level policy;
+- horizontally scalable data-plane replicas with explicit consistency and
+  dependency-degradation behavior;
 - explicit about protocol loss, provider verification, and operational limits;
-- safe by default on loopback and usable behind one trusted HTTPS origin;
-- observable enough to diagnose routing and provider failures without requiring
-  a distributed operations stack.
+- secure-by-default egress, secret references, data governance, and
+  OpenTelemetry-based observability;
+- an all-in-one development profile and production roles that can scale
+  independently when required.
 
-It is not a chat product, inference engine, public aggregation service, exact
-billing system, enterprise IAM product, or multi-tenant SaaS control plane.
+It is not a chat product, inference engine, training platform, payment
+processor, identity provider, or a substitute for a Provider's legal invoice.
 
 ## Current Product Line
 
 Implemented:
 
-- Anthropic-compatible Messages/model endpoints;
+- Anthropic-compatible Messages, scoped OpenAI Chat Completions, and model
+  endpoints through one governance pipeline;
+- an initial typed Exchange IR for text roles, function tools, provider
+  capability/fidelity checks, normalized usage, and terminal stream evidence;
 - Anthropic and OpenAI-compatible provider paths;
 - common Tool Use validation/conversion and SSE mapping;
 - model/provider routing, aliases, control-plane overrides, credential pools,
@@ -43,22 +57,30 @@ Configured but not yet evidenced by a committed real-upstream ledger:
 
 Proposed, not implemented:
 
-- Image/Responses APIs;
-- a complete internal protocol/Tool IR;
-- OIDC/SSO and public multi-tenancy;
+- the OpenAI Responses API and a complete multimodal/item-oriented Exchange IR;
+- organization/project tenancy, OIDC/SSO, service accounts, SCIM, and
+  resource-level RBAC;
 - distributed rate limits, sessions, quotas, and health;
-- transactional/event-oriented usage persistence.
+- transactional/event-oriented usage persistence;
+- high-availability deployment roles, Redis coordination, OTLP export, secret
+  manager integrations, and enterprise release evidence.
 
 ## Engineering Priorities
 
-1. Close correctness gaps in live-stream completion, final usage/cost, provider
-   outcomes, and errors after headers.
-2. Make quota enforcement concurrency-safe before treating it as a hard budget.
-3. Replace hostname-only SSRF checks with DNS-aware outbound policy where the
-   deployment threat model requires it.
-4. Reduce complete-document persistence and define retention/migration behavior.
-5. Maintain a dated provider verification ledger and test examples as code.
-6. Only then expand protocols or distributed deployment scope.
+1. Build on the shipped request/attempt leases and expired-row reconciler with
+   Provider evidence ingestion, response replay, and append-only settlement
+   adjustments.
+2. Continue implementing the accepted tenant, typed protocol exchange, relational
+   persistence, consistency, and deployable-role ADR boundaries.
+3. Replace complete-document persistence with normalized, transactional,
+   tenant-scoped PostgreSQL repositories and versioned migrations.
+4. Expand Chat Completions conformance and add Responses client ingress through
+   the shared adapter and capability/fidelity contract.
+5. Add enterprise identity, resource-level policy, secret management, atomic
+   budgets, and distributed runtime enforcement.
+6. Prove horizontal availability, observability, recovery, governance, and
+   security through the gates in the
+   [Enterprise Gateway Roadmap](ENTERPRISE_ROADMAP.md).
 
 ## Decision Principles
 

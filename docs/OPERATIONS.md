@@ -40,8 +40,9 @@ block startup.
 - `/health` is minimal when unauthenticated. A valid data-plane credential adds
   configured providers, persisted provider-health records, and storage
   locations.
-- `/readyz` requires authentication and verifies that auth/control storage can
-  be read before returning detailed diagnostics. It still does not fail merely
+- `/readyz` requires authentication and verifies that auth/control storage and
+  the normalized enterprise ledger can be reached before returning detailed
+  diagnostics. It still does not fail merely
   because a Provider is degraded or offline, so it is storage readiness rather
   than an all-provider gate.
 - Dashboard setup checks provide configuration diagnostics, not a guarantee
@@ -73,6 +74,23 @@ for the query contract. Filtering and pagination reduce response/browser work,
 but the backend still materializes and scans the retained control document in
 memory; they are not indexed PostgreSQL row queries.
 
+The administrator-only Enterprise Operations page is a separate evidence
+surface backed by `GET /admin/enterprise/overview` and
+`GET /admin/enterprise/requests`. Its budget rail is backed by
+`GET/PUT /admin/enterprise/budget` and the append-only adjustment endpoint. In PostgreSQL mode it performs indexed,
+paginated request queries and loads Provider attempts only when an operator
+opens a request. Use it for tenant, idempotency, lease, crash-reconciliation,
+and attempt-level investigation. It intentionally exposes only the presence of
+an idempotency claim, never the key/hash or request fingerprint. In memory mode
+the page remains useful for local inspection but all rows disappear on restart.
+
+Treat `reservedMicrounits` as in-flight exposure and `settledMicrounits` as
+terminal spend. A negative `availableMicrounits` means authoritative settlement
+exceeded the earlier maximum estimate or an administrator lowered the limit
+below existing exposure; new attempts remain blocked until the balance or
+limit is corrected. Do not delete or rewrite evidence rows. Use a signed
+adjustment with a Provider invoice, ticket, or object-store reference.
+
 If no usage rows have been persisted, `/admin/logs` can return aggregate
 process-metric fallback rows. Treat rows without `requestId` as synthetic
 operational summaries, not individual traces. `/admin/latency` uses retained
@@ -81,10 +99,11 @@ request latencies for real percentiles when possible and exposes
 aggregate fallback.
 
 A transport timeout before the downstream response is persisted with
-`status=timeout`; other pre-response failures use `error`. A live-stream idle
-timeout after HTTP/SSE headers remains outside final lifecycle reconciliation
-and may leave the accepted row at its earlier status. Inspect the event stream
-and service log as well as the status filter.
+`status=timeout`; other pre-response failures use `error`. Established streams
+are finalized at response-body completion, failure, timeout, or drop. Their
+`terminalReason` and effective 200/502/504/499 status mapping distinguish the
+outcome even though an SSE error cannot rewrite the HTTP 200 already sent to the
+client. Inspect the event stream and terminal log together.
 
 The row's `statusCode` is ModelPort's effective client-facing HTTP status for
 the pre-response result, not an independent raw-provider field. Valid upstream
@@ -96,11 +115,12 @@ Token and cost values are operational estimates, not invoices. Inspect
 `billingMode` for provenance: `upstream-returned` means the completed adapter
 path exposed Provider-reported token counts, while `local-estimate` means
 ModelPort used its request heuristic. Both use ModelPort's local pricing table.
-Normal live-stream records may rely on the input estimate and requested maximum
-output because final usage is not yet reconciled through the request lifecycle.
-The `buffer_stream_text=true` compatibility path is an exception: it completes
-the non-stream upstream response before local SSE and can use reported usage,
-although it still does not observe downstream delivery completion.
+Live-stream records use Provider usage when recognized Anthropic/OpenAI usage
+appears in the event stream; otherwise they rely on the input estimate and
+requested maximum output. The `buffer_stream_text=true` compatibility path
+completes the non-stream upstream response before local SSE and can also use
+reported usage, while downstream delivery completion or cancellation is
+recorded separately.
 
 A request is chargeable only after ModelPort actually starts an upstream
 attempt. Attempt-level credential, policy/quota/capability, URL, or
@@ -248,6 +268,31 @@ prompt/response content to the network path; never use it for an untrusted LAN
 or Internet endpoint. Local/custom runtime classes retain HTTP support for
 controlled local integration.
 
+## Idempotency And Lease Reconciliation
+
+`Idempotency-Key` is an at-most-once Provider-call claim scoped to the current
+tenant. The database stores only its SHA-256 digest and a request fingerprint.
+Duplicate claims return HTTP 409 before Provider routing. Terminal response
+replay is deliberately not yet available, so a same-body retry also receives
+409 after the first request completes. Database-free development mode is only
+process-local and loses claims on restart; enterprise mode requires PostgreSQL.
+
+Every active relational request owns a lease, renewed every one-third of
+`MODELPORT_LEDGER_LEASE_TTL_SECS`. The guard remains alive through the complete
+stream body, including slow delivery. At startup and every
+`MODELPORT_LEDGER_RECONCILE_INTERVAL_SECS`, ModelPort terminalizes expired
+request and attempt rows with:
+
+- `state=failed` and `status_code=500`;
+- `terminal_reason=lease_expired_unreconciled`;
+- `billing_mode=unreconciled` and `chargeable=false`.
+
+This closes orphaned lifecycle rows without inventing Provider usage or cost.
+It does not prove whether the Provider accepted a request immediately before a
+process failure; future settlement must use external evidence and an
+append-only adjustment. Keep the lease TTL above the worst expected scheduler
+pause and the reconciliation interval below the TTL.
+
 ## Common Incidents
 
 | Symptom | Check |
@@ -257,6 +302,7 @@ controlled local integration.
 | 403 from policy | User/team status, provider/model allowlist, client IP and trusted proxy configuration. |
 | 429 with `Retry-After` | Process-local request-rate limit or exhausted concurrent-stream permits; inspect the error message and active stream duration. |
 | 429 `quota_exceeded` | API-key spend window or user quota. |
+| 409 `idempotency_conflict` | The tenant already claimed that key. Preserve the original outcome; response replay is not available, and a new key authorizes a new Provider call. |
 | 400 before upstream | Model/messages/Tool Use guardrails; `max_tokens` is required, positive, and capped by `MODELPORT_MAX_OUTPUT_TOKENS`. |
 | 400 deleting a team | One or more active or revoked API keys still reference it; reassign or delete those keys first. |
 | 413 | Request body exceeds the Axum/Nginx limit. |
@@ -266,7 +312,9 @@ controlled local integration.
 | Provider is cooling down | Recent retryable/account failures; ordinary non-retryable 4xx responses do not trigger cooldown. Verify key, rate limit, and balance. |
 | Provider pool has no usable credential | `failover`/`round_robin` fail closed when every credential is disabled, cooling down, or missing its environment value; repair the pool or verify the next Provider candidate. |
 | Dashboard cross-origin failure | Use a same-origin reverse proxy; `MODELPORT_ALLOWED_ORIGINS` is not a CORS switch. |
-| State write latency grows | Lower usage retention or move from JSON files to PostgreSQL; complete-document writes remain synchronous. |
+| Auth/control state write latency grows | Lower usage retention while the compatibility documents remain; the normalized request/attempt ledger is already row-oriented, but identity/policy/usage-log migration is not complete. |
+| `/readyz` reports enterprise ledger failure | Check PostgreSQL reachability, migration permissions, pool exhaustion, TLS mode, root certificate, and hostname verification. |
+| `lease_expired_unreconciled` rows appear | Check process restarts, runtime stalls, PostgreSQL availability, and heartbeat warnings. Do not bill these rows without Provider evidence. |
 
 ## Current Operational Limits
 
@@ -280,11 +328,17 @@ controlled local integration.
   is conservatively counted in full.
 - Provider URL checks do not revalidate DNS answers against private ranges.
 - Auth/control persistence synchronously replaces complete JSON documents.
-- Live-stream completion, final cost/usage, provider health, and fallback are
-  not fully reconciled after headers have been sent.
+- Request and Provider-attempt rows are normalized, tenant-scoped, leased, and
+  expired rows are terminalized automatically. Crash recovery cannot infer
+  whether a Provider accepted the request or reconstruct missing token usage,
+  so expired rows remain explicitly unbilled and unreconciled.
+- Live-stream terminal status, duration, metrics, and known Provider outcome are
+  reconciled in-process. Final usage/cost commonly remains estimated, and
+  fallback cannot restart after headers.
 - Established live streams have no fixed total-duration timeout; an active
   stream ends through completion, cancellation, idle timeout, or a byte limit.
-- `/readyz` gates on readable auth/control storage, not on every Provider.
+- `/readyz` gates on readable auth/control storage and a reachable normalized
+  ledger, not on every Provider.
 
 These limits are acceptable for the intended single-host/small-team profile but
 must be addressed before public multi-tenant or horizontally scaled use.

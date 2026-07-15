@@ -1,7 +1,8 @@
 # API Reference
 
-ModelPort exposes an Anthropic-compatible data plane and a dashboard control
-plane. The default backend origin is `http://127.0.0.1:17878`.
+ModelPort exposes Anthropic Messages and a scoped OpenAI Chat Completions data
+plane plus a dashboard control plane. The default backend origin is
+`http://127.0.0.1:17878`.
 
 ## Public Endpoints
 
@@ -9,9 +10,10 @@ plane. The default backend origin is `http://127.0.0.1:17878`.
 | --- | --- | --- |
 | `GET /livez` | none | Process liveness only. |
 | `GET /health` | optional | Minimal public body; router authentication adds provider and storage diagnostics. |
-| `GET /readyz` | router/API key | Auth/control storage readiness plus detailed diagnostics; Provider degradation does not fail it. |
+| `GET /readyz` | router/API key | Auth/control and normalized-ledger readiness plus detailed diagnostics; Provider degradation does not fail it. |
 | `GET /v1/models` | router/API key | Configured, visible model and alias catalog. Visibility does not prove upstream health. |
 | `POST /v1/messages` | router/API key | Anthropic-compatible Messages request. |
+| `POST /v1/chat/completions` | router/API key | Scoped OpenAI-compatible Chat Completions request. |
 | `GET /metrics` | router/API key | Prometheus text exposition. |
 
 Authenticate with either header:
@@ -52,6 +54,35 @@ features that cannot be represented safely by an OpenAI-compatible provider.
 Request-size and Tool Use limits are documented in
 [Configuration](CONFIGURATION.md#rate-limits-and-request-guardrails).
 
+## Chat Completions
+
+```bash
+curl -sS http://127.0.0.1:17878/v1/chat/completions \
+  -H "Authorization: Bearer $MODELPORT_AUTH_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "deepseek-v4-flash",
+    "messages": [{"role":"user","content":"Reply exactly: OK"}]
+  }'
+```
+
+This compatibility surface currently accepts text-only `system`, `developer`,
+`user`, `assistant`, and `tool` messages; OpenAI function tools and tool calls;
+`temperature`, `top_p`, penalties, `seed`, `stop`, `tool_choice`,
+`parallel_tool_calls`, text `response_format`, `stream_options.include_usage`,
+and `n=1`. `max_completion_tokens` or legacy `max_tokens` is optional; when
+neither is supplied, ModelPort uses 4096 only for local estimation and for an
+Anthropic Provider that requires an explicit output limit.
+
+The endpoint deliberately rejects fields outside this documented slice,
+including current image/audio content, rather than silently dropping semantics.
+Routing to an Anthropic Provider also rejects OpenAI-only penalties/seed,
+non-text response formats, strict function schemas, or system/developer
+messages interspersed after conversation start because those cannot be
+preserved faithfully. A successful response uses the OpenAI `chat.completion`
+shape whether the selected Provider is OpenAI-compatible or
+Anthropic-compatible.
+
 ## Model Resolution
 
 Resolution is deterministic:
@@ -69,8 +100,8 @@ runtime is offline; use provider testing or a real request for health evidence.
 
 ## Streaming
 
-Set `"stream": true` to receive Anthropic-style server-sent events. Common
-events are:
+For `/v1/messages`, set `"stream": true` to receive Anthropic-style
+server-sent events. Common events are:
 
 ```text
 message_start
@@ -82,16 +113,26 @@ message_stop
 error
 ```
 
+For `/v1/chat/completions`, `"stream": true` returns OpenAI
+`chat.completion.chunk` data events followed by `data: [DONE]`. When
+`stream_options.include_usage=true`, ModelPort preserves an OpenAI-compatible
+final empty-`choices` usage chunk or synthesizes it from Anthropic stream usage.
+If the stream is interrupted, that final usage chunk may be unavailable; the
+terminal request log then retains the best evidence available.
+
 OpenAI-compatible text deltas and tool-call deltas are converted into
-Anthropic content blocks. A failure after response headers have been sent is
-reported as `event: error` while the HTTP status remains 200. Consumers must
-inspect the event stream rather than treating the initial status as completion.
+Anthropic content blocks for `/v1/messages`. A failure after response headers
+have been sent is reported as Anthropic `event: error` or an OpenAI data event
+with an `error` object while the HTTP status remains 200. Consumers must inspect
+the event stream rather than treating the initial status as completion.
 
 The transport establishes the upstream response and checks its initial status
 before sending the local stream, allowing pre-header connect/HTTP failures to
 fallback. It also enforces per-line, per-event, total-stream and idle limits.
-The request log still records live-stream acceptance before final completion;
-see [Architecture](ARCHITECTURE.md#streaming-boundary).
+The request log, message metrics, and Provider health are finalized only when
+the body completes, fails, times out, or is dropped. Client cancellation is
+recorded with status code `499`; see
+[Architecture](ARCHITECTURE.md#streaming-boundary).
 
 `MODELPORT_HTTP_REQUEST_TIMEOUT_SECS` covers a complete non-stream request, but
 for SSE it covers only `send()` through the upstream response-header handshake.
@@ -117,10 +158,10 @@ can participate in fallback.
 
 A native Anthropic stream is complete only after `message_stop`. An
 OpenAI-compatible stream must provide `[DONE]` or a `finish_reason`; ModelPort
-then emits the Anthropic `message_stop`. EOF without the required termination
-signal is an upstream-protocol failure. If local HTTP 200 headers have already
-been sent, that failure is delivered as an SSE `event: error` and cannot trigger
-cross-provider fallback.
+then renders the terminal signal required by the originating client protocol.
+EOF without a required termination signal is an upstream-protocol failure. If
+local HTTP 200 headers have already been sent, that failure is delivered inside
+SSE and cannot trigger cross-provider fallback.
 
 For an OpenAI-compatible provider with `buffer_stream_text=true`, ModelPort
 instead waits for a complete non-stream upstream response and converts it before
@@ -146,6 +187,28 @@ upstream may ignore, replace, or omit it from its own logs. Treat it as an opaqu
 diagnostic identifier, not an authorization token or a complete distributed
 trace; ModelPort does not attach trace/span-parent semantics.
 
+## Idempotent Retry Claims
+
+Both inference endpoints accept an optional `Idempotency-Key` header containing
+1–200 visible ASCII characters without whitespace. The claim is scoped by
+organization, project, and environment and is written atomically before any
+Provider attempt. ModelPort stores only SHA-256 of the key plus a protocol/body
+fingerprint; do not put credentials or personal data in the key.
+
+Reusing a key has these outcomes:
+
+- the original request is still running: HTTP 409 `idempotency_conflict`;
+- the original request is terminal with the same fingerprint: HTTP 409 because
+  response replay is not implemented in this release;
+- the body or client protocol differs: HTTP 409 `idempotency_conflict`.
+
+This provides an at-most-once Provider-call boundary, not transparent response
+replay. A client that receives an uncertain network result should query its own
+request records or retain the 409 as evidence; using a new key authorizes a new
+Provider call. `x-request-id` remains correlation-only and does not claim
+idempotency. The claim is durable and multi-instance-safe with the PostgreSQL
+ledger; database-free development mode keeps it only in process memory.
+
 ## Errors
 
 Non-stream failures use a stable envelope:
@@ -163,7 +226,8 @@ Non-stream failures use a stable envelope:
 ```
 
 Important categories include `authentication_error`, `forbidden_error`,
-`quota_exceeded`, `rate_limit_error`, `invalid_request_error`,
+`quota_exceeded`, `rate_limit_error`, `invalid_request_error` (including the
+HTTP 409 code `idempotency_conflict`),
 `upstream_error`, and `server_error`. A failed `/readyz` storage check returns
 HTTP 503 with code `not_ready`. Local rate-limit responses include `Retry-After`.
 Quota/spend-limit failures also use HTTP 429 but are not the same sliding-window
@@ -188,6 +252,10 @@ Route groups include:
 - `/admin/auth/*`: login, logout, current session.
 - `/admin/dashboard`, `/admin/logs`, `/admin/logs/{id}`, `/admin/latency`:
   operational views.
+- `/admin/enterprise/overview`, `/admin/enterprise/requests`,
+  `/admin/enterprise/requests/{ledger_id}`, and `/admin/enterprise/budget*`:
+  administrator-only normalized request/attempt and transactional-budget
+  evidence views.
 - `/admin/users`, `/admin/api-keys`, `/admin/teams`, `/admin/quotas`: identity
   and policy.
 - `/admin/providers`, `/admin/aliases`: provider lifecycle, credentials, model
@@ -196,6 +264,73 @@ Route groups include:
   provider/order updates, and base-config reload.
 - `GET /admin/audit`, `POST /admin/backup`: audit events and a redacted,
   non-restorable diagnostic snapshot.
+
+### Enterprise Ledger Views
+
+`GET /admin/enterprise/overview` reports the active ledger backend, its
+credential-redacted location, lease/reconciliation intervals, lifecycle
+counts, idempotent-request count, active/expired leases, unreconciled rows,
+cost microunits, and organization/project/environment cardinality.
+
+`GET /admin/enterprise/requests` accepts `page` (default 1), `pageSize`
+(default 25, maximum 100), and optional exact `state`, `protocol`,
+`organizationId`, `projectId`, and `environmentId` filters. `search` performs a
+bounded correlation search over ledger/request IDs, principal, model, tenant,
+terminal reason, and error. The response contains `requests`, `total`, `page`,
+and `pageSize`. `GET /admin/enterprise/requests/{ledger_id}` returns one request
+plus its ordered Provider attempts or a standard 404.
+
+These endpoints require an administrator dashboard session. They expose only
+whether a request claimed an idempotency key; the raw key, stored hash, request
+fingerprint, prompts, and Provider bodies are never returned. Memory mode uses
+the same response contract for local development, but its rows are neither
+durable nor multi-instance safe.
+
+### Enterprise Transactional Budget
+
+`GET /admin/enterprise/budget` reads one USD budget account and its 50 most
+recent evidence events. Supply `organizationId`, `projectId`, and
+`environmentId` together; omitting all three selects
+`org_local/prj_default/env_default`. Partial scope is rejected.
+
+`PUT /admin/enterprise/budget` sets the hard limit. It requires an administrator
+session and `X-ModelPort-CSRF` like every dashboard write:
+
+```json
+{
+  "organizationId": "org_local",
+  "projectId": "prj_default",
+  "environmentId": "env_default",
+  "limitMicrounits": 100000000,
+  "unlimited": false
+}
+```
+
+Set `unlimited=true` and omit `limitMicrounits` to remove the limit. USD money
+is transported as integer microunits; the dashboard accepts up to six decimal
+places and converts without floating-point arithmetic.
+
+`POST /admin/enterprise/budget/adjustments` records a signed settlement
+adjustment. `deltaMicrounits` cannot be zero or make settled spend negative;
+`reason` and `evidenceReference` are mandatory and limited to 500 characters:
+
+```json
+{
+  "organizationId": "org_local",
+  "projectId": "prj_default",
+  "environmentId": "env_default",
+  "deltaMicrounits": -2500000,
+  "reason": "Provider invoice credit",
+  "evidenceReference": "invoice://2026-07/credit-42"
+}
+```
+
+Before Provider egress, every attempt atomically reserves its maximum local
+estimate against `settled + reserved`. The terminal path moves that reservation
+to actual/provider-reported settlement; an expired lease releases it as
+unreconciled. PostgreSQL performs each transition in one transaction and the
+event table rejects updates and deletes. Memory mode keeps the same contract
+for a single process, but it is not durable or distributed.
 
 ### Identity, API Keys, Teams, And Quotas
 
@@ -298,7 +433,7 @@ are camelCase:
 | `provider`, `userId`, `apiKeyId` | Exact match. |
 | `model` | Case-insensitive substring across requested and resolved model. |
 | `dateFrom`, `dateTo` | Inclusive Unix epoch milliseconds. |
-| `search` | Case-insensitive substring across log/request IDs, provider/channel, model, user/key/group/team labels, error/detail, and request path. |
+| `search` | Case-insensitive substring across log/request/attempt IDs, provider/channel, model, user/key/group/team labels, terminal reason, error/detail, and request path. |
 | `username`, `group` | Case-insensitive substring; `group` checks both group fields. |
 | `stream` | Exact `stream` or `non-stream`. |
 
@@ -317,21 +452,28 @@ means ModelPort used its request-based estimate. Both remain operational cost
 estimates because ModelPort applies its local pricing table. When an
 attempt-level preflight rejection produces a row, it has `local-estimate`
 provenance but zero tokens/cost and is not charged to quota or the spend ledger.
-Normal live streams commonly remain
-`local-estimate`; non-stream and buffered-stream paths can be
-`upstream-returned` when the Provider supplies usage.
+Live streams become `upstream-returned` when their Anthropic/OpenAI events
+contain recognized usage; otherwise they remain `local-estimate`. Non-stream
+and buffered-stream paths can also be `upstream-returned` when the Provider
+supplies usage. `clientProtocol` records `anthropic-messages` or
+`openai-chat-completions` independently from the selected Provider `protocol`,
+and `requestPath` records the public edge used.
 
-Persisted `status` is `success` for a successful pre-response attempt,
-`timeout` when a transport error before the downstream response is classified
-as timed out, and `error` for other failures. A live-stream idle timeout after
-HTTP/SSE headers still cannot revise the already accepted log row, so it is not
-guaranteed to appear as `timeout` in this endpoint.
+Persisted `status` is `success` only after a non-stream response succeeds or a
+stream reaches its protocol terminal signal and downstream body EOF. `timeout`
+is used for classified pre-response or live-stream upstream timeouts, and
+`error` for other failures and downstream cancellation. `requestId` identifies
+the client request; `attemptId` identifies the last upstream attempt represented
+by the row.
 
-`statusCode` is the gateway's client-facing HTTP mapping for that pre-response
-outcome, not a separately captured raw-upstream field. Upstream statuses are
-retained when the error mapping permits (for example 401), while a transport
-failure maps to 502 rather than an undifferentiated 500. Provider attempt
-outcome tracking uses the same mapped status.
+`terminalReason` distinguishes `completed`, pre-response failure/timeout,
+`upstream_error`, `upstream_timeout`, `delivery_error`, and downstream
+cancellation. `statusCode` is the gateway's effective outcome mapping, not a
+separately captured raw-upstream field. Upstream statuses are retained when the
+error mapping permits (for example 401); stream protocol/delivery failures map
+to 502, upstream timeouts to 504, and downstream cancellation to 499. Provider
+health uses the upstream outcome, so a downstream cancellation after known
+upstream completion does not incorrectly penalize the Provider.
 
 Malformed/negative numeric queries return HTTP 400. Unsupported `status` or
 `stream`, and `dateFrom > dateTo`, return the normal `invalid_request` envelope.

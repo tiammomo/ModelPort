@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
   <title id="title">ModelPort architecture overview</title>
-  <desc id="desc">Claude clients call a local Anthropic-compatible ModelPort gateway, then ModelPort routes requests to configured upstream model providers.</desc>
+  <desc id="desc">Anthropic and OpenAI-compatible clients call a local multi-protocol ModelPort gateway, which routes requests to configured upstream model providers.</desc>
 
   <defs>
     <marker id="arrow" markerWidth="14" markerHeight="14" refX="12" refY="7" orient="auto" markerUnits="strokeWidth">
@@ -33,21 +33,21 @@
   <line x1="0" y1="132" x2="1600" y2="132" stroke="#d7e0e8" stroke-width="2"/>
 
   <text class="title" x="80" y="82">ModelPort</text>
-  <text class="subtitle" x="80" y="116">Local Anthropic-compatible gateway for Claude Code, VS Code Claude, and common model providers</text>
+  <text class="subtitle" x="80" y="116">Multi-protocol gateway for Claude tools, OpenAI-compatible SDKs, and common model providers</text>
   <rect class="chip-hot" x="1260" y="48" width="260" height="44" rx="8"/>
   <text class="chip-hot-text" x="1290" y="77">DeepSeek v4 flash</text>
 
   <rect class="panel" x="80" y="206" width="360" height="440" rx="8"/>
-  <text class="h2" x="114" y="260">Claude clients</text>
-  <text class="body" x="114" y="294">Editor workflow stays the same.</text>
+  <text class="h2" x="114" y="260">Client protocols</text>
+  <text class="body" x="114" y="294">Existing SDK workflows stay familiar.</text>
 
   <rect x="114" y="332" width="292" height="86" rx="8" fill="#f2f6fa" stroke="#d7e0e8" stroke-width="1.5"/>
-  <text class="h3" x="140" y="366">VS Code Claude</text>
-  <text class="small" x="140" y="394">settings.json environment</text>
+  <text class="h3" x="140" y="366">Claude Code / VS Code</text>
+  <text class="small" x="140" y="394">Anthropic Messages API</text>
 
   <rect x="114" y="444" width="292" height="86" rx="8" fill="#f2f6fa" stroke="#d7e0e8" stroke-width="1.5"/>
-  <text class="h3" x="140" y="478">Claude Code CLI</text>
-  <text class="small" x="140" y="506">Anthropic Messages API</text>
+  <text class="h3" x="140" y="478">OpenAI SDK / apps</text>
+  <text class="small" x="140" y="506">Chat Completions API</text>
 
   <rect x="114" y="558" width="292" height="54" rx="8" fill="#ecf8f6" stroke="#b8ddd7" stroke-width="1.5"/>
   <text class="code" x="136" y="592">127.0.0.1:17878</text>
@@ -68,15 +68,15 @@
   <text class="small" x="780" y="421">aliases and prefixes</text>
 
   <rect x="570" y="460" width="460" height="56" rx="8" fill="#f2f6fa" stroke="#d7e0e8" stroke-width="1.5"/>
-  <text class="h3" x="596" y="495">Protocol transform</text>
-  <text class="small" x="840" y="495">Anthropic to OpenAI</text>
+  <text class="h3" x="596" y="495">Typed Exchange IR</text>
+  <text class="small" x="824" y="495">Anthropic ↔ OpenAI</text>
 
   <rect x="570" y="534" width="460" height="56" rx="8" fill="#f2f6fa" stroke="#d7e0e8" stroke-width="1.5"/>
-  <text class="h3" x="596" y="569">Streaming SSE</text>
-  <text class="small" x="800" y="569">DeepSeek official</text>
+  <text class="h3" x="596" y="569">Protocol-native SSE</text>
+  <text class="small" x="846" y="569">terminal usage</text>
 
   <rect x="570" y="608" width="460" height="44" rx="8" fill="#ecf8f6" stroke="#b8ddd7" stroke-width="1.5"/>
-  <text class="code" x="596" y="636">/livez  /metrics  /v1/models</text>
+  <text class="code" x="596" y="636">/v1/messages  /v1/chat/completions</text>
 
   <line x1="1086" y1="426" x2="1144" y2="426" stroke="#0f766e" stroke-width="4" marker-end="url(#arrow)"/>
   <text class="arrow-label" x="1104" y="396">API</text>
@@ -92,10 +92,10 @@
   <text class="chip-text" x="1218" y="415">OpenAI-compatible</text>
 
   <rect class="chip" x="1194" y="444" width="292" height="42" rx="8"/>
-  <text class="chip-text" x="1218" y="471">Anthropic</text>
+  <text class="chip-text" x="1218" y="471">Anthropic-compatible</text>
 
   <rect class="chip" x="1194" y="500" width="292" height="42" rx="8"/>
-  <text class="chip-text" x="1218" y="527">OpenAI-compatible</text>
+  <text class="chip-text" x="1218" y="527">OpenAI</text>
 
   <rect class="chip" x="1194" y="556" width="292" height="42" rx="8"/>
   <text class="chip-text" x="1218" y="583">OpenRouter</text>

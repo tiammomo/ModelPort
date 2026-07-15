@@ -1,19 +1,21 @@
 # Architecture
 
-ModelPort is a single-process Rust gateway with a separate React dashboard. It
-accepts an Anthropic-compatible client contract and routes requests to either an
-Anthropic-compatible or OpenAI-compatible provider. It is designed for one
-trusted host or a small trusted network, not public multi-tenant SaaS.
+ModelPort is a single-process Rust gateway with a separate React dashboard. Its
+Anthropic Messages and scoped OpenAI Chat Completions client edges route to
+Anthropic-compatible or OpenAI-compatible Providers through one governance
+pipeline. It is designed for one trusted host or a small trusted network, not
+public multi-tenant SaaS.
 
 ## Components
 
 ```text
-Claude Code / VS Code Claude / API client
+Claude Code / OpenAI SDK / API client
                     |
-                    | Anthropic Messages API
+       Anthropic Messages or OpenAI Chat
                     v
               ModelPort (Axum)
-        auth -> validation -> model resolution
+       edge parse -> typed Exchange IR
+        -> auth -> validation -> model resolution
         -> rate/policy/quota -> credential selection
         -> provider URL guard -> protocol adapter
                     |
@@ -29,9 +31,12 @@ React dashboard -> /admin/* cookie-session control plane
 PostgreSQL or JSON files -> auth and control documents
 ```
 
-The backend has no general internal message IR. Anthropic request types and
-focused conversion functions are the current boundary. UI panels labelled as a
-request pipeline are explanatory views, not stored raw protocol payloads.
+The first typed Exchange IR covers text roles, function tools, tool calls and
+results, generation controls, finish reasons, normalized usage, and terminal
+stream state. It is intentionally narrower than the target enterprise IR:
+multimodal content, Responses items, structured output, and Provider-native
+extensions still require typed additions. UI panels labelled as a request
+pipeline are explanatory views, not stored raw protocol payloads.
 
 ## Technical Core
 
@@ -41,12 +46,12 @@ operator must still account for.
 
 | Core | Implemented mechanism | Explicit boundary |
 | --- | --- | --- |
-| Protocol adaptation | Anthropic Messages is the client contract. Anthropic-compatible requests can pass through; OpenAI-compatible requests, responses, SSE deltas, and common Tool Use events use focused conversion code. Parsers enforce frame and stream limits and require protocol completion signals. | There is no complete provider-neutral Message/Tool IR. Configured adapters and models are not proof of real-upstream compatibility. |
+| Protocol adaptation | Anthropic Messages and the scoped OpenAI Chat Completions contract parse into a typed Exchange IR and share routing/governance. Anthropic/OpenAI Provider adapters render native non-stream and SSE responses in the original client protocol. Parsers enforce frame/stream limits, require terminal signals, preserve reported usage, and reject unsupported semantics. | The IR does not yet cover Responses, multimodal content, reasoning items, or every OpenAI/Anthropic extension. Configured adapters and models are not proof of real-upstream compatibility. |
 | Model routing and fallback | Resolution covers `provider:model`, recursive aliases with a depth guard, exact model matches, prefixes, and the default Provider. The attempt plan skips cooling Providers while an eligible alternative exists and only retries transport/protocol failures, 429, and 5xx against a Provider that accepts the requested or resolved model. | If no non-cooling route remains, the primary is retained as a final attempt. Fallback does not promise semantic model equivalence. Once local live-stream headers are sent, a later failure cannot replay on another Provider. |
-| Identity, policy, and budget | The data plane accepts a control-plane API key or the explicitly allowed legacy token. API-key model/Provider/IP policy, user quota, API-key/team rolling spend, credential availability, capability gates, and Provider/model limits are checked before an attempt is sent. Only a sent attempt is chargeable. | Quota/spend checks are preflight guards, not transactional reservations. Rate limits, stream permits, and sessions are process-local, so this is not distributed hard enforcement. |
+| Identity, policy, and budget | The data plane accepts a control-plane API key or the explicitly allowed legacy token. API-key model/Provider/IP policy, user quota, API-key/team rolling spend, credential availability, capability gates, and Provider/model limits are checked before an attempt is sent. The enterprise ledger then atomically reserves a tenant budget before egress and settles or releases it with the attempt terminal state. Only a sent attempt is chargeable. | Compatibility quotas/spend windows remain preflight guards. PostgreSQL tenant budgets are distributed hard admission control; memory-mode budgets, rate limits, stream permits, and sessions are process-local. |
 | Credential and Provider lifecycle | Provider credentials are environment-backed. Pool selection supports manual, failover, and round-robin behavior; outcomes feed credential/Provider health and cooldown state; unusable managed pools fail closed. | Health is operational state, not an external SLA. A configured credential or successful synthetic test does not establish every model, Tool Use, or stream path as verified. |
-| Control-plane state | Base environment/TOML configuration is combined with persisted routing overrides. Auth and control state use the same two logical documents in JSON-file or PostgreSQL mode. Low-frequency authorization/routing mutations restore their in-memory snapshot if persistence fails. | Writes replace whole logical documents; usage telemetry after an upstream response is best effort. PostgreSQL log filtering is still in-memory over retained rows and native database TLS is not implemented. |
-| Security and observability | Browser writes require a session and CSRF token, with Origin/Referer checks when present. Trusted-proxy parsing, remote-Provider HTTPS defaults, URL guards, disabled redirects, bounded bodies/SSE, request IDs, Prometheus metrics, retained logs, and source-labelled dashboard aggregation provide operational evidence. | URL guards do not pin or revalidate DNS answers. `upstream-returned` identifies usage provenance, not invoice accuracy; `local-estimate` is heuristic, and ordinary live streams may lack final usage/success evidence. |
+| Persistence and ledger | Base environment/TOML configuration is combined with persisted routing overrides. Auth and control state retain the same two compatibility documents. SQLx/rustls, bounded pools, embedded migrations, composite tenant foreign keys, normalized request/attempt rows, hashed idempotency claims, instance leases, heartbeats, an expired-lease reconciler, and administrator-only indexed ledger queries form the enterprise relational slice. Request and attempt rows are created before upstream egress and terminalized after normal, streaming, or abandoned completion. | Identity, policy, quota reservation, exact usage settlement, and the legacy dashboard usage-log queries have not yet moved out of the compatibility documents. Response replay is not implemented, and an expired lease proves missing terminal evidence rather than whether the Provider accepted work; reconciled rows therefore remain explicitly unbilled. |
+| Security and observability | Browser writes require a session and CSRF token, with Origin/Referer checks when present. Trusted-proxy parsing, remote-Provider HTTPS defaults, URL guards, disabled redirects, bounded bodies/SSE, request/attempt IDs, terminal stream finalization, lease-expiry evidence, Prometheus metrics, retained logs, and source-labelled dashboard aggregation provide operational evidence. | URL guards do not pin or revalidate DNS answers. `upstream-returned` identifies usage provenance, not invoice accuracy; `local-estimate` is heuristic, ordinary live streams may lack final Provider usage, and `unreconciled` requires external evidence before any financial adjustment. |
 
 The detailed lifecycle and failure semantics below are normative. Provider and
 Tool Use verification evidence is maintained separately in the
@@ -63,6 +68,17 @@ Tool Use verification evidence is maintained separately in the
 - `src/server.rs`: runtime state construction, listener, and graceful shutdown.
 - `src/config.rs`: base provider configuration, environment/TOML loading,
   validation, aliases, and model resolution.
+- `src/domain.rs`: request/attempt identifiers, client protocol, and the
+  explicit tenant/request context boundary.
+- `src/database.rs`: SQLx PostgreSQL URL/TLS policy, pool bounds, acquisition
+  timeout, and credential-safe location rendering.
+- `src/enterprise_ledger.rs`: mandatory-tenant request/attempt lifecycle and
+  redacted administrator query repository with PostgreSQL and in-memory
+  development backends.
+- `src/exchange.rs`: typed client-protocol parsing, capability/fidelity checks,
+  Provider rendering, and cross-protocol response mapping.
+- `src/stream_lifecycle.rs`: shared upstream terminal state and normalized
+  streaming usage evidence.
 - `src/routes.rs` and `src/routes/`: router assembly, security helpers, public
   client routes, operations routes, and control-plane endpoints.
 - `src/providers/`: Anthropic pass-through and OpenAI-compatible request,
@@ -73,15 +89,15 @@ Tool Use verification evidence is maintained separately in the
   lockout, timing-mitigation work, in-memory sessions, and session cookies.
 - `src/control.rs`: API keys, teams, policies, quotas, usage logs, provider
   overrides, credential pools, health, tests, and audit events.
-- `src/storage.rs`: JSON-file or PostgreSQL persistence for the two state
-  documents.
+- `src/storage.rs`: compatibility JSON-file or SQLx/PostgreSQL persistence for
+  the two auth/control documents.
 - `src/metrics.rs`: process-local Prometheus counters.
 - `dashboard/`: the browser control plane. It consumes `/admin/*`; it is not a
   second source of routing truth.
 
 ## Request Lifecycle
 
-For `POST /v1/messages`, the current order is:
+For `POST /v1/messages` and `POST /v1/chat/completions`, the current order is:
 
 1. Axum applies the global body-size and concurrency layers and assigns an
    `x-request-id` when one was not supplied. Both built-in protocol adapters
@@ -89,8 +105,9 @@ For `POST /v1/messages`, the current order is:
    trace/span parent.
 2. The client is authenticated with a control-plane API key or, when allowed,
    the legacy router token.
-3. The Anthropic request and Tool Use structure are validated. `max_tokens` is
-   mandatory, must be positive, and cannot exceed the configured output cap.
+3. The edge validates its protocol contract and parses a typed Exchange
+   request. Anthropic `max_tokens` is mandatory; OpenAI output-token limits are
+   optional. Supplied limits must be positive and within the configured cap.
 4. The model is resolved from `provider:model`, an alias, an exact model, a
    prefix, or the default provider.
 5. Process-local rate limits run for global, identity, IP, provider, and model
@@ -99,16 +116,32 @@ For `POST /v1/messages`, the current order is:
    before an upstream attempt. Then a route-attempt list is built;
    cooling-down providers are skipped while an eligible alternative exists; if
    every eligible route is cooling, the primary remains as the final attempt.
-7. For each attempt, ModelPort selects a provider credential, checks API-key
+7. ModelPort atomically creates the tenant-scoped request row. When an
+   `Idempotency-Key` is present, its hash is uniquely claimed alongside the
+   protocol/body fingerprint; a duplicate returns 409 before Provider egress.
+   A per-instance lease starts and remains owned through the response body.
+8. For each attempt, ModelPort selects a provider credential, checks API-key
    policy and quota, validates the provider URL and capability gate, then calls
-   the protocol adapter. `failover` and `round_robin` pools with no usable
+   the protocol adapter. Immediately before the call it inserts a leased,
+   tenant-scoped Provider-attempt row. `failover` and `round_robin` pools with no usable
    credential fail closed for that Provider; only `manual` can retain an
    explicitly selected non-disabled credential.
-8. Non-stream responses are mapped before returning. Usage, provider outcome,
+9. Non-stream responses are mapped back to the originating client protocol
+   before returning. Usage, provider outcome,
    metrics, and the request log are recorded. Quota and spend state changes only
    after an upstream attempt was actually sent; an attempt-level preflight
    rejection that reaches this recorder is logged with zero usage and no charge.
-9. Stream responses are mapped as Anthropic-style SSE.
+10. Stream responses are rendered as Anthropic events or OpenAI
+   `chat.completion.chunk` events. A single body-lifecycle finalizer classifies
+   protocol completion, upstream failure/timeout, delivery failure, or
+   downstream cancellation, reconciles any streamed usage, and records terminal
+   metrics, request evidence, and the known Provider outcome.
+
+The lease heartbeat runs every one-third TTL for both handler and response-body
+lifetimes. Startup and a periodic worker claim no ownership; they only
+terminalize rows whose recorded lease is already expired. Those rows use
+`lease_expired_unreconciled`, zero usage, and `chargeable=false`, avoiding both
+permanent `started` records and fabricated billing evidence.
 
 Automatic cross-provider fallback is limited to transport failures, upstream
 protocol failures, HTTP 429, and HTTP 5xx, and only to a configured provider
@@ -145,19 +178,28 @@ There are two logical JSON documents:
 | `auth` | Users and password hashes. Sessions and failed-login counters are process-local. |
 | `control` | Teams, API-key hashes, policy, quota, usage, audit, routing overrides, credentials metadata, and provider health. |
 
-With `MODELPORT_DATABASE_URL`, the documents are stored as two `jsonb` rows in
-`modelport_state`. Without it, they are JSON files. Writes are currently
-synchronous and replace the complete logical document; file mode uses a
-temporary file plus rename to avoid exposing a partially written JSON file.
-The PostgreSQL client currently uses `NoTls`; the default Compose private bridge
-is the deployment assumption, not encrypted transport support. Remote state
-storage must stay on an independently protected trusted path until native TLS
-is implemented.
-This keeps the design simple, but write amplification and request latency grow
-with retained state. It is a known scaling limit, not a transactional
-event-store design. Request-log filters, summaries, and pagination are also
-computed in memory over retained rows; PostgreSQL mode does not issue an
-indexed row-level log query.
+With `MODELPORT_DATABASE_URL`, the compatibility documents are stored as two
+`jsonb` rows in `modelport_state`. Without it, they are JSON files. Writes still
+replace the complete logical document; file mode uses a temporary file plus
+rename to avoid exposing a partially written JSON file. The compatibility API
+is synchronous, but its PostgreSQL worker now runs SQLx on Tokio with rustls and
+a one-connection pool rather than a plaintext synchronous driver.
+
+The async normalized ledger uses `MODELPORT_ENTERPRISE_DATABASE_URL` or falls
+back to `MODELPORT_DATABASE_URL`. Embedded migrations create explicit
+organization, project, and environment parents plus gateway-request and
+Provider-attempt children, budget accounts, per-attempt reservations, and an
+append-only evidence event stream. Composite keys make the tenant part of every parent
+relationship, and repository writes repeat that tenant scope in the query.
+Without a database, the ledger is process-memory for development only.
+
+The relational slice removes request/attempt write amplification, makes
+incomplete work discoverable, and serializes competing budget reservations in
+PostgreSQL. Attempt creation plus reservation, terminal settlement, and
+expired-lease release each commit atomically. The Enterprise Operations page reads indexed
+request rows, ordered Provider attempts, and recent budget evidence from this repository. The older
+request-log page, its summaries, and its pagination are still computed in
+memory from the compatibility control document rather than this ledger.
 
 Low-frequency identity, policy, quota, routing, Provider, and credential
 mutations snapshot the in-memory document before writing. A failed write
@@ -229,12 +271,14 @@ can only be represented as an SSE `event: error`.
 ModelPort now establishes the upstream connection and checks its initial HTTP
 status before returning the local SSE response, so connect and pre-header HTTP
 failures can participate in normal fallback. Completing the stream remains a
-separate phase: a stream is recorded as accepted before its final success,
-token usage, and duration are known. Later stream failures do not currently
-participate in cross-provider fallback. Operators must inspect the SSE body and
-provider logs, not only the initial HTTP status or success counter. A transport
-timeout before local response creation is persisted as `status=timeout`; an
-idle timeout after live-stream headers cannot rewrite the accepted log row.
+separate phase: the request log, message metrics, and Provider health are not
+finalized at handshake. A response-body guard records protocol completion,
+upstream failure/timeout, delivery failure, or downstream cancellation exactly
+once. Later stream failures still cannot participate in cross-provider
+fallback, and final token usage commonly remains a request estimate. Operators
+must inspect the SSE body as well as the terminal log. A live-stream timeout can
+therefore be persisted as `status=timeout` with a 504 terminal mapping even
+though the already-sent HTTP status remains 200.
 
 Handshake validation requires a 2xx response other than 204 and a
 `text/event-stream` media type before local headers. Missing and explicit
@@ -261,7 +305,9 @@ to the effective general request-concurrency limit. Unlike the normal handler
 future, the permit is moved into the returned body and survives until that body
 finishes or is dropped. This makes downstream slow readers visible to capacity
 control; an exhausted semaphore returns HTTP 429 with `Retry-After: 1` and no
-quota/spend charge.
+quota/spend charge. A dropped body records a 499 downstream-cancellation
+outcome. When upstream completion is already known, Provider health remains a
+success even though downstream delivery did not complete.
 
 `buffer_stream_text=true` is a distinct compatibility path. ModelPort sends a
 non-stream OpenAI-compatible request, awaits and validates the complete
@@ -271,8 +317,9 @@ and can fallback before local headers. When the upstream reports usage, the
 adapter attaches it to the internal response so metrics, quota spend, and the
 request log use those token values instead of the request estimate. The tradeoff
 is full-generation time to first byte; client cancellation after local SSE
-starts cannot cancel an upstream generation that already finished, and local
-delivery completion is still not observed.
+starts cannot cancel an upstream generation that already finished. Local
+delivery cancellation is observed and logged separately from that successful
+upstream outcome.
 
 ## Security Boundaries
 

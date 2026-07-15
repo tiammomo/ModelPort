@@ -4,11 +4,16 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-ModelPort is a self-hosted Anthropic-compatible model gateway for Claude Code,
-VS Code Claude, and API clients. It keeps one local `/v1/messages` endpoint in
-front of Anthropic-compatible and OpenAI-compatible providers, with routing,
-Tool Use conversion, authentication, quotas, request logs, provider health, and
-a small-team dashboard.
+ModelPort is a self-hosted multi-protocol model gateway for Claude Code,
+VS Code Claude, OpenAI-compatible SDKs, and API clients. Its `/v1/messages` and
+`/v1/chat/completions` edges share authentication, policy, quotas, routing,
+usage settlement, Provider health, and a small-team dashboard across
+Anthropic-compatible and OpenAI-compatible Providers.
+
+The product direction is a governed, multi-protocol enterprise model gateway.
+The current release has not reached that target; see the
+[Enterprise Gateway Roadmap](docs/ENTERPRISE_ROADMAP.md) for the architecture,
+migration workstreams, and evidence-based release gates.
 
 ![ModelPort architecture overview](docs/assets/modelport-overview.svg)
 
@@ -17,7 +22,8 @@ not a public multi-tenant model platform, a chat client, or a model runtime.
 
 ## Implemented Surface
 
-- Anthropic-compatible `POST /v1/messages` and `GET /v1/models`.
+- Anthropic-compatible `POST /v1/messages`, scoped OpenAI-compatible
+  `POST /v1/chat/completions`, and `GET /v1/models`.
 - Anthropic pass-through and OpenAI Chat Completions conversion.
 - Anthropic-style SSE conversion, including common Tool Use deltas.
 - Model aliases, `provider:model`, exact-model and prefix routing.
@@ -26,8 +32,12 @@ not a public multi-tenant model platform, a chat client, or a model runtime.
 - Provider credential pools, cooldown state, bounded fallback, diagnostics,
   request logs, and Prometheus metrics.
 - React dashboard for users, keys, teams, quotas, providers, models, aliases,
-  logs, health, audit, and redacted diagnostic snapshots.
-- JSON-file or PostgreSQL control state; Docker Compose and systemd templates.
+  logs, health, audit, enterprise request/attempt evidence, and redacted
+  diagnostic snapshots.
+- Versioned PostgreSQL request/attempt ledger with tenant foreign keys, SQLx
+  pooling, rustls, transactional budget reservation/settlement, and immutable
+  evidence events; compatibility JSON-file/PostgreSQL control state; Docker
+  Compose and systemd templates.
 
 Provider entries are configuration support, not proof of real-upstream
 compatibility. Dated verification belongs in the
@@ -35,9 +45,11 @@ compatibility. Dated verification belongs in the
 
 ## Technical Core
 
-- **Protocol boundary:** the public contract stays Anthropic Messages while
-  focused adapters either pass Anthropic-compatible traffic through or map it
-  to OpenAI Chat Completions, including bounded SSE and common Tool Use events.
+- **Protocol boundary:** Anthropic Messages and the scoped OpenAI Chat
+  Completions edge parse into a typed, protocol-neutral exchange model before
+  the shared governance pipeline. Edge adapters preserve supported text,
+  roles, function tools, Tool Use IDs, finish reasons, usage, and bounded SSE;
+  unsupported fields are rejected instead of silently dropped.
 - **Deterministic routing:** explicit `provider:model`, aliases, exact model
   matches, prefixes, and the default Provider resolve in a documented order.
   Cooling Providers are skipped while an eligible alternative exists, and
@@ -47,23 +59,35 @@ compatibility. Dated verification belongs in the
   run before routing. API-key policy, user quota, API-key/team spend, Provider
   credentials, capability gates, and Provider/model limits are then checked for
   each attempt. Preflight rejection is not charged; only an attempt that was
-  actually sent records quota/spend consumption.
+  actually sent records quota/spend consumption. PostgreSQL mode also atomically
+  reserves tenant budget before egress and settles or releases it at terminal state.
+- **Retry and crash safety:** optional tenant-scoped `Idempotency-Key` claims
+  prevent duplicate Provider egress, while request/attempt leases stay alive
+  through complete stream delivery. Expired owners are terminalized as
+  unbilled `unreconciled` evidence instead of remaining permanently in flight.
 - **Defensive transport and streaming:** upstream redirects are disabled;
   request/response/SSE sizes, idle time, and concurrency are bounded; remote
   Providers require HTTPS by default; and live stream permits remain held until
   the response body completes or is dropped.
 - **One control-plane truth:** environment/TOML configuration is combined with
   persisted dashboard overrides. JSON-file and PostgreSQL modes store the same
-  logical auth/control documents, while the dashboard remains a client of the
-  backend rather than a second routing authority.
+  logical auth/control documents during the migration window. A normalized
+  PostgreSQL ledger records tenant-scoped requests and Provider attempts before
+  upstream egress, while the dashboard remains a client of the backend rather
+  than a second routing authority.
 - **Evidence-aware observability:** request IDs, retained usage logs,
   Prometheus process metrics, health/cooldown state, and dashboard aggregation
-  preserve whether usage came from the upstream or a local estimate.
+  preserve whether usage came from the upstream or a local estimate. Stream
+  logs and health are finalized when the response body completes, fails, or is
+  dropped rather than when the initial HTTP 200 is accepted.
 
-These mechanisms are implemented, but they do not make ModelPort an exact
-billing system or a distributed hard-quota service. Provider configuration is
+These mechanisms are implemented. PostgreSQL tenant budgets are distributed
+hard admission control, but Provider invoices remain authoritative and the
+compatibility user quota/spend windows are still preflight guards rather than
+an exact billing system. Provider configuration is
 not real-upstream verification, and a live stream can still fail after HTTP 200
-without cross-Provider replay. See the [technical core and its
+without cross-Provider replay. Idempotency currently prevents a second call but
+does not replay the original response. See the [technical core and its
 boundaries](docs/ARCHITECTURE.md#technical-core).
 
 ## Quick Start With Docker Compose
@@ -101,11 +125,18 @@ docker compose ps
 docker compose logs -f modelport
 ```
 
+The default stack enables PostgreSQL and is the recommended enterprise mode.
+To explicitly choose the compatibility file deployment, run
+`docker compose -f docker-compose.yml -f docker-compose.files.yml up -d --build`;
+auth/control state is persisted, but the enterprise request and budget ledger
+is process-memory only.
+
 Open:
 
 - Dashboard: `http://127.0.0.1:5173`
 - Liveness: `http://127.0.0.1:17878/livez`
 - Messages: `http://127.0.0.1:17878/v1/messages`
+- Chat Completions: `http://127.0.0.1:17878/v1/chat/completions`
 
 Log in with `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`.
 
@@ -128,6 +159,21 @@ For the VS Code Claude extension, place these names in its environment-variable
 settings and reload the extension/window. The model values must match your
 configured ModelPort catalog.
 
+## Connect OpenAI-Compatible SDKs
+
+Point an SDK that supports a custom base URL at ModelPort and use the same
+client key:
+
+```env
+OPENAI_BASE_URL=http://127.0.0.1:17878/v1
+OPENAI_API_KEY=replace-with-the-same-local-router-token
+OPENAI_MODEL=deepseek-v4-flash
+```
+
+The current Chat Completions edge is a documented text/function-tool
+compatibility slice, not full OpenAI API parity. See the [API
+reference](docs/API.md#chat-completions) before enabling an application.
+
 ## Verify
 
 ```bash
@@ -146,6 +192,15 @@ curl -fsS \
   -d '{
     "model":"deepseek-v4-flash",
     "max_tokens":96,
+    "messages":[{"role":"user","content":"Reply exactly: OK"}]
+  }'
+
+curl -fsS \
+  -H "Authorization: Bearer $MODELPORT_AUTH_TOKEN" \
+  -H 'content-type: application/json' \
+  http://127.0.0.1:17878/v1/chat/completions \
+  -d '{
+    "model":"deepseek-v4-flash",
     "messages":[{"role":"user","content":"Reply exactly: OK"}]
   }'
 ```
@@ -169,11 +224,15 @@ before routing.
 ## Important Operational Limits
 
 - `/readyz` is authenticated diagnostics; it does not currently fail when an
-  upstream is degraded.
+  upstream is degraded; it does verify auth, control, and relational-ledger
+  storage.
 - A stream can fail through SSE `event: error` after the initial HTTP 200.
-  Live-stream completion, final usage/cost, provider health, and fallback are
-  not yet fully reconciled after response headers are sent; buffered
-  compatibility mode completes the upstream first but delays the first byte.
+  Terminal status, duration, metrics, and Provider health are reconciled when
+  the body completes, fails, or is dropped. Recognized Provider usage events
+  replace local estimates; streams without them remain estimated, and no stream
+  can fallback after downstream headers.
+  Buffered compatibility mode completes the upstream first but delays the
+  first byte.
 - Rate limits, concurrent-stream permits, and dashboard sessions are
   process-local. Stream permits stay held through response body completion;
   quota checks are not a transactional reservation, so concurrent requests can
