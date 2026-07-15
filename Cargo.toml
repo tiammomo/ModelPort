@@ -3,7 +3,7 @@ name = "model-port"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "A local model routing gateway for Claude Code and Anthropic-compatible developer workflows."
+description = "A self-hosted multi-protocol model gateway for Anthropic and OpenAI-compatible workflows."
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/tiammomo/ModelPort"
@@ -19,12 +19,12 @@ axum = { version = "0.8", features = ["macros"] }
 futures-util = "0.3"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-postgres = { version = "0.19", features = ["with-serde_json-1"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "postgres", "runtime-tokio-rustls"] }
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
 toml = "0.9"
 tower = { version = "0.5", features = ["limit", "util"] }
 tower-http = { version = "0.6", features = ["request-id", "trace"] }

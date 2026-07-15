@@ -190,6 +190,7 @@ fn log_matches(row: &Value, query: &LogsQuery) -> bool {
             &[
                 "id",
                 "requestId",
+                "attemptId",
                 "provider",
                 "channelId",
                 "channelName",
@@ -205,8 +206,11 @@ fn log_matches(row: &Value, query: &LogsQuery) -> bool {
                 "teamId",
                 "teamName",
                 "errorMessage",
+                "terminalReason",
                 "detail",
                 "requestPath",
+                "clientProtocol",
+                "protocol",
             ],
             search,
         )
@@ -463,6 +467,7 @@ fn fallback_log_row(
         "resolvedModel": message.model,
         "provider": message.provider,
         "protocol": protocol,
+        "clientProtocol": "anthropic-messages",
         "requestType": if message.failures_total > 0 { "error" } else { "consume" },
         "stream": if message.stream { "stream" } else { "non-stream" },
         "status": if message.failures_total > 0 { "error" } else { "success" },

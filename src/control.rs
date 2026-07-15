@@ -799,6 +799,8 @@ struct UsageRecord {
     id: String,
     #[serde(default)]
     request_id: Option<String>,
+    #[serde(default)]
+    attempt_id: Option<String>,
     timestamp_ms: u64,
     user_id: String,
     username: String,
@@ -815,9 +817,13 @@ struct UsageRecord {
     provider: String,
     #[serde(default = "default_protocol")]
     protocol: String,
+    #[serde(default = "default_client_protocol")]
+    client_protocol: String,
     stream: bool,
     status: String,
     status_code: u16,
+    #[serde(default = "default_terminal_reason")]
+    terminal_reason: String,
     input_tokens: u64,
     output_tokens: u64,
     #[serde(default)]
@@ -1033,14 +1039,17 @@ pub struct ApiKeyPolicy {
 pub struct UsageEventInput {
     pub identity: ClientIdentity,
     pub request_id: Option<String>,
+    pub attempt_id: Option<String>,
     pub model: String,
     pub resolved_model: String,
     pub provider: String,
     pub protocol: String,
+    pub client_protocol: String,
     pub stream: bool,
     pub success: bool,
     pub timed_out: bool,
     pub status_code: u16,
+    pub terminal_reason: String,
     pub estimate: UsageEstimate,
     pub billing_mode: String,
     /// Whether this request reached an upstream provider and can therefore
@@ -2586,6 +2595,7 @@ impl ControlStore {
         let record = UsageRecord {
             id: format!("log_{}", Uuid::new_v4().simple()),
             request_id: input.request_id,
+            attempt_id: input.attempt_id,
             timestamp_ms: now,
             user_id: input.identity.user_id,
             username: input.identity.username,
@@ -2598,9 +2608,11 @@ impl ControlStore {
             resolved_model: input.resolved_model,
             provider: input.provider,
             protocol: input.protocol,
+            client_protocol: input.client_protocol,
             stream: input.stream,
             status: usage_status(input.success, input.timed_out).to_owned(),
             status_code: input.status_code,
+            terminal_reason: input.terminal_reason,
             input_tokens: input.estimate.input_tokens,
             output_tokens: input.estimate.output_tokens,
             cache_write_tokens: input.estimate.cache_write_tokens,
@@ -2674,6 +2686,7 @@ impl ControlStore {
                 json!({
                     "id": record.id,
                     "requestId": record.request_id,
+                    "attemptId": record.attempt_id,
                     "timestamp": record.timestamp_ms.to_string(),
                     "userId": record.user_id,
                     "username": record.username,
@@ -2690,10 +2703,12 @@ impl ControlStore {
                     "resolvedModel": record.resolved_model,
                     "provider": record.provider,
                     "protocol": record.protocol,
+                    "clientProtocol": record.client_protocol,
                     "requestType": if record.status == "success" { "consume" } else { "error" },
                     "stream": if record.stream { "stream" } else { "non-stream" },
                     "status": record.status,
                     "statusCode": record.status_code,
+                    "terminalReason": record.terminal_reason,
                     "inputTokens": record.input_tokens,
                     "outputTokens": record.output_tokens,
                     "cacheWriteTokens": record.cache_write_tokens,
@@ -3454,8 +3469,16 @@ fn default_protocol() -> String {
     "openai-compat".to_owned()
 }
 
+fn default_client_protocol() -> String {
+    "anthropic-messages".to_owned()
+}
+
 fn default_billing_mode() -> String {
     "local-estimate".to_owned()
+}
+
+fn default_terminal_reason() -> String {
+    "legacy_record".to_owned()
 }
 
 fn reset_expired_quotas_locked(inner: &mut ControlInner, now: u64) {
@@ -3834,14 +3857,17 @@ mod tests {
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
                 request_id: Some("req_rejected_locally".to_owned()),
+                attempt_id: None,
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
+                client_protocol: "anthropic-messages".to_owned(),
                 stream: false,
                 success: false,
                 timed_out: false,
                 status_code: 429,
+                terminal_reason: "failed_before_response".to_owned(),
                 estimate: UsageEstimate {
                     input_tokens: 100,
                     output_tokens: 100,
@@ -3875,14 +3901,17 @@ mod tests {
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
                 request_id: Some("req_test".to_owned()),
+                attempt_id: None,
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
+                client_protocol: "anthropic-messages".to_owned(),
                 stream: false,
                 success: true,
                 timed_out: false,
                 status_code: 200,
+                terminal_reason: "completed".to_owned(),
                 estimate: UsageEstimate::default(),
                 billing_mode: "local-estimate".to_owned(),
                 chargeable: true,
@@ -3979,14 +4008,17 @@ mod tests {
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
                 request_id: None,
+                attempt_id: None,
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
+                client_protocol: "anthropic-messages".to_owned(),
                 stream: false,
                 success: true,
                 timed_out: false,
                 status_code: 200,
+                terminal_reason: "completed".to_owned(),
                 estimate: UsageEstimate {
                     cost_estimate: 0.015,
                     ..UsageEstimate::default()
@@ -4048,14 +4080,17 @@ mod tests {
                 .record_usage(UsageEventInput {
                     identity: identity.clone(),
                     request_id: None,
+                    attempt_id: None,
                     model: "mimo-v2.5-pro".to_owned(),
                     resolved_model: "mimo-v2.5-pro".to_owned(),
                     provider: "mimo".to_owned(),
                     protocol: "openai-compat".to_owned(),
+                    client_protocol: "anthropic-messages".to_owned(),
                     stream: false,
                     success: true,
                     timed_out: false,
                     status_code: 200,
+                    terminal_reason: "completed".to_owned(),
                     estimate: UsageEstimate {
                         cost_estimate: 0.015,
                         ..UsageEstimate::default()
@@ -4224,14 +4259,17 @@ mod tests {
             .record_usage(UsageEventInput {
                 identity: identity.clone(),
                 request_id: None,
+                attempt_id: None,
                 model: "mimo-v2.5-pro".to_owned(),
                 resolved_model: "mimo-v2.5-pro".to_owned(),
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
+                client_protocol: "anthropic-messages".to_owned(),
                 stream: false,
                 success: true,
                 timed_out: false,
                 status_code: 200,
+                terminal_reason: "completed".to_owned(),
                 estimate: UsageEstimate {
                     cost_estimate: 0.015,
                     ..UsageEstimate::default()

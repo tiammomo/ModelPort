@@ -8,6 +8,7 @@ use crate::{
     auth::AuthStore,
     config::{AppConfig, ConfigIssueSeverity, RuntimeConfig},
     control::ControlStore,
+    enterprise_ledger::EnterpriseLedger,
     http::HttpTransport,
     metrics::Metrics,
     routes::{self, AppState, GatewaySecurityPolicy, RateLimiter, TrustedProxyConfig},
@@ -35,6 +36,16 @@ pub(crate) async fn serve() -> Result<(), AppError> {
     }
 
     let bind_addr = config.bind_addr;
+    let ledger = Arc::new(EnterpriseLedger::connect_from_env().await?);
+    let reconciled = ledger.reconcile_expired().await?;
+    if reconciled.requests > 0 || reconciled.attempts > 0 {
+        warn!(
+            requests = reconciled.requests,
+            attempts = reconciled.attempts,
+            "reconciled expired inference ledger leases during startup"
+        );
+    }
+    ledger.spawn_reconciler();
     let state = AppState {
         config: Arc::new(RuntimeConfig::new(config.clone())),
         auth: Arc::new(AuthStore::load_or_bootstrap(&config)?),
@@ -47,6 +58,7 @@ pub(crate) async fn serve() -> Result<(), AppError> {
         trusted_proxies: Arc::new(TrustedProxyConfig::from_env()?),
         transport: HttpTransport::new()?,
         metrics: Arc::new(Metrics::new()),
+        ledger,
     };
 
     let listener = TcpListener::bind(bind_addr).await?;

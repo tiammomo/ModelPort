@@ -1,9 +1,15 @@
+#![recursion_limit = "256"]
+
 mod auth;
 mod cli;
 mod config;
 mod control;
 mod control_view;
+mod database;
+mod domain;
+mod enterprise_ledger;
 mod error;
+mod exchange;
 mod fidelity;
 mod http;
 mod metrics;
@@ -15,6 +21,7 @@ mod providers;
 mod routes;
 mod server;
 mod storage;
+mod stream_lifecycle;
 mod tool_use;
 mod types;
 mod usage;

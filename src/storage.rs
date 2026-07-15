@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     fs::{File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -11,11 +11,14 @@ use std::{
     thread,
 };
 
-use postgres::{Client, NoTls};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use sqlx::PgPool;
 
-use crate::error::AppError;
+use crate::{
+    database::{connect_pool, database_url, redact_database_url},
+    error::AppError,
+};
 
 const STATE_TABLE: &str = "modelport_state";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -226,21 +229,16 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn database_url() -> Option<String> {
-    env::var("MODELPORT_DATABASE_URL")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
-fn initialize_postgres(client: &mut Client) -> Result<(), AppError> {
-    client.batch_execute(&format!(
+async fn initialize_postgres(pool: &PgPool) -> Result<(), AppError> {
+    sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
             namespace TEXT PRIMARY KEY,
             document JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )"
-    ))?;
+    ))
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -255,10 +253,25 @@ fn spawn_postgres_worker(
     thread::Builder::new().name(thread_name).spawn({
         let namespace = namespace.clone();
         move || {
-            let mut client = match connect_and_initialize(&database_url, &namespace, &file_path) {
-                Ok(client) => {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    let _ = ready_sender
+                        .send(Err(format!("could not create PostgreSQL runtime: {err}")));
+                    return;
+                }
+            };
+            let pool = match runtime.block_on(connect_and_initialize(
+                &database_url,
+                &namespace,
+                &file_path,
+            )) {
+                Ok(pool) => {
                     let _ = ready_sender.send(Ok(()));
-                    client
+                    pool
                 }
                 Err(err) => {
                     let _ = ready_sender.send(Err(err.to_string()));
@@ -269,12 +282,14 @@ fn spawn_postgres_worker(
             for command in command_receiver {
                 match command {
                     PostgresCommand::Read { respond_to } => {
-                        let result = read_postgres_value(&mut client, &namespace)
+                        let result = runtime
+                            .block_on(read_postgres_value(&pool, &namespace))
                             .map_err(|err| err.to_string());
                         let _ = respond_to.send(result);
                     }
                     PostgresCommand::Write { value, respond_to } => {
-                        let result = write_postgres_value(&mut client, &namespace, &value)
+                        let result = runtime
+                            .block_on(write_postgres_value(&pool, &namespace, &value))
                             .map_err(|err| err.to_string());
                         let _ = respond_to.send(result);
                     }
@@ -291,76 +306,69 @@ fn spawn_postgres_worker(
     Ok(command_sender)
 }
 
-fn connect_and_initialize(
+async fn connect_and_initialize(
     database_url: &str,
     namespace: &str,
     file_path: &Path,
-) -> Result<Client, AppError> {
-    let mut client = Client::connect(database_url, NoTls)?;
-    initialize_postgres(&mut client)?;
-    import_file_if_empty(&mut client, namespace, file_path)?;
-    Ok(client)
+) -> Result<PgPool, AppError> {
+    let pool = connect_pool(database_url, Some(1), false).await?;
+    initialize_postgres(&pool).await?;
+    import_file_if_empty(&pool, namespace, file_path).await?;
+    Ok(pool)
 }
 
-fn read_postgres_value(client: &mut Client, namespace: &str) -> Result<Option<Value>, AppError> {
-    let row = client.query_opt(
-        &format!("SELECT document FROM {STATE_TABLE} WHERE namespace = $1"),
-        &[&namespace],
-    )?;
-    Ok(row.map(|row| row.get(0)))
+async fn read_postgres_value(pool: &PgPool, namespace: &str) -> Result<Option<Value>, AppError> {
+    sqlx::query_scalar::<_, Value>(&format!(
+        "SELECT document FROM {STATE_TABLE} WHERE namespace = $1"
+    ))
+    .bind(namespace)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::from)
 }
 
-fn write_postgres_value(
-    client: &mut Client,
+async fn write_postgres_value(
+    pool: &PgPool,
     namespace: &str,
     value: &Value,
 ) -> Result<(), AppError> {
-    client.execute(
-        &format!(
-            "INSERT INTO {STATE_TABLE} (namespace, document, updated_at) \
+    sqlx::query(&format!(
+        "INSERT INTO {STATE_TABLE} (namespace, document, updated_at) \
              VALUES ($1, $2, now()) \
              ON CONFLICT (namespace) DO UPDATE \
              SET document = EXCLUDED.document, updated_at = now()"
-        ),
-        &[&namespace, value],
-    )?;
+    ))
+    .bind(namespace)
+    .bind(value)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
-fn import_file_if_empty(
-    client: &mut Client,
+async fn import_file_if_empty(
+    pool: &PgPool,
     namespace: &str,
     file_path: &Path,
 ) -> Result<(), AppError> {
-    let exists = client
-        .query_opt(
-            &format!("SELECT 1 FROM {STATE_TABLE} WHERE namespace = $1"),
-            &[&namespace],
-        )?
-        .is_some();
+    let exists =
+        sqlx::query_scalar::<_, i32>(&format!("SELECT 1 FROM {STATE_TABLE} WHERE namespace = $1"))
+            .bind(namespace)
+            .fetch_optional(pool)
+            .await?
+            .is_some();
     if exists || !file_path.exists() {
         return Ok(());
     }
 
     let value: Value = serde_json::from_str(&fs::read_to_string(file_path)?)?;
-    client.execute(
-        &format!(
-            "INSERT INTO {STATE_TABLE} (namespace, document, updated_at) VALUES ($1, $2, now())"
-        ),
-        &[&namespace, &value],
-    )?;
+    sqlx::query(&format!(
+        "INSERT INTO {STATE_TABLE} (namespace, document, updated_at) VALUES ($1, $2, now())"
+    ))
+    .bind(namespace)
+    .bind(value)
+    .execute(pool)
+    .await?;
     Ok(())
-}
-
-fn redact_database_url(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return "postgres://<redacted>".to_owned();
-    };
-    let Some((userinfo, host)) = rest.split_once('@') else {
-        return format!("{scheme}://{rest}");
-    };
-    let username = userinfo.split(':').next().unwrap_or("modelport");
-    format!("{scheme}://{username}:<redacted>@{host}")
 }
 
 #[cfg(test)]

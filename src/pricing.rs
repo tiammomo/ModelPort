@@ -6,7 +6,7 @@ use crate::error::AppError;
 
 pub const USAGE_HEADER: &str = "x-modelport-usage";
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageBreakdown {
     pub input_tokens: u64,

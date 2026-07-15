@@ -6,6 +6,7 @@ FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY migrations ./migrations
 
 RUN cargo build --release --locked
 

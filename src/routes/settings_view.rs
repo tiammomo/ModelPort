@@ -57,6 +57,8 @@ fn runtime_row(state: &AppState, config: &AppConfig) -> Value {
     let base_url = local_base_url(config);
     json!({
         "apiEndpoint": format!("{base_url}/v1/messages"),
+        "anthropicEndpoint": format!("{base_url}/v1/messages"),
+        "openaiEndpoint": format!("{base_url}/v1/chat/completions"),
         "modelsEndpoint": format!("{base_url}/v1/models"),
         "adminEndpoint": format!("{base_url}/admin"),
         "controlDataPath": state.control.data_path(),

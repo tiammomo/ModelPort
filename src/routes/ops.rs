@@ -24,7 +24,7 @@ pub(super) async fn readyz(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let started = Instant::now();
-    let result = (|| {
+    let result = async {
         authenticate_client(&state, &headers)?;
         state
             .auth
@@ -34,8 +34,14 @@ pub(super) async fn readyz(
             .control
             .health_check()
             .map_err(|error| AppError::NotReady(format!("control storage: {error}")))?;
+        state
+            .ledger
+            .health_check()
+            .await
+            .map_err(|error| AppError::NotReady(format!("enterprise ledger: {error}")))?;
         Ok(Json(detailed_health_body(&state)))
-    })();
+    }
+    .await;
     state
         .metrics
         .record_route("readyz", result.is_ok(), started.elapsed());
@@ -73,6 +79,7 @@ fn detailed_health_body(state: &AppState) -> serde_json::Value {
         "storage": {
             "auth": state.auth.data_path(),
             "control": state.control.data_path(),
+            "enterpriseLedger": state.ledger.location(),
             "status": "ready",
         },
         "providerHealth": provider_health,

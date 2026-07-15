@@ -15,18 +15,62 @@ use serde_json::Value;
 use crate::{
     config::ResolvedProvider,
     error::AppError,
+    exchange::{ExchangeRequest, anthropic_response_to_openai},
     http::{Header, SseFrame, SseFrameStream},
     pricing::{self, USAGE_HEADER},
-    providers::openai_stream::text_delta,
+    providers::{openai_client_stream::anthropic_stream_to_openai, openai_stream::text_delta},
     routes::AppState,
+    stream_lifecycle::StreamLifecycle,
     types::{AnthropicRequest, anthropic_error_event, anthropic_request_value},
 };
+
+pub async fn chat_completions(
+    state: AppState,
+    resolved: ResolvedProvider,
+    request: ExchangeRequest,
+    client_headers: &HeaderMap,
+    stream_lifecycle: StreamLifecycle,
+) -> Result<Response, AppError> {
+    let body = request.to_anthropic_request(&resolved.model, request.stream)?;
+    let headers = headers(&resolved.provider, client_headers)?;
+    let url = resolved.provider.endpoint("/v1/messages");
+
+    if request.stream {
+        let include_usage = request.include_stream_usage();
+        let frames = state.transport.post_json_sse(url, headers, body).await?;
+        let events = anthropic_stream_to_openai(
+            frames,
+            request.requested_model.clone(),
+            include_usage,
+            stream_lifecycle,
+        );
+        Ok(Sse::new(events)
+            .keep_alive(KeepAlive::default())
+            .into_response())
+    } else {
+        let upstream = state.transport.post_json(&url, &headers, &body).await?;
+        let usage = pricing::anthropic_usage_if_present(&upstream);
+        let mut response = Json(anthropic_response_to_openai(
+            &upstream,
+            &request.requested_model,
+        )?)
+        .into_response();
+        if let Some(usage) = usage {
+            response.headers_mut().insert(
+                USAGE_HEADER,
+                pricing::usage_header_value(&resolved.model, usage)?,
+            );
+        }
+        Ok(response)
+    }
+}
 
 pub async fn messages(
     state: AppState,
     resolved: ResolvedProvider,
     request: AnthropicRequest,
     client_headers: &HeaderMap,
+    stream_lifecycle: StreamLifecycle,
 ) -> Result<Response, AppError> {
     let body = anthropic_request_value(&request, &resolved.model)?;
     let headers = headers(&resolved.provider, client_headers)?;
@@ -34,9 +78,12 @@ pub async fn messages(
 
     if request.stream.unwrap_or(false) {
         let frames = state.transport.post_json_sse(url, headers, body).await?;
-        let events: Pin<Box<dyn Stream<Item = Result<Event, AppError>> + Send>> = Box::pin(
-            normalize_anthropic_stream(frames, resolved.provider.deduplicate_stream_text),
-        );
+        let events: Pin<Box<dyn Stream<Item = Result<Event, AppError>> + Send>> =
+            Box::pin(normalize_anthropic_stream(
+                frames,
+                resolved.provider.deduplicate_stream_text,
+                stream_lifecycle,
+            ));
         Ok(Sse::new(events)
             .keep_alive(KeepAlive::default())
             .into_response())
@@ -89,6 +136,7 @@ fn client_header(headers: &HeaderMap, name: &str) -> Option<String> {
 fn normalize_anthropic_stream(
     mut frames: SseFrameStream,
     deduplicate_stream_text: bool,
+    stream_lifecycle: StreamLifecycle,
 ) -> impl Stream<Item = Result<Event, AppError>> + Send {
     try_stream! {
         let mut block_types = BTreeMap::<usize, String>::new();
@@ -103,6 +151,7 @@ fn normalize_anthropic_stream(
                     if saw_message_stop {
                         return;
                     }
+                    stream_lifecycle.mark_failed(err.to_string());
                     yield anthropic_error_event(&err)?;
                     return;
                 }
@@ -139,11 +188,19 @@ fn normalize_anthropic_stream(
                 .get("type")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
+            if let Some(usage) = data
+                .get("message")
+                .and_then(pricing::anthropic_usage_if_present)
+                .or_else(|| pricing::anthropic_usage_if_present(&data))
+            {
+                stream_lifecycle.merge_usage(usage);
+            }
             saw_event = true;
             if event_type.as_deref() == Some("message_stop")
                 || frame.event.as_deref() == Some("message_stop")
             {
                 saw_message_stop = true;
+                stream_lifecycle.mark_completed();
             }
             let index = data
                 .get("index")
@@ -200,6 +257,7 @@ fn normalize_anthropic_stream(
             let app_error = AppError::UpstreamProtocol(
                 "Anthropic stream ended without a message_stop event".to_owned(),
             );
+            stream_lifecycle.mark_failed(app_error.to_string());
             yield anthropic_error_event(&app_error)?;
         }
     }
@@ -243,9 +301,14 @@ mod tests {
                 "must not be observed after terminal event".to_owned(),
             )),
         ]));
-        let mut events = Box::pin(normalize_anthropic_stream(frames, false));
+        let lifecycle = StreamLifecycle::new();
+        let mut events = Box::pin(normalize_anthropic_stream(frames, false, lifecycle.clone()));
 
         assert!(events.next().await.is_some_and(|event| event.is_ok()));
         assert!(events.next().await.is_none());
+        assert_eq!(
+            lifecycle.state(),
+            crate::stream_lifecycle::UpstreamStreamState::Completed
+        );
     }
 }

@@ -10,6 +10,8 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     http::SseFrameStream,
+    pricing,
+    stream_lifecycle::StreamLifecycle,
     types::{anthropic_error_event, anthropic_event},
 };
 
@@ -129,6 +131,7 @@ pub(crate) fn openai_stream_to_anthropic(
     model: String,
     deduplicate_stream_text: bool,
     deduplicate_tool_arguments: bool,
+    stream_lifecycle: StreamLifecycle,
 ) -> impl Stream<Item = Result<Event, AppError>> + Send {
     try_stream! {
         let message_id = format!("msg_{}", Uuid::new_v4().simple());
@@ -148,6 +151,7 @@ pub(crate) fn openai_stream_to_anthropic(
                     if saw_finish_reason {
                         break;
                     }
+                    stream_lifecycle.mark_failed(err.to_string());
                     yield anthropic_error_event(&err)?;
                     return;
                 }
@@ -169,10 +173,18 @@ pub(crate) fn openai_stream_to_anthropic(
                         let app_error = AppError::UpstreamProtocol(format!(
                             "invalid OpenAI-compatible SSE chunk: {err}; data: {data}"
                         ));
+                        stream_lifecycle.mark_failed(app_error.to_string());
                         yield anthropic_error_event(&app_error)?;
                         return;
                     }
                 };
+
+                if let Some(usage) = chunk.usage.as_ref() {
+                    let response = json!({ "usage": usage });
+                    if let Some(usage) = pricing::openai_usage_if_present(&response) {
+                        stream_lifecycle.merge_usage(usage);
+                    }
+                }
 
                 if !message_started {
                     yield message_start_event(&message_id, &model)?;
@@ -309,6 +321,7 @@ pub(crate) fn openai_stream_to_anthropic(
             let app_error = AppError::UpstreamProtocol(
                 "OpenAI-compatible stream ended without [DONE] or finish_reason".to_owned(),
             );
+            stream_lifecycle.mark_failed(app_error.to_string());
             yield anthropic_error_event(&app_error)?;
             return;
         }
@@ -317,9 +330,12 @@ pub(crate) fn openai_stream_to_anthropic(
             let app_error = AppError::UpstreamProtocol(
                 "upstream stream ended before sending any SSE chunks".to_owned(),
             );
+            stream_lifecycle.mark_failed(app_error.to_string());
             yield anthropic_error_event(&app_error)?;
             return;
         }
+
+        stream_lifecycle.mark_completed();
 
         if let Some(index) = text_index {
             yield anthropic_event("content_block_stop", json!({
@@ -706,6 +722,8 @@ impl ToolState {
 struct OpenAiStreamChunk {
     #[serde(default)]
     choices: Vec<OpenAiStreamChoice>,
+    #[serde(default)]
+    usage: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -822,6 +840,7 @@ mod tests {
     use crate::{
         error::AppError,
         http::{SseFrame, SseFrameStream},
+        stream_lifecycle::{StreamLifecycle, UpstreamStreamState},
     };
 
     use super::{
@@ -844,11 +863,13 @@ mod tests {
                 "must not be observed after finish_reason".to_owned(),
             )),
         ]));
+        let lifecycle = StreamLifecycle::new();
         let mut events = Box::pin(openai_stream_to_anthropic(
             frames,
             "test-model".to_owned(),
             false,
             false,
+            lifecycle.clone(),
         ));
         let mut count = 0usize;
         while let Some(event) = events.next().await {
@@ -857,6 +878,7 @@ mod tests {
         }
 
         assert_eq!(count, 6);
+        assert_eq!(lifecycle.state(), UpstreamStreamState::Completed);
     }
 
     #[test]

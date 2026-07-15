@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{config::MaxTokensField, error::AppError};
 
 pub use crate::fidelity::validate_anthropic_to_openai_fidelity;
-pub use crate::tool_use::{validate_anthropic_tool_capabilities, validate_anthropic_tooling};
+pub use crate::tool_use::validate_anthropic_tooling;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnthropicRequest {
@@ -209,9 +209,10 @@ pub fn anthropic_event(event: &str, data: Value) -> Result<Event, AppError> {
 
 pub fn anthropic_error_event(error: &AppError) -> Result<Event, AppError> {
     let kind = match error {
-        AppError::InvalidRequest(_) | AppError::NotFound(_) | AppError::ProviderNotFound(_) => {
-            "invalid_request_error"
-        }
+        AppError::InvalidRequest(_)
+        | AppError::IdempotencyConflict(_)
+        | AppError::NotFound(_)
+        | AppError::ProviderNotFound(_) => "invalid_request_error",
         AppError::Auth => "authentication_error",
         AppError::Forbidden(_) => "permission_error",
         AppError::QuotaExceeded(_) | AppError::RateLimited { .. } => "rate_limit_error",

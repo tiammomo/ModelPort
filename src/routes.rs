@@ -36,6 +36,10 @@ use crate::{
         ProviderModelOverrideRecord, ProviderOverrideRecord, UpsertQuotaInput, UpsertTeamInput,
     },
     control_view::provider_credential_row,
+    enterprise_ledger::{
+        EnterpriseBudgetAdjustmentInput, EnterpriseBudgetScopeQuery, EnterpriseBudgetUpdate,
+        EnterpriseLedger, EnterpriseLedgerQuery,
+    },
     error::AppError,
     http::{Header, HttpTransport},
     metrics::Metrics,
@@ -57,6 +61,7 @@ use provider_view::{provider_model_row, provider_row_by_id, provider_rows};
 use settings_view::{alias_row, alias_rows, config_issues_json, settings_row};
 
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const CSRF_HEADER: HeaderName = HeaderName::from_static("x-modelport-csrf");
 const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
 const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
@@ -74,6 +79,7 @@ pub struct AppState {
     pub trusted_proxies: Arc<TrustedProxyConfig>,
     pub transport: HttpTransport,
     pub metrics: Arc<Metrics>,
+    pub(crate) ledger: Arc<EnterpriseLedger>,
 }
 
 #[derive(Debug, Clone)]
@@ -249,7 +255,7 @@ impl RateLimiter {
 
         let mut rules = vec![
             (
-                "global:messages".to_owned(),
+                "global:inference".to_owned(),
                 self.config.global_per_minute,
                 "global request rate limit exceeded",
             ),
@@ -389,6 +395,7 @@ pub fn router(state: AppState) -> Router {
         .route("/metrics", get(ops::metrics))
         .route("/v1/models", get(client_api::models))
         .route("/v1/messages", post(client_api::messages))
+        .route("/v1/chat/completions", post(client_api::chat_completions))
         .route(
             "/admin/auth/login",
             post(admin_login).layer(DefaultBodyLimit::max(16 * 1024)),
@@ -448,6 +455,20 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/logs", get(admin_logs))
         .route("/admin/logs/{log_id}", get(admin_log_by_id))
         .route("/admin/latency", get(admin_latency))
+        .route("/admin/enterprise/overview", get(admin_enterprise_overview))
+        .route(
+            "/admin/enterprise/budget",
+            get(admin_enterprise_budget).put(admin_update_enterprise_budget),
+        )
+        .route(
+            "/admin/enterprise/budget/adjustments",
+            post(admin_adjust_enterprise_budget),
+        )
+        .route("/admin/enterprise/requests", get(admin_enterprise_requests))
+        .route(
+            "/admin/enterprise/requests/{ledger_id}",
+            get(admin_enterprise_request_detail),
+        )
         .route("/admin/teams", get(admin_teams).post(admin_upsert_team))
         .route(
             "/admin/teams/{team_id}",
@@ -1218,6 +1239,82 @@ async fn admin_latency(
 ) -> Result<Json<Value>, AppError> {
     require_console_user(&state, &headers)?;
     Ok(Json(latency_body(&state)))
+}
+
+async fn admin_enterprise_overview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_admin_user(&state, &headers)?;
+    Ok(Json(json!(state.ledger.overview().await?)))
+}
+
+async fn admin_enterprise_budget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(scope): Query<EnterpriseBudgetScopeQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin_user(&state, &headers)?;
+    Ok(Json(json!(state.ledger.budget_view(&scope).await?)))
+}
+
+async fn admin_update_enterprise_budget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EnterpriseBudgetUpdate>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let view = state.ledger.update_budget(&body).await?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "budget_change",
+        "enterprise-budget",
+        "更新企业租户预算上限",
+        "warning",
+    );
+    Ok(Json(json!(view)))
+}
+
+async fn admin_adjust_enterprise_budget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<EnterpriseBudgetAdjustmentInput>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let view = state.ledger.adjust_budget(&body, &actor.id).await?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "budget_adjustment",
+        "enterprise-budget",
+        "登记带证据引用的企业预算调整",
+        "warning",
+    );
+    Ok(Json(json!(view)))
+}
+
+async fn admin_enterprise_requests(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<EnterpriseLedgerQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin_user(&state, &headers)?;
+    Ok(Json(json!(state.ledger.list_requests(&query).await?)))
+}
+
+async fn admin_enterprise_request_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(ledger_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin_user(&state, &headers)?;
+    let detail = state
+        .ledger
+        .request_detail(&ledger_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("enterprise ledger request {ledger_id}")))?;
+    Ok(Json(json!(detail)))
 }
 
 async fn admin_teams(
@@ -2036,7 +2133,9 @@ mod tests {
             "application/json",
         )
         .await;
-        let app = router(test_state(upstream, 1024 * 1024));
+        let state = test_state(upstream, 1024 * 1024);
+        let ledger = state.ledger.clone();
+        let app = router(state);
 
         let (status, body) = post_message(app, message_body(false)).await;
 
@@ -2045,6 +2144,12 @@ mod tests {
         assert_eq!(body["content"][0]["text"], "hello from upstream");
         assert_eq!(body["usage"]["input_tokens"], 3);
         assert_eq!(body["usage"]["output_tokens"], 4);
+        assert_eq!(
+            ledger
+                .incomplete_requests(&crate::domain::TenantScope::legacy_local())
+                .await,
+            0
+        );
     }
 
     #[tokio::test]
@@ -2100,7 +2205,11 @@ data: [DONE]
             "text/event-stream",
         )
         .await;
-        let app = router(test_state(upstream, 1024 * 1024));
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let metrics = state.metrics.clone();
+        let ledger = state.ledger.clone();
+        let app = router(state);
 
         let (status, body) = post_message(app, message_body(true)).await;
 
@@ -2109,6 +2218,120 @@ data: [DONE]
         assert!(body.contains(r#""text":"hel""#));
         assert!(body.contains(r#""text":"lo""#));
         assert!(!body.contains("event: error"));
+
+        let logs = control.usage_rows();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["status"], "success");
+        assert_eq!(logs[0]["statusCode"], 200);
+        assert_eq!(logs[0]["terminalReason"], "completed");
+        assert!(
+            logs[0]["attemptId"]
+                .as_str()
+                .is_some_and(|attempt_id| attempt_id.starts_with("att_"))
+        );
+        let provider_health = control.provider_health_rows();
+        assert_eq!(provider_health["mimo"]["successesTotal"], 1);
+        assert_eq!(provider_health["mimo"]["failuresTotal"], 0);
+        let metrics = metrics.snapshot();
+        let message = metrics
+            .messages
+            .iter()
+            .find(|message| message.provider == "mimo" && message.stream)
+            .expect("stream message metrics");
+        assert_eq!(message.successes_total, 1);
+        assert_eq!(message.failures_total, 0);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            ledger
+                .incomplete_requests(&crate::domain::TenantScope::legacy_local())
+                .await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_protocol_failure_is_reconciled_after_successful_handshake() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}
+
+"#,
+            "text/event-stream",
+        )
+        .await;
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let metrics = state.metrics.clone();
+
+        let (status, body) = post_message(router(state), message_body(true)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("event: error"));
+        assert!(body.contains("ended without [DONE] or finish_reason"));
+        let logs = control.usage_rows();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["status"], "error");
+        assert_eq!(logs[0]["statusCode"], 502);
+        assert_eq!(logs[0]["terminalReason"], "upstream_error");
+        let provider_health = control.provider_health_rows();
+        assert_eq!(provider_health["mimo"]["successesTotal"], 0);
+        assert_eq!(provider_health["mimo"]["failuresTotal"], 1);
+        let metrics = metrics.snapshot();
+        let message = metrics
+            .messages
+            .iter()
+            .find(|message| message.provider == "mimo" && message.stream)
+            .expect("stream message metrics");
+        assert_eq!(message.successes_total, 0);
+        assert_eq!(message.failures_total, 1);
+    }
+
+    #[tokio::test]
+    async fn dropping_stream_response_records_downstream_cancellation_once() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{
+                "id": "chatcmpl_buffered_cancel",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "completed upstream"},
+                    "finish_reason": "stop"
+                }]
+            }"#,
+            "application/json",
+        )
+        .await;
+        let state = test_state_with_flags(upstream, 1024 * 1024, true, true);
+        let control = state.control.clone();
+        let metrics = state.metrics.clone();
+        let permits = state.stream_permits.clone();
+
+        let response = post_message_response(router(state), CLIENT_TOKEN, message_body(true)).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(control.usage_rows().is_empty());
+        assert_eq!(permits.available_permits(), 15);
+        drop(response);
+
+        assert_eq!(permits.available_permits(), 16);
+        let logs = control.usage_rows();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["status"], "error");
+        assert_eq!(logs[0]["statusCode"], 499);
+        assert_eq!(
+            logs[0]["terminalReason"],
+            "downstream_cancelled_after_upstream_complete"
+        );
+        let provider_health = control.provider_health_rows();
+        assert_eq!(provider_health["mimo"]["successesTotal"], 1);
+        assert_eq!(provider_health["mimo"]["failuresTotal"], 0);
+        let metrics = metrics.snapshot();
+        let message = metrics
+            .messages
+            .iter()
+            .find(|message| message.provider == "mimo" && message.stream)
+            .expect("stream message metrics");
+        assert_eq!(message.requests_total, 1);
+        assert_eq!(message.failures_total, 1);
     }
 
     #[tokio::test]
@@ -2793,6 +3016,82 @@ data: [DONE]
             .await
             .unwrap();
         assert_eq!(dashboard_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn enterprise_ledger_admin_api_requires_admin_and_returns_request_facts() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{
+                "id": "chatcmpl_enterprise",
+                "choices": [{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+            }"#,
+            "application/json",
+        )
+        .await;
+        let app = router(test_state_with_admin(upstream, 1024 * 1024));
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/enterprise/overview")
+                    .header("x-api-key", CLIENT_TOKEN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let (message_status, _) = post_chat_completion(app.clone(), chat_body(false)).await;
+        assert_eq!(message_status, StatusCode::OK);
+
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .body(Body::from(
+                        json!({
+                            "username": "admin",
+                            "password": "strong-password-123",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let session_cookie = login_response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("login should set a session cookie")
+            .clone();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/enterprise/requests?page=1&pageSize=20&protocol=openai-chat-completions")
+                    .header(COOKIE, session_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["total"], 1);
+        assert_eq!(
+            body["requests"][0]["clientProtocol"],
+            "openai-chat-completions"
+        );
+        assert_eq!(body["requests"][0]["attemptCount"], 1);
+        assert!(body["requests"][0].get("idempotencyKeyHash").is_none());
     }
 
     #[tokio::test]
@@ -3765,10 +4064,334 @@ data: [DONE]
                 .as_str()
                 .is_some_and(|request_id| !request_id.is_empty())
         );
+        assert!(
+            rows[0]["attemptId"]
+                .as_str()
+                .is_some_and(|attempt_id| attempt_id.starts_with("att_"))
+        );
+        assert_eq!(rows[0]["terminalReason"], "completed");
+    }
+
+    #[tokio::test]
+    async fn routes_openai_chat_completions_and_records_client_protocol() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{
+                "id": "chatcmpl-direct",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "provider-physical-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hello from OpenAI"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+            }"#,
+            "application/json",
+        )
+        .await;
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+
+        let (status, body) = post_chat_completion(router(state), chat_body(false)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["object"], "chat.completion");
+        assert_eq!(body["model"], "mimo-v2.5-pro");
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "hello from OpenAI"
+        );
+        let rows = control.usage_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["clientProtocol"], "openai-chat-completions");
+        assert_eq!(rows[0]["requestPath"], "/v1/chat/completions");
+        assert_eq!(rows[0]["billingMode"], "upstream-returned");
+        assert_eq!(rows[0]["inputTokens"], 7);
+        assert_eq!(rows[0]["outputTokens"], 3);
+    }
+
+    #[tokio::test]
+    async fn idempotency_key_prevents_duplicate_provider_calls() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{
+                "id": "chatcmpl-idempotent",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "only once"},
+                    "finish_reason": "stop"
+                }]
+            }"#,
+            "application/json",
+        )
+        .await;
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let app = router(state);
+        let request = chat_body(false);
+
+        let (first_status, _) =
+            post_chat_completion_idempotent(app.clone(), request.clone(), "retry-claim-1").await;
+        let (second_status, second_body) =
+            post_chat_completion_idempotent(app, request, "retry-claim-1").await;
+
+        assert_eq!(first_status, StatusCode::OK);
+        assert_eq!(second_status, StatusCode::CONFLICT);
+        assert!(second_body.contains("idempotency_conflict"));
+        assert!(second_body.contains("response replay is not available"));
+        assert_eq!(control.usage_rows().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_idempotency_key_is_rejected_before_provider_routing() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        let control = state.control.clone();
+
+        let (status, body) =
+            post_chat_completion_idempotent(router(state), chat_body(false), "contains whitespace")
+                .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("visible ASCII characters without whitespace"));
+        assert!(control.usage_rows().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_idempotency_claim_allows_exactly_one_request() {
+        let upstream = spawn_delayed_openai_upstream(
+            r#"{"id":"chatcmpl-race","choices":[{"message":{"role":"assistant","content":"once"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+        let state = test_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let app = router(state);
+        let request = chat_body(false);
+
+        let (first, second) = tokio::join!(
+            post_chat_completion_idempotent(app.clone(), request.clone(), "concurrent-claim"),
+            post_chat_completion_idempotent(app, request, "concurrent-claim")
+        );
+        let statuses = [first.0, second.0];
+
+        assert!(statuses.contains(&StatusCode::OK));
+        assert!(statuses.contains(&StatusCode::CONFLICT));
+        assert_eq!(control.usage_rows().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn openai_chat_stream_preserves_usage_chunk_and_reconciles_actual_usage() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1,"model":"provider-physical-model","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1,"model":"provider-physical-model","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1,"model":"provider-physical-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1,"model":"provider-physical-model","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":5,"total_tokens":16}}
+
+data: [DONE]
+
+"#,
+            "text/event-stream",
+        )
+        .await;
+        let state = test_state_with_flags(upstream, 1024 * 1024, false, false);
+        let control = state.control.clone();
+        let mut request = chat_body(true);
+        request["stream_options"] = json!({ "include_usage": true });
+
+        let (status, body) = post_chat_completion(router(state), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#""object":"chat.completion.chunk""#));
+        assert!(body.contains(r#""model":"mimo-v2.5-pro""#));
+        assert!(!body.contains("provider-physical-model"));
+        assert!(body.contains(r#""choices":[]"#));
+        assert!(body.contains(r#""completion_tokens":5"#));
+        assert!(body.contains("data: [DONE]"));
+        let rows = control.usage_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["status"], "success");
+        assert_eq!(rows[0]["terminalReason"], "completed");
+        assert_eq!(rows[0]["billingMode"], "upstream-returned");
+        assert_eq!(rows[0]["inputTokens"], 11);
+        assert_eq!(rows[0]["outputTokens"], 5);
+    }
+
+    #[tokio::test]
+    async fn converts_openai_chat_request_and_anthropic_response_across_protocols() {
+        let upstream = spawn_anthropic_upstream(
+            StatusCode::OK,
+            r#"{
+                "id": "msg_cross_protocol",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "hello from Anthropic"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 9, "output_tokens": 4}
+            }"#,
+            "application/json",
+        )
+        .await;
+        let state = test_anthropic_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "developer", "content": "Be concise"},
+                {"role": "user", "content": "hello"}
+            ]
+        });
+
+        let (status, body) = post_chat_completion(router(state), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["object"], "chat.completion");
+        assert_eq!(body["model"], "claude-sonnet-4-6");
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "hello from Anthropic"
+        );
+        assert_eq!(body["usage"]["prompt_tokens"], 9);
+        let rows = control.usage_rows();
+        assert_eq!(rows[0]["provider"], "anthropic");
+        assert_eq!(rows[0]["protocol"], "anthropic");
+        assert_eq!(rows[0]["clientProtocol"], "openai-chat-completions");
+    }
+
+    #[tokio::test]
+    async fn converts_anthropic_stream_to_openai_chunks_with_usage() {
+        let upstream = spawn_anthropic_upstream(
+            StatusCode::OK,
+            r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_stream_cross","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"stop_reason":null,"usage":{"input_tokens":6,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello cross stream"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#,
+            "text/event-stream",
+        )
+        .await;
+        let state = test_anthropic_state(upstream, 1024 * 1024);
+        let control = state.control.clone();
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        let (status, body) = post_chat_completion(router(state), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#""object":"chat.completion.chunk""#));
+        assert!(body.contains(r#""content":"hello cross stream""#));
+        assert!(body.contains(r#""finish_reason":"stop""#));
+        assert!(body.contains(r#""choices":[]"#));
+        assert!(body.contains(r#""prompt_tokens":6"#));
+        assert!(body.contains(r#""completion_tokens":2"#));
+        assert!(body.contains("data: [DONE]"));
+        let rows = control.usage_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["status"], "success");
+        assert_eq!(rows[0]["billingMode"], "upstream-returned");
+        assert_eq!(rows[0]["inputTokens"], 6);
+        assert_eq!(rows[0]["outputTokens"], 2);
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_openai_chat_fields_instead_of_dropping_them() {
+        let app = router(test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024));
+        let mut request = chat_body(false);
+        request["modalities"] = json!(["text"]);
+
+        let (status, body) = post_chat_completion(app, request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("unsupported Chat Completions field(s): modalities"));
+    }
+
+    #[tokio::test]
+    async fn rejects_openai_parameters_that_anthropic_cannot_preserve() {
+        let app = router(test_anthropic_state(
+            "http://127.0.0.1:1".to_owned(),
+            1024 * 1024,
+        ));
+        let mut request = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        request["presence_penalty"] = json!(0.5);
+
+        let (status, body) = post_chat_completion(app, request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("presence_penalty cannot be preserved"));
     }
 
     async fn post_message(app: Router, body: Value) -> (StatusCode, String) {
         post_message_with_key(app, CLIENT_TOKEN, body).await
+    }
+
+    async fn post_chat_completion(app: Router, body: Value) -> (StatusCode, String) {
+        let response = post_json_response(
+            app,
+            "/v1/chat/completions",
+            "authorization",
+            &format!("Bearer {CLIENT_TOKEN}"),
+            body,
+        )
+        .await;
+        let status = response.status();
+        let body = response_body(response).await;
+        (status, body)
+    }
+
+    async fn post_chat_completion_idempotent(
+        app: Router,
+        body: Value,
+        idempotency_key: &str,
+    ) -> (StatusCode, String) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .extension(ConnectInfo(
+                        "127.0.0.1:48178".parse::<SocketAddr>().unwrap(),
+                    ))
+                    .header("authorization", format!("Bearer {CLIENT_TOKEN}"))
+                    .header("idempotency-key", idempotency_key)
+                    .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_body(response).await;
+        (status, body)
     }
 
     async fn post_message_with_key(app: Router, key: &str, body: Value) -> (StatusCode, String) {
@@ -3780,14 +4403,24 @@ data: [DONE]
     }
 
     async fn post_message_response(app: Router, key: &str, body: Value) -> Response {
+        post_json_response(app, "/v1/messages", "x-api-key", key, body).await
+    }
+
+    async fn post_json_response(
+        app: Router,
+        uri: &str,
+        auth_header: &str,
+        auth_value: &str,
+        body: Value,
+    ) -> Response {
         app.oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/messages")
+                .uri(uri)
                 .extension(ConnectInfo(
                     "127.0.0.1:48178".parse::<SocketAddr>().unwrap(),
                 ))
-                .header("x-api-key", key)
+                .header(auth_header, auth_value)
                 .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
@@ -3817,6 +4450,41 @@ data: [DONE]
         });
 
         format!("http://{addr}/v1")
+    }
+
+    async fn spawn_delayed_openai_upstream(body: &'static str) -> String {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || async move {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                (StatusCode::OK, [(CONTENT_TYPE, "application/json")], body)
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        format!("http://{addr}/v1")
+    }
+
+    async fn spawn_anthropic_upstream(
+        status: StatusCode,
+        body: &'static str,
+        content_type: &'static str,
+    ) -> String {
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move || async move { (status, [(CONTENT_TYPE, content_type)], body) }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        format!("http://{addr}")
     }
 
     async fn spawn_openai_models_upstream(body: &'static str) -> String {
@@ -3905,6 +4573,53 @@ data: [DONE]
             trusted_proxies: Arc::new(TrustedProxyConfig::for_tests()),
             transport: HttpTransport::new().unwrap(),
             metrics: Arc::new(Metrics::new()),
+            ledger: Arc::new(EnterpriseLedger::memory()),
+        }
+    }
+
+    fn test_anthropic_state(base_url: String, max_request_body_bytes: usize) -> AppState {
+        let provider = ProviderConfig {
+            display_name: "Anthropic".to_owned(),
+            protocol: ProviderProtocol::Anthropic,
+            base_url,
+            api_key_env: None,
+            api_key: Some("upstream-key".to_owned()),
+            api_key_required: true,
+            default_model: "claude-sonnet-4-6".to_owned(),
+            models: vec!["claude-sonnet-4-6".to_owned()],
+            model_prefixes: vec!["claude-".to_owned()],
+            passthrough_unknown_models: false,
+            max_tokens_field: MaxTokensField::MaxTokens,
+            deduplicate_stream_text: false,
+            buffer_stream_text: false,
+            fidelity_mode: FidelityMode::Strict,
+            tool_use: ToolUseConfig::default_for_provider(
+                "anthropic",
+                ProviderProtocol::Anthropic,
+                false,
+            ),
+        };
+
+        AppState {
+            config: Arc::new(RuntimeConfig::new(AppConfig {
+                bind_addr: "127.0.0.1:0".parse().unwrap(),
+                max_request_body_bytes,
+                max_concurrent_requests: 16,
+                auth_token: Some(CLIENT_TOKEN.to_owned()),
+                default_provider: "anthropic".to_owned(),
+                provider_order: vec!["anthropic".to_owned()],
+                providers: HashMap::from([("anthropic".to_owned(), provider)]),
+                aliases: HashMap::new(),
+            })),
+            auth: Arc::new(AuthStore::for_tests()),
+            control: Arc::new(ControlStore::for_tests()),
+            security: Arc::new(GatewaySecurityPolicy::for_tests()),
+            rate_limiter: Arc::new(RateLimiter::disabled()),
+            stream_permits: Arc::new(tokio::sync::Semaphore::new(16)),
+            trusted_proxies: Arc::new(TrustedProxyConfig::for_tests()),
+            transport: HttpTransport::new().unwrap(),
+            metrics: Arc::new(Metrics::new()),
+            ledger: Arc::new(EnterpriseLedger::memory()),
         }
     }
 
@@ -3912,6 +4627,19 @@ data: [DONE]
         json!({
             "model": "mimo-v2.5-pro",
             "max_tokens": 32,
+            "stream": stream,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        })
+    }
+
+    fn chat_body(stream: bool) -> Value {
+        json!({
+            "model": "mimo-v2.5-pro",
             "stream": stream,
             "messages": [
                 {

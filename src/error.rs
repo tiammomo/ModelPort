@@ -16,6 +16,8 @@ pub enum AppError {
     Database(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("idempotency conflict: {0}")]
+    IdempotencyConflict(String),
     #[error("quota exceeded: {0}")]
     QuotaExceeded(String),
     #[error("rate limited: {message}")]
@@ -51,8 +53,8 @@ impl AppError {
     }
 }
 
-impl From<postgres::Error> for AppError {
-    fn from(error: postgres::Error) -> Self {
+impl From<sqlx::Error> for AppError {
+    fn from(error: sqlx::Error) -> Self {
         Self::Database(error.to_string())
     }
 }
@@ -86,6 +88,7 @@ impl IntoResponse for AppError {
         let kind = match &self {
             AppError::Auth => "authentication_error",
             AppError::Forbidden(_) => "forbidden_error",
+            AppError::IdempotencyConflict(_) => "invalid_request_error",
             AppError::QuotaExceeded(_) => "quota_exceeded",
             AppError::RateLimited { .. } => "rate_limit_error",
             AppError::InvalidRequest(_) | AppError::ProviderNotFound(_) => "invalid_request_error",
@@ -130,6 +133,7 @@ fn status_code(error: &AppError) -> StatusCode {
         AppError::Auth => StatusCode::UNAUTHORIZED,
         AppError::Config(_) | AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+        AppError::IdempotencyConflict(_) => StatusCode::CONFLICT,
         AppError::QuotaExceeded(_) | AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         AppError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
         AppError::MissingSecret(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -154,6 +158,7 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::Config(_) => "config_error",
         AppError::Database(_) => "database_error",
         AppError::Forbidden(_) => "forbidden",
+        AppError::IdempotencyConflict(_) => "idempotency_conflict",
         AppError::QuotaExceeded(_) => "quota_exceeded",
         AppError::RateLimited { .. } => "rate_limited",
         AppError::InvalidRequest(_) => "invalid_request",
@@ -179,6 +184,9 @@ fn error_hint(error: &AppError) -> &'static str {
             "检查 MODELPORT_DATABASE_URL、PostgreSQL 容器健康状态和数据库权限。"
         }
         AppError::Forbidden(_) => "当前账号权限不足，或 API Key 的归属/IP 策略拒绝了本次操作。",
+        AppError::IdempotencyConflict(_) => {
+            "该幂等键已被当前租户中的请求占用；请等待原请求完成，或使用新的幂等键。"
+        }
         AppError::QuotaExceeded(_) => {
             "检查用户配额或 API Key 的额度限制，必要时提高限额或更换密钥。"
         }
@@ -226,6 +234,19 @@ mod tests {
         let body = response_json(response).await;
         assert_eq!(body["error"]["type"], "rate_limit_error");
         assert_eq!(body["error"]["code"], "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn idempotency_conflict_uses_stable_http_409_envelope() {
+        let response = AppError::IdempotencyConflict(
+            "the key was already used with a different request body".to_owned(),
+        )
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "idempotency_conflict");
     }
 
     #[tokio::test]

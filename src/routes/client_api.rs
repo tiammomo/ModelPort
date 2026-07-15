@@ -14,9 +14,13 @@ use tracing::{error, info};
 use crate::{
     config::{AppConfig, ProviderConfig, ProviderProtocol, ResolvedProvider},
     control::{UsageEstimate, UsageEventInput},
+    domain::{AttemptId, RequestContext, RequestId},
+    enterprise_ledger::{LedgerAttempt, LedgerLease, LedgerOutcome, LedgerRequest},
+    exchange::{ClientRequest, ExchangeRequest, OpenAiChatRequest},
     pricing::{self, TokenUsageBreakdown},
     providers,
-    types::{AnthropicRequest, validate_anthropic_tool_capabilities, validate_anthropic_tooling},
+    stream_lifecycle::{StreamLifecycle, StreamTerminalOutcome, UpstreamStreamState},
+    types::{AnthropicRequest, validate_anthropic_tooling},
 };
 
 use super::*;
@@ -92,6 +96,18 @@ pub(super) fn public_model_rows(config: &AppConfig) -> Vec<Value> {
 
 fn provider_is_configured(provider: &ProviderConfig) -> bool {
     !provider.api_key_required || provider.api_key().ok().flatten().is_some()
+}
+
+#[derive(Debug, Clone)]
+struct SentAttempt {
+    attempt_id: AttemptId,
+    provider_id: String,
+    model: String,
+    protocol: String,
+    credential_id: Option<String>,
+    estimate: UsageEstimate,
+    stream_lifecycle: StreamLifecycle,
+    ledger_attempt: LedgerAttempt,
 }
 
 fn public_model_display_name(provider_id: &str, provider: &ProviderConfig, model: &str) -> String {
@@ -211,31 +227,96 @@ pub(super) async fn messages(
     headers: HeaderMap,
     Json(request): Json<AnthropicRequest>,
 ) -> Result<Response, AppError> {
+    handle_inference(state, peer_addr, headers, ClientRequest::Anthropic(request)).await
+}
+
+pub(super) async fn chat_completions(
+    State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<OpenAiChatRequest>,
+) -> Result<Response, AppError> {
+    handle_inference(
+        state,
+        peer_addr,
+        headers,
+        ClientRequest::OpenAiChat(request),
+    )
+    .await
+}
+
+async fn handle_inference(
+    state: AppState,
+    peer_addr: SocketAddr,
+    headers: HeaderMap,
+    request: ClientRequest,
+) -> Result<Response, AppError> {
     let started = Instant::now();
+    let route_name = request.route_name();
     let identity = match authenticate_client(&state, &headers) {
         Ok(identity) => identity,
         Err(err) => {
             state
                 .metrics
-                .record_route("messages", false, started.elapsed());
+                .record_route(route_name, false, started.elapsed());
             return Err(err);
         }
     };
-    if let Err(err) = validate_message_request(&request) {
+    let validation = match &request {
+        ClientRequest::Anthropic(request) => validate_message_request(request),
+        ClientRequest::OpenAiChat(request) => validate_openai_chat_request(request),
+    };
+    if let Err(err) = validation {
         state
             .metrics
-            .record_route("messages", false, started.elapsed());
+            .record_route(route_name, false, started.elapsed());
         return Err(err);
     }
+    let exchange = match ExchangeRequest::from_client(request) {
+        Ok(exchange) => exchange,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
+    let idempotency_key = match request_idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
+    let request_fingerprint = match exchange.request_fingerprint() {
+        Ok(fingerprint) => fingerprint,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
     let request_client_ip = client_ip(&headers, Some(peer_addr), &state.trusted_proxies);
-    let requested_model = request.model.clone();
+    let request_context = RequestContext::legacy(
+        RequestId::from_external_or_new(
+            headers
+                .get(&X_REQUEST_ID)
+                .and_then(|value| value.to_str().ok()),
+        ),
+        identity.user_id.clone(),
+        exchange.client_protocol(),
+    );
+    let requested_model = exchange.requested_model.clone();
     let config = effective_config(&state);
-    let resolved = match config.resolve(&request.model) {
+    let resolved = match config.resolve(&requested_model) {
         Ok(resolved) => resolved,
         Err(err) => {
             state
                 .metrics
-                .record_route("messages", false, started.elapsed());
+                .record_route(route_name, false, started.elapsed());
             return Err(err);
         }
     };
@@ -247,17 +328,17 @@ pub(super) async fn messages(
     }) {
         state
             .metrics
-            .record_route("messages", false, started.elapsed());
+            .record_route(route_name, false, started.elapsed());
         return Err(err);
     }
-    let stream = request.stream.unwrap_or(false);
+    let stream = exchange.stream;
     let stream_permit = if stream {
         match state.stream_permits.clone().try_acquire_owned() {
             Ok(permit) => Some(permit),
             Err(_) => {
                 state
                     .metrics
-                    .record_route("messages", false, started.elapsed());
+                    .record_route(route_name, false, started.elapsed());
                 return Err(AppError::RateLimited {
                     message: "concurrent stream limit exceeded".to_owned(),
                     retry_after_secs: 1,
@@ -267,16 +348,38 @@ pub(super) async fn messages(
     } else {
         None
     };
+    let ledger_request = match state
+        .ledger
+        .begin_request(
+            &request_context,
+            &requested_model,
+            stream,
+            idempotency_key.as_deref(),
+            &request_fingerprint,
+        )
+        .await
+    {
+        Ok(request) => request,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
+    let ledger_lease = state.ledger.maintain_lease(&ledger_request);
     info!(
-        request_id = headers
-            .get(&X_REQUEST_ID)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or(""),
-        requested_model = request.model.as_str(),
+        request_id = request_context.request_id.as_str(),
+        organization_id = request_context.tenant.organization_id.as_str(),
+        project_id = request_context.tenant.project_id.as_str(),
+        environment_id = request_context.tenant.environment_id.as_str(),
+        principal_id = request_context.principal_id.as_str(),
+        client_protocol = request_context.protocol.as_str(),
+        requested_model = exchange.requested_model.as_str(),
         provider = resolved.provider_id.as_str(),
         upstream_model = resolved.model.as_str(),
         stream,
-        "routing message request"
+        "routing inference request"
     );
 
     let attempts = route_attempts(&state, &config, &requested_model, resolved);
@@ -288,9 +391,10 @@ pub(super) async fn messages(
     let mut result = Err(AppError::ProviderNotFound(requested_model.clone()));
     let mut first_sent_provider = None::<String>;
     let mut sent_attempts = 0u32;
-    let mut last_sent = None::<(String, String, String, UsageEstimate)>;
+    let mut last_sent = None::<SentAttempt>;
 
     for mut attempt in attempts {
+        let attempt_id = AttemptId::new();
         provider_id = attempt.provider_id.clone();
         upstream_model = attempt.model.clone();
         protocol = provider_protocol_value(attempt.provider.protocol).to_owned();
@@ -304,7 +408,7 @@ pub(super) async fn messages(
                 continue;
             }
         };
-        let estimate = estimate_usage(&request, &upstream_model);
+        let estimate = estimate_usage(&exchange, &upstream_model);
         if let Err(err) = state.control.check_quotas(
             &identity,
             estimate,
@@ -316,7 +420,7 @@ pub(super) async fn messages(
             result = Err(err);
             continue;
         }
-        if let Err(err) = validate_message_attempt(&state, &attempt, &request) {
+        if let Err(err) = validate_inference_attempt(&state, &attempt, &exchange) {
             result = Err(err);
             continue;
         }
@@ -327,6 +431,24 @@ pub(super) async fn messages(
             result = Err(err);
             continue;
         }
+        let ledger_attempt = match state
+            .ledger
+            .begin_attempt(
+                &ledger_request,
+                &attempt_id,
+                &provider_id,
+                &upstream_model,
+                &protocol,
+                estimate,
+            )
+            .await
+        {
+            Ok(attempt) => attempt,
+            Err(err) => {
+                result = Err(err);
+                break;
+            }
+        };
         if sent_attempts > 0 {
             retry_count = retry_count.saturating_add(1);
             fallback_from_provider = first_sent_provider.clone();
@@ -334,28 +456,79 @@ pub(super) async fn messages(
             first_sent_provider = Some(provider_id.clone());
         }
         sent_attempts = sent_attempts.saturating_add(1);
-        last_sent = Some((
-            provider_id.clone(),
-            upstream_model.clone(),
-            protocol.clone(),
+        info!(
+            request_id = request_context.request_id.as_str(),
+            attempt_id = attempt_id.as_str(),
+            provider = provider_id.as_str(),
+            upstream_model = upstream_model.as_str(),
+            "starting provider attempt"
+        );
+        let stream_lifecycle = StreamLifecycle::new();
+        last_sent = Some(SentAttempt {
+            attempt_id: attempt_id.clone(),
+            provider_id: provider_id.clone(),
+            model: upstream_model.clone(),
+            protocol: protocol.clone(),
+            credential_id: credential_id.clone(),
             estimate,
-        ));
-        let attempt_result =
-            send_message_attempt(state.clone(), attempt, request.clone(), &headers).await;
+            stream_lifecycle: stream_lifecycle.clone(),
+            ledger_attempt: ledger_attempt.clone(),
+        });
+        let attempt_result = send_inference_attempt(
+            state.clone(),
+            attempt,
+            exchange.clone(),
+            &headers,
+            stream_lifecycle,
+        )
+        .await;
         let attempt_success = attempt_result.is_ok();
         let attempt_status = attempt_result
             .as_ref()
             .map(|response| response.status().as_u16())
             .unwrap_or_else(|error| error.http_status().as_u16());
         let attempt_error = attempt_result.as_ref().err().map(ToString::to_string);
-        state.control.record_provider_outcome_for_credential(
-            &provider_id,
-            credential_id.as_deref(),
-            attempt_success,
-            attempt_status,
-            attempt_error.as_deref(),
-            false,
-        )?;
+        if !(stream && attempt_success) {
+            if let Err(err) = state.control.record_provider_outcome_for_credential(
+                &provider_id,
+                credential_id.as_deref(),
+                attempt_success,
+                attempt_status,
+                attempt_error.as_deref(),
+                false,
+            ) {
+                error!(
+                    error = %err,
+                    request_id = request_context.request_id.as_str(),
+                    attempt_id = attempt_id.as_str(),
+                    "failed to persist provider attempt outcome"
+                );
+            }
+            let attempt_estimate = attempt_result
+                .as_ref()
+                .ok()
+                .and_then(|response| pricing::usage_from_headers(response.headers()))
+                .map(usage_estimate_from_charge)
+                .unwrap_or(estimate);
+            let ledger_outcome = LedgerOutcome::provider_attempt(
+                attempt_success,
+                attempt_status,
+                attempt_error.clone(),
+                attempt_estimate,
+            );
+            if let Err(err) = state
+                .ledger
+                .finalize_attempt(&ledger_attempt, &ledger_outcome)
+                .await
+            {
+                error!(
+                    error = %err,
+                    request_id = request_context.request_id.as_str(),
+                    attempt_id = attempt_id.as_str(),
+                    "failed to finalize provider attempt ledger row"
+                );
+            }
+        }
         result = attempt_result;
         if result.is_ok() || !is_retryable_message_error(result.as_ref().err()) {
             break;
@@ -376,14 +549,14 @@ pub(super) async fn messages(
         .ok()
         .and_then(|response| pricing::usage_from_headers(response.headers()));
     let chargeable = last_sent.is_some();
-    if let Some((sent_provider, sent_model, sent_protocol, _)) = &last_sent {
-        provider_id.clone_from(sent_provider);
-        upstream_model.clone_from(sent_model);
-        protocol.clone_from(sent_protocol);
+    if let Some(sent) = &last_sent {
+        provider_id.clone_from(&sent.provider_id);
+        upstream_model.clone_from(&sent.model);
+        protocol.clone_from(&sent.protocol);
     }
     let local_estimate = last_sent
         .as_ref()
-        .map(|(_, _, _, estimate)| *estimate)
+        .map(|sent| sent.estimate)
         .unwrap_or_default();
     let actual_estimate = upstream_usage
         .map(|charge| UsageEstimate {
@@ -400,29 +573,27 @@ pub(super) async fn messages(
         "local-estimate"
     };
 
-    state.metrics.record_route("messages", success, duration);
-    state.metrics.record_message(
-        &provider_id,
-        &upstream_model,
-        stream,
-        success,
-        duration,
-        actual_estimate,
-    );
-    if let Err(err) = state.control.record_usage(UsageEventInput {
+    let usage = UsageEventInput {
         identity,
-        request_id: headers
-            .get(&X_REQUEST_ID)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned),
+        request_id: Some(request_context.request_id.to_string()),
+        attempt_id: last_sent.as_ref().map(|sent| sent.attempt_id.to_string()),
         model: requested_model,
         resolved_model: upstream_model,
         provider: provider_id,
         protocol,
+        client_protocol: request_context.protocol.as_str().to_owned(),
         stream,
         success,
         timed_out,
         status_code,
+        terminal_reason: if success {
+            "completed"
+        } else if timed_out {
+            "timeout_before_response"
+        } else {
+            "failed_before_response"
+        }
+        .to_owned(),
         estimate: actual_estimate,
         billing_mode: billing_mode.to_owned(),
         chargeable,
@@ -431,63 +602,339 @@ pub(super) async fn messages(
         retry_count,
         fallback_from_provider,
         client_ip: request_client_ip,
-        request_path: "/v1/messages".to_owned(),
+        request_path: exchange.request_path().to_owned(),
         error_message,
-    }) {
+    };
+
+    if stream && success {
+        let response = result.expect("successful stream result must contain a response");
+        let permit = stream_permit.expect("stream request must hold a stream permit");
+        let sent = last_sent.expect("successful stream must have a sent attempt");
+        return Ok(response_with_stream_finalizer(
+            response,
+            permit,
+            StreamFinalizationContext {
+                state,
+                usage,
+                credential_id: sent.credential_id,
+                lifecycle: sent.stream_lifecycle,
+                ledger_request,
+                ledger_attempt: sent.ledger_attempt,
+                _ledger_lease: ledger_lease,
+                started,
+                route_name,
+            },
+        ));
+    }
+
+    state.metrics.record_route(route_name, success, duration);
+    state.metrics.record_message(
+        &usage.provider,
+        &usage.resolved_model,
+        stream,
+        success,
+        duration,
+        actual_estimate,
+    );
+    let usage_for_ledger = usage.clone();
+    if let Err(err) = state.control.record_usage(usage) {
         error!(
             error = %err,
-            request_id = headers
-                .get(&X_REQUEST_ID)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or(""),
+            request_id = request_context.request_id.as_str(),
             "failed to persist usage after handling upstream response"
         );
     }
-    result.map(|response| match stream_permit {
-        Some(permit) => response_holding_stream_permit(response, permit),
-        None => response,
-    })
+    let ledger_outcome = LedgerOutcome::from_usage(&usage_for_ledger);
+    if let Err(err) = state
+        .ledger
+        .finalize_request(&ledger_request, &ledger_outcome)
+        .await
+    {
+        error!(
+            error = %err,
+            request_id = request_context.request_id.as_str(),
+            "failed to finalize request ledger row"
+        );
+    }
+    result
 }
 
-fn response_holding_stream_permit(
+fn usage_estimate_from_charge(charge: pricing::UsageCharge) -> UsageEstimate {
+    UsageEstimate {
+        input_tokens: charge.input_tokens,
+        output_tokens: charge.output_tokens,
+        cache_write_tokens: charge.cache_write_tokens,
+        cache_read_tokens: charge.cache_read_tokens,
+        cost_estimate: charge.cost_estimate,
+    }
+}
+
+fn request_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, AppError> {
+    let Some(value) = headers.get(&IDEMPOTENCY_KEY) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| AppError::InvalidRequest("Idempotency-Key must be ASCII".to_owned()))?
+        .trim();
+    if value.is_empty() || value.len() > 200 {
+        return Err(AppError::InvalidRequest(
+            "Idempotency-Key must contain 1 to 200 visible ASCII characters".to_owned(),
+        ));
+    }
+    if !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+        return Err(AppError::InvalidRequest(
+            "Idempotency-Key must contain only visible ASCII characters without whitespace"
+                .to_owned(),
+        ));
+    }
+    Ok(Some(value.to_owned()))
+}
+
+struct StreamFinalizationContext {
+    state: AppState,
+    usage: UsageEventInput,
+    credential_id: Option<String>,
+    lifecycle: StreamLifecycle,
+    ledger_request: LedgerRequest,
+    ledger_attempt: LedgerAttempt,
+    _ledger_lease: LedgerLease,
+    started: Instant,
+    route_name: &'static str,
+}
+
+impl StreamFinalizationContext {
+    fn finalize(mut self, outcome: StreamTerminalOutcome) {
+        let duration = self.started.elapsed();
+        if let Some(usage) = self.lifecycle.usage() {
+            let charge = pricing::charge_for_model(&self.usage.resolved_model, usage);
+            self.usage.estimate = UsageEstimate {
+                input_tokens: charge.input_tokens,
+                output_tokens: charge.output_tokens,
+                cache_write_tokens: charge.cache_write_tokens,
+                cache_read_tokens: charge.cache_read_tokens,
+                cost_estimate: charge.cost_estimate,
+            };
+            self.usage.billing_mode = "upstream-returned".to_owned();
+        }
+        self.usage.success = outcome.success();
+        self.usage.timed_out = outcome.timed_out();
+        self.usage.status_code = outcome.status_code();
+        self.usage.terminal_reason = outcome.terminal_reason().to_owned();
+        self.usage.error_message = outcome.error_message().map(str::to_owned);
+        self.usage.latency = duration;
+
+        self.state
+            .metrics
+            .record_route(self.route_name, self.usage.success, duration);
+        self.state.metrics.record_message(
+            &self.usage.provider,
+            &self.usage.resolved_model,
+            true,
+            self.usage.success,
+            duration,
+            self.usage.estimate,
+        );
+
+        if let Some((success, status_code, error_message)) =
+            provider_terminal_outcome(&outcome, &self.lifecycle)
+            && let Err(err) = self.state.control.record_provider_outcome_for_credential(
+                &self.usage.provider,
+                self.credential_id.as_deref(),
+                success,
+                status_code,
+                error_message.as_deref(),
+                false,
+            )
+        {
+            error!(
+                error = %err,
+                request_id = self.usage.request_id.as_deref().unwrap_or("unknown"),
+                attempt_id = self.usage.attempt_id.as_deref().unwrap_or("unknown"),
+                "failed to record provider stream outcome"
+            );
+        }
+
+        info!(
+            request_id = self.usage.request_id.as_deref().unwrap_or("unknown"),
+            attempt_id = self.usage.attempt_id.as_deref().unwrap_or("unknown"),
+            provider = self.usage.provider.as_str(),
+            status_code = self.usage.status_code,
+            terminal_reason = self.usage.terminal_reason.as_str(),
+            duration_ms = duration.as_millis(),
+            "finalized message stream"
+        );
+        let ledger_outcome = LedgerOutcome::from_usage(&self.usage);
+        let ledger = self.state.ledger.clone();
+        let ledger_request = self.ledger_request;
+        let ledger_attempt = self.ledger_attempt;
+        let request_id = self.usage.request_id.clone();
+        if let Err(err) = self.state.control.record_usage(self.usage) {
+            error!(
+                error = %err,
+                "failed to persist usage after finalizing message stream"
+            );
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(err) = ledger
+                    .finalize_attempt(&ledger_attempt, &ledger_outcome)
+                    .await
+                {
+                    error!(
+                        error = %err,
+                        request_id = request_id.as_deref().unwrap_or("unknown"),
+                        "failed to finalize streaming attempt ledger row"
+                    );
+                }
+                if let Err(err) = ledger
+                    .finalize_request(&ledger_request, &ledger_outcome)
+                    .await
+                {
+                    error!(
+                        error = %err,
+                        request_id = request_id.as_deref().unwrap_or("unknown"),
+                        "failed to finalize streaming request ledger row"
+                    );
+                }
+            });
+        }
+    }
+}
+
+struct StreamFinalizationGuard(Option<StreamFinalizationContext>);
+
+impl StreamFinalizationGuard {
+    fn new(context: StreamFinalizationContext) -> Self {
+        Self(Some(context))
+    }
+
+    fn finish(&mut self, outcome: StreamTerminalOutcome) {
+        if let Some(context) = self.0.take() {
+            context.finalize(outcome);
+        }
+    }
+}
+
+impl Drop for StreamFinalizationGuard {
+    fn drop(&mut self) {
+        let Some(context) = self.0.take() else {
+            return;
+        };
+        let outcome = StreamTerminalOutcome::after_drop(&context.lifecycle);
+        context.finalize(outcome);
+    }
+}
+
+fn provider_terminal_outcome(
+    outcome: &StreamTerminalOutcome,
+    lifecycle: &StreamLifecycle,
+) -> Option<(bool, u16, Option<String>)> {
+    match outcome {
+        StreamTerminalOutcome::Completed => Some((true, 200, None)),
+        StreamTerminalOutcome::UpstreamFailed(error) => {
+            Some((false, upstream_failure_status(error), Some(error.clone())))
+        }
+        StreamTerminalOutcome::DeliveryFailed(_)
+        | StreamTerminalOutcome::DownstreamCancelled { .. } => match lifecycle.state() {
+            UpstreamStreamState::Completed => Some((true, 200, None)),
+            UpstreamStreamState::Failed(error) => {
+                Some((false, upstream_failure_status(&error), Some(error)))
+            }
+            UpstreamStreamState::Pending => None,
+        },
+    }
+}
+
+fn upstream_failure_status(error: &str) -> u16 {
+    if error.to_ascii_lowercase().contains("timed out") {
+        504
+    } else {
+        502
+    }
+}
+
+fn response_with_stream_finalizer(
     response: Response,
     permit: tokio::sync::OwnedSemaphorePermit,
+    context: StreamFinalizationContext,
 ) -> Response {
     let (parts, body) = response.into_parts();
+    let lifecycle = context.lifecycle.clone();
+    let guard = StreamFinalizationGuard::new(context);
     let stream = async_stream::stream! {
         let _permit = permit;
+        let mut guard = guard;
         let mut body = body.into_data_stream();
         while let Some(chunk) = body.next().await {
-            yield chunk;
+            match chunk {
+                Ok(bytes) => yield Ok::<_, axum::Error>(bytes),
+                Err(err) => {
+                    guard.finish(StreamTerminalOutcome::after_body_error(
+                        &lifecycle,
+                        err.to_string(),
+                    ));
+                    yield Err(err);
+                    return;
+                }
+            }
         }
+        guard.finish(StreamTerminalOutcome::after_eof(&lifecycle));
     };
     Response::from_parts(parts, Body::from_stream(stream))
 }
 
-async fn send_message_attempt(
+async fn send_inference_attempt(
     state: AppState,
     resolved: ResolvedProvider,
-    request: AnthropicRequest,
+    request: ExchangeRequest,
     headers: &HeaderMap,
+    stream_lifecycle: StreamLifecycle,
 ) -> Result<Response, AppError> {
+    if !request.is_anthropic_client() {
+        return match resolved.provider.protocol {
+            ProviderProtocol::Anthropic => providers::anthropic::chat_completions(
+                state,
+                resolved,
+                request,
+                headers,
+                stream_lifecycle,
+            )
+            .await
+            .map(IntoResponse::into_response),
+            ProviderProtocol::OpenaiCompat => providers::openai_compat::chat_completions(
+                state,
+                resolved,
+                request,
+                headers,
+                stream_lifecycle,
+            )
+            .await
+            .map(IntoResponse::into_response),
+        };
+    }
+
+    let ClientRequest::Anthropic(request) = request.into_source() else {
+        unreachable!("Anthropic client exchange must retain its source request");
+    };
     match resolved.provider.protocol {
         ProviderProtocol::Anthropic => {
-            providers::anthropic::messages(state, resolved, request, headers)
+            providers::anthropic::messages(state, resolved, request, headers, stream_lifecycle)
                 .await
                 .map(IntoResponse::into_response)
         }
         ProviderProtocol::OpenaiCompat => {
-            providers::openai_compat::messages(state, resolved, request, headers)
+            providers::openai_compat::messages(state, resolved, request, headers, stream_lifecycle)
                 .await
                 .map(IntoResponse::into_response)
         }
     }
 }
 
-fn validate_message_attempt(
+fn validate_inference_attempt(
     state: &AppState,
     resolved: &ResolvedProvider,
-    request: &AnthropicRequest,
+    request: &ExchangeRequest,
 ) -> Result<(), AppError> {
     crate::config::validate_provider_base_url_for_request(
         &resolved.provider_id,
@@ -497,11 +944,7 @@ fn validate_message_attempt(
     if resolved.provider.api_key_required {
         let _ = resolved.provider.api_key()?;
     }
-    validate_anthropic_tool_capabilities(
-        request,
-        &resolved.provider_id,
-        &resolved.provider.tool_use,
-    )?;
+    request.validate_provider(resolved)?;
     Ok(())
 }
 
@@ -682,15 +1125,77 @@ fn validate_message_request(request: &AnthropicRequest) -> Result<(), AppError> 
     Ok(())
 }
 
-fn estimate_usage(request: &AnthropicRequest, resolved_model: &str) -> UsageEstimate {
+fn validate_openai_chat_request(request: &OpenAiChatRequest) -> Result<(), AppError> {
+    let max_model_name_chars = env_usize("MODELPORT_MAX_MODEL_NAME_CHARS", 240);
+    let max_messages = env_usize("MODELPORT_MAX_MESSAGES", 200);
+    let max_messages_json_chars = env_usize("MODELPORT_MAX_MESSAGES_JSON_CHARS", 2 * 1024 * 1024);
+    let max_tools = env_usize("MODELPORT_MAX_TOOLS", 256);
+    let max_tools_json_chars = env_usize("MODELPORT_MAX_TOOLS_JSON_CHARS", 1024 * 1024);
+    let max_output_tokens = env_u64("MODELPORT_MAX_OUTPUT_TOKENS", 131_072);
+
+    if request.model.trim().is_empty() {
+        return Err(AppError::InvalidRequest("model is required".to_owned()));
+    }
+    if request.model.chars().count() > max_model_name_chars {
+        return Err(AppError::InvalidRequest(format!(
+            "model is too long; max={max_model_name_chars} chars"
+        )));
+    }
+    if request.messages.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "messages must not be empty".to_owned(),
+        ));
+    }
+    if request.messages.len() > max_messages {
+        return Err(AppError::InvalidRequest(format!(
+            "too many messages; max={max_messages}"
+        )));
+    }
+    if request
+        .max_completion_tokens
+        .or(request.max_tokens)
+        .is_some_and(|value| value > max_output_tokens)
+    {
+        return Err(AppError::InvalidRequest(format!(
+            "max_completion_tokens/max_tokens exceeds configured limit; max={max_output_tokens}"
+        )));
+    }
+    let messages_json_chars = serde_json::to_string(&request.messages)
+        .map(|value| value.chars().count())
+        .unwrap_or(0);
+    if messages_json_chars > max_messages_json_chars {
+        return Err(AppError::InvalidRequest(format!(
+            "messages JSON is too large; max={max_messages_json_chars} chars"
+        )));
+    }
+    if let Some(tools) = request.extra.get("tools") {
+        let tools = tools
+            .as_array()
+            .ok_or_else(|| AppError::InvalidRequest("tools must be an array".to_owned()))?;
+        if tools.len() > max_tools {
+            return Err(AppError::InvalidRequest(format!(
+                "too many tools; max={max_tools}"
+            )));
+        }
+        let tools_json_chars = serde_json::to_string(tools)
+            .map(|value| value.chars().count())
+            .unwrap_or(0);
+        if tools_json_chars > max_tools_json_chars {
+            return Err(AppError::InvalidRequest(format!(
+                "tools JSON is too large; max={max_tools_json_chars} chars"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn estimate_usage(request: &ExchangeRequest, resolved_model: &str) -> UsageEstimate {
     // Estimate the complete input payload, including tool schemas and flattened
     // protocol fields. The heuristic is conservative and the provider-reported
     // usage replaces it whenever a completed response exposes usage metadata.
-    let input_chars = serde_json::to_string(request)
-        .map(|value| value.chars().count())
-        .unwrap_or(0);
+    let input_chars = request.serialized_input_chars();
     let input_tokens = u64::try_from(input_chars.div_ceil(4)).unwrap_or(u64::MAX);
-    let output_tokens = request.max_tokens.unwrap_or(0);
+    let output_tokens = request.estimated_output_tokens();
     UsageEstimate {
         input_tokens,
         output_tokens,
@@ -705,24 +1210,5 @@ fn estimate_usage(request: &AnthropicRequest, resolved_model: &str) -> UsageEsti
                 cache_read_tokens: 0,
             },
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn streaming_permit_lives_until_response_body_is_dropped() {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = semaphore.clone().try_acquire_owned().unwrap();
-        let response =
-            response_holding_stream_permit(Response::new(Body::from("data: done\n\n")), permit);
-
-        assert_eq!(semaphore.available_permits(), 0);
-        drop(response);
-        assert_eq!(semaphore.available_permits(), 1);
     }
 }

@@ -165,7 +165,7 @@ impl Metrics {
         output.push_str("# TYPE modelport_message_successes_total counter\n");
         output.push_str("# HELP modelport_message_failures_total Total failed message requests by provider/model/stream.\n");
         output.push_str("# TYPE modelport_message_failures_total counter\n");
-        output.push_str("# HELP modelport_message_duration_ms_total Total message request setup duration in milliseconds.\n");
+        output.push_str("# HELP modelport_message_duration_ms_total Total message request lifecycle duration in milliseconds.\n");
         output.push_str("# TYPE modelport_message_duration_ms_total counter\n");
         output.push_str("# HELP modelport_message_input_tokens_total Total input tokens by provider/model/stream.\n");
         output.push_str("# TYPE modelport_message_input_tokens_total counter\n");
