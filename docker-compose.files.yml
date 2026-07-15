@@ -1,0 +1,16 @@
+# Explicit single-instance compatibility deployment without PostgreSQL.
+# Use only for development or small installations that accept an in-memory
+# enterprise request/budget ledger. Auth and control state remain on /data.
+services:
+  postgres:
+    profiles: ["postgres"]
+
+  modelport:
+    environment:
+      MODELPORT_DATABASE_URL: ""
+      MODELPORT_ENTERPRISE_DATABASE_URL: ""
+      MODELPORT_ENTERPRISE_MODE: "0"
+    depends_on:
+      postgres:
+        condition: service_started
+        required: false
