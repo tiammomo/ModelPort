@@ -93,11 +93,15 @@ Do not place exploit details, provider keys, session tokens, backups, or a full
   headers. Non-2xx/non-SSE error-body reads have total and idle timeouts, and a
   live stream must reach its protocol termination event rather than treating
   EOF as successful completion.
-- PostgreSQL connections currently use `NoTls`. The default Compose deployment
-  keeps them on its private bridge; external PostgreSQL must use an already
-  protected trusted path or tunnel. Do not expose this connection across an
-  untrusted network. Compose's constructed URL also requires a URL-safe password
-  or an explicitly percent-encoded `MODELPORT_DATABASE_URL` override.
+- PostgreSQL connections use SQLx with rustls. Development mode defaults to
+  `prefer`, which can fall back to an unencrypted connection when the server
+  does not offer TLS; the default development Compose database therefore stays
+  on its private bridge. Remote and production databases should use
+  `verify-full` with a trusted root and a hostname that matches the server
+  certificate. Enterprise mode requires `verify-full` and refuses to start
+  without `MODELPORT_DATABASE_URL`. Compose's constructed URL also requires a
+  URL-safe password or an explicitly percent-encoded
+  `MODELPORT_DATABASE_URL` override.
 
 `MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS=1` deliberately weakens the URL boundary
 and should only be used for a trusted internal runtime.
@@ -140,8 +144,11 @@ retain the automatically saved previous values plus a storage-native backup.
 
 1. Replace every placeholder and use a long unique admin password and router
    token.
-2. Run `scripts/config-validate.sh`; never set `MODELPORT_ALLOW_NO_AUTH=1` on a
-   shared host.
+2. Run `scripts/config-validate.sh`; it fails closed on enterprise database/TLS
+   policy, malformed PostgreSQL URLs and pool bounds, invalid lease timing,
+   trusted-proxy CIDRs, and allowed origins as well as application settings.
+   It does not test database reachability or the certificate chain. Never set
+   `MODELPORT_ALLOW_NO_AUTH=1` on a shared host.
 3. Bind to loopback or place the service behind a firewall and same-origin HTTPS
    reverse proxy.
 4. Set secure cookies, exact trusted proxies, and the expected dashboard origin.
@@ -155,13 +162,18 @@ retain the automatically saved previous values plus a storage-native backup.
 
 - No OIDC/SSO, enterprise IAM, or public multi-tenant isolation.
 - No complete DNS-rebinding protection for provider hostnames.
-- No native TLS transport for the PostgreSQL state connection.
+- The default development Compose PostgreSQL service does not provision a
+  server certificate; its `prefer` connection can remain plaintext inside the
+  private bridge. Use a TLS-configured PostgreSQL endpoint with `verify-full`
+  for an enterprise deployment.
 - Rate limits, concurrent-stream permits, and login/session state are not shared
   across instances. Stream permits remain occupied until body completion/drop.
 - Origin validation allows non-browser requests without Origin/Referer; it is
   not an authorization mechanism.
 - Secret redaction cannot recognize every credential format.
-- Quota pre-check/update is not a transactional reservation under concurrency.
+- Compatibility user/API-key/team quota pre-check/update is not a transactional
+  reservation under concurrency. The tenant budget ledger has a separate
+  transactional reservation and settlement path in PostgreSQL mode.
 
 See [Architecture](docs/ARCHITECTURE.md),
 [Configuration](docs/CONFIGURATION.md), and

@@ -53,11 +53,13 @@ Validate before startup:
 scripts/config-validate.sh
 ```
 
-The CLI and normal server startup both load `AppConfig` and evaluate the same
-`validation_issues()` boundary. Any `Error` makes `config validate` exit
-non-zero and makes the server refuse to bind; `Warning` entries are printed by
-the CLI and logged by the server while startup continues. Base-config reload
-also rejects a candidate with validation errors.
+The CLI and normal server startup both load `AppConfig`, evaluate its
+`validation_issues()` boundary, and run the same deployment-environment
+preflight. Any `Error` makes `config validate` exit non-zero and makes the
+server refuse to bind; `Warning` entries are printed by the CLI and logged by
+the server while startup continues. Base-config reload also rejects a candidate
+with application-configuration errors, but environment-only deployment changes
+still require a restart.
 
 Placeholder secrets, an invalid/missing default provider, broken aliases,
 unsafe provider definitions, and malformed guardrail values therefore do not
@@ -67,6 +69,16 @@ particular `MODELPORT_MAX_REQUEST_BODY_BYTES`,
 `MODELPORT_MAX_CONCURRENT_REQUESTS`, and `MODELPORT_USAGE_LOG_LIMIT` must be
 non-zero, as must the documented request-size, session, HTTP timeout/body, and
 SSE byte guardrails. Rate limiting has its separate explicit disable switch.
+
+The shared deployment preflight additionally validates PostgreSQL URL schemes
+and syntax without echoing credentials, database TLS policy, pool min/max and
+acquisition-timeout bounds, enterprise lease timing, trusted-proxy IP/CIDR
+entries, and allowed-origin syntax. Enterprise mode requires the control-state
+`MODELPORT_DATABASE_URL` so auth/control state cannot silently fall back to
+files, and it permits only `verify-full`. This is a local syntax and policy
+check: it does not connect to PostgreSQL, run migrations, or verify the live
+certificate chain. Startup and authenticated `/readyz` provide those runtime
+checks.
 
 ## Server, Authentication, And State
 
@@ -141,7 +153,7 @@ password used to initialize PostgreSQL.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MODELPORT_TRUSTED_PROXIES` | loopback | Comma-separated proxy IPs/CIDRs allowed to supply forwarded client IP headers. |
-| `MODELPORT_ALLOWED_ORIGINS` | unset | Extra comma-separated origins accepted for dashboard write checks. This does not enable CORS. |
+| `MODELPORT_ALLOWED_ORIGINS` | unset | Extra comma-separated absolute HTTP(S) origins accepted for dashboard write checks. Entries are scheme + host + optional port only; userinfo, path, query, and fragment are rejected. This does not enable CORS. |
 | `MODELPORT_DISABLE_CSRF` | off | Emergency local-debug bypass for dashboard write protection. |
 | `MODELPORT_EXPOSE_DETAILED_HEALTH` | off | Expose detailed `/health` without authentication. |
 | `MODELPORT_ALLOW_PRIVATE_PROVIDER_URLS` | off | Allow literal private provider addresses. IPv4-mapped IPv6 literals are normalized before this check. Use only on trusted networks. |

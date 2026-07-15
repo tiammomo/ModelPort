@@ -12,6 +12,13 @@ exact billing, or crash recovery for an in-flight live-stream lifecycle.
 - Dashboard reachable when dashboard acceptance is required.
 - A complete backup before running against important existing state.
 
+Before starting or restarting the candidate build, run
+`scripts/config-validate.sh`. Enterprise mode must fail closed when its control
+database is absent, TLS is weaker than `verify-full`, or database pool, lease,
+trusted-proxy, or allowed-origin values are malformed. This preflight validates
+local syntax and policy only; a successful result does not prove PostgreSQL
+reachability or certificate trust.
+
 The scripts create temporary users, teams, API keys, provider records, audit
 events, and backup files, then clean temporary control records. Run them only on
 an instance where those changes are acceptable.

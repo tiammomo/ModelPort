@@ -71,9 +71,9 @@ large catalog of surface features.
 | Auth and control state are two whole JSON documents, including when stored in PostgreSQL. | Writes, filtering, migrations, isolation, retention, and concurrent updates cannot meet enterprise requirements. | Replace the document store with normalized relational repositories and versioned migrations. Keep file storage for development only. |
 | Compatibility auth/control access still serializes whole-document operations through one worker per namespace; only the new ledger is row-oriented and fully async. | Identity, policy, quota, and dashboard-log concurrency still cannot meet the target. | Move each remaining document domain to tenant-scoped async repositories and transactions, then remove the compatibility workers. |
 | Sessions, login attempts, rate limits, stream permits, metrics, and parts of Provider health are process-local. | Horizontal replicas can make inconsistent decisions and reset enforcement on restart. | Move shared enforcement to PostgreSQL/Redis-backed services; retain local limits only as an additional safety valve. |
-| Quota and spend checks are preflight estimates followed by later updates. | Concurrent calls can overspend a hard budget. | Use atomic budget reservation, settlement, release, and expiry records. |
-| Cost uses floating-point values and mutable aggregate documents. | It is unsuitable for an auditable financial ledger. | Store decimal monetary values, currency, price-book version, source, and immutable adjustments. |
-| Request/attempt state is persisted before egress; live owners renew leases, and a durable worker terminalizes expired rows as unbilled `unreconciled` evidence. | An expired lease cannot prove whether the Provider accepted work or reconstruct missing usage. | Add Provider evidence ingestion, append-only adjustments, operator review, and exact settlement without mutating the original attempt. |
+| Compatibility user/API-key/team quota and spend checks are preflight estimates followed by later updates; the initial tenant budget now reserves atomically before Provider egress. | The tenant hard limit is protected, but the remaining compatibility limit dimensions can still overshoot under concurrency. | Move every hard limit onto tenant-scoped reservation, settlement, release, and expiry records. |
+| The tenant budget uses integer micro-USD balances and append-only events, while compatibility usage logs and aggregates still use floating-point values and mutable documents. | The initial budget evidence is safer, but the complete usage and pricing history is not yet an auditable financial ledger. | Store decimal monetary values, currency, price-book version, source, and immutable adjustments across all accounting domains. |
+| Request/attempt state is persisted before egress; live owners renew leases, and a durable worker terminalizes expired rows as unbilled `unreconciled` evidence. | An expired lease cannot prove whether the Provider accepted work or reconstruct missing usage. | Add Provider evidence ingestion and operator review so exact settlement can append corrective evidence without mutating the original attempt. |
 | Admin roles are coarse and local sessions are memory-only. | They do not express enterprise ownership or survive multi-instance deployment. | Add OIDC, shared sessions or signed short-lived sessions, organizations, projects, groups, service accounts, and resource-level role bindings. |
 | Provider secrets are environment-variable references. | Rotation and external secret managers are not managed consistently. | Define a secret-reference interface for Vault and cloud secret managers; cache values briefly and audit access without persisting secret material. |
 | Request IDs correlate local records, but there is no distributed trace context. | Cross-service and upstream latency cannot be diagnosed consistently. | Propagate W3C `traceparent`/`tracestate` and export OpenTelemetry traces, metrics, and logs. |
@@ -448,10 +448,11 @@ observable and regression tested; architectural decisions are reviewed.
 Current progress (2026-07-15): SQLx/Tokio pooling, rustls TLS policy, embedded
 versioned migrations, organization/project/environment keys, and mandatory-
 tenant request/Provider-attempt lifecycle rows, hashed request idempotency
-claims, renewable instance leases, and periodic expired-row reconciliation are
-shipped. The compatibility auth/control documents still exist, and response
-replay, principals, memberships, policies, reservations, append-only
-settlement, evidence ingestion, import/rollback tooling, and multi-instance
+claims, renewable instance leases, periodic expired-row reconciliation,
+transactional tenant-budget reservation/settlement/release, and append-only
+manual adjustment evidence are shipped. The compatibility auth/control
+documents still exist, and response replay, principals, memberships, policies,
+Provider evidence ingestion, import/rollback tooling, and multi-instance
 conflict tests remain open. The E1 exit gate is therefore not met.
 
 - Introduce async pooled PostgreSQL with TLS and versioned migrations.

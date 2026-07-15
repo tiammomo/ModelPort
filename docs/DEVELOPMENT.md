@@ -40,9 +40,12 @@ the local `.env`. Before launching a stopped service, `scripts/start.sh` reuses
 `cargo build --release --locked`. `scripts/config-validate.sh` uses the same
 freshness helper. Set `MODELPORT_FORCE_BUILD=1` to bypass the cache explicitly.
 
-`model-port config validate` and normal server startup call the same
-`AppConfig::validation_issues()` checks. Add a regression test whenever a new
-configuration error should fail closed; do not rely on the CLI wrapper alone.
+`model-port config validate` and normal server startup call the same application
+checks and deployment-environment preflight. Add a regression test whenever a
+new configuration, database/TLS, lease, proxy, or origin error should fail
+closed; do not rely on the CLI wrapper alone. Preflight is intentionally
+connection-free, so database reachability and certificate verification still
+belong in runtime integration tests.
 
 ## Dashboard
 

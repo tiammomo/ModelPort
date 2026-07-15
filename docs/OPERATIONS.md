@@ -27,11 +27,15 @@ scripts/smoke-test.sh --upstream
 
 For a release or production trial, use [Production Acceptance](ACCEPTANCE.md).
 
-`scripts/config-validate.sh` uses the same configuration issue set as server
-startup. Validation errors—including placeholders, broken provider/alias
-relationships, and invalid or zero-valued non-zero guardrails—also make the
-server refuse to start. Warnings remain visible in the service log but do not
-block startup.
+`scripts/config-validate.sh` uses the same application and deployment preflight
+as server startup. Validation errors—including placeholders, broken
+provider/alias relationships, invalid or zero-valued non-zero guardrails,
+malformed PostgreSQL URLs/pool bounds, enterprise database/TLS policy, lease
+timing, trusted proxies, and allowed origins—also make the server refuse to
+start. Warnings remain visible in the service log but do not block startup.
+The command does not connect to PostgreSQL or prove that the configured root
+certificate and hostname are accepted; startup and authenticated `/readyz`
+cover reachability after the local preflight succeeds.
 
 ## Health Semantics
 
@@ -312,6 +316,7 @@ pause and the reconciliation interval below the TTL.
 | Provider is cooling down | Recent retryable/account failures; ordinary non-retryable 4xx responses do not trigger cooldown. Verify key, rate limit, and balance. |
 | Provider pool has no usable credential | `failover`/`round_robin` fail closed when every credential is disabled, cooling down, or missing its environment value; repair the pool or verify the next Provider candidate. |
 | Dashboard cross-origin failure | Use a same-origin reverse proxy; `MODELPORT_ALLOWED_ORIGINS` is not a CORS switch. |
+| `config validate` rejects enterprise mode | Set a valid `MODELPORT_DATABASE_URL`, use `MODELPORT_DATABASE_TLS_MODE=verify-full`, and fix any reported pool, lease, proxy, or origin syntax before restarting. Validation errors intentionally prevent the server from binding. |
 | Auth/control state write latency grows | Lower usage retention while the compatibility documents remain; the normalized request/attempt ledger is already row-oriented, but identity/policy/usage-log migration is not complete. |
 | `/readyz` reports enterprise ledger failure | Check PostgreSQL reachability, migration permissions, pool exhaustion, TLS mode, root certificate, and hostname verification. |
 | `lease_expired_unreconciled` rows appear | Check process restarts, runtime stalls, PostgreSQL availability, and heartbeat warnings. Do not bill these rows without Provider evidence. |
