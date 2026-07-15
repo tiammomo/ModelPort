@@ -186,7 +186,7 @@ function GatewayOperationsPanel({
   return (
     <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
       <Card className="overflow-hidden">
-        <CardHeader className="border-b bg-muted/20 pb-4">
+        <CardHeader className="border-b pb-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -205,18 +205,18 @@ function GatewayOperationsPanel({
           </div>
         </CardHeader>
         <CardContent className="space-y-4 p-4">
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-lg border bg-muted/20 p-3">
+          <div className="grid overflow-hidden border-y bg-card lg:grid-cols-3 lg:divide-x">
+            <div className="px-3 py-3">
               <p className="text-xs text-muted-foreground">可用 Provider</p>
               <p className="mt-1 font-mono text-lg font-semibold">{healthyProviders} / {stats.providerHealth.length}</p>
               <p className="mt-1 text-xs text-muted-foreground">基于当前运行健康记录</p>
             </div>
-            <div className="rounded-lg border bg-muted/20 p-3">
+            <div className="border-t px-3 py-3 lg:border-t-0">
               <p className="text-xs text-muted-foreground">最近异常</p>
               <p className="mt-1 font-mono text-lg font-semibold">{formatNumber(errorCount)}</p>
               <p className="mt-1 text-xs text-muted-foreground">最近 {logs.length} 条记录；不等同于协议错误</p>
             </div>
-            <div className="rounded-lg border bg-muted/20 p-3">
+            <div className="border-t px-3 py-3 lg:border-t-0">
               <p className="text-xs text-muted-foreground">当前首选路由</p>
               <p className="mt-1 truncate font-mono text-sm font-semibold" title={primaryModel}>{primaryModel || '未配置'}</p>
               <p className="mt-1 truncate text-xs text-muted-foreground">{primaryProvider?.displayName || '等待可用 Provider'}</p>
@@ -253,7 +253,7 @@ function GatewayOperationsPanel({
       </Card>
 
       <Card>
-        <CardHeader className="border-b bg-muted/20 pb-4">
+        <CardHeader className="border-b pb-4">
           <CardTitle className="flex items-center gap-2 text-base">
             <Wrench className="h-4 w-4 text-primary" />
             上游渠道状态
@@ -311,7 +311,7 @@ function ProviderBreakdown({
           {activeProviders.length} 个可用
         </span>
       </CardHeader>
-      <CardContent className="pt-0">
+      <CardContent className="p-0">
         {providers.length === 0 ? (
           <EmptyState
             icon={Database}
@@ -320,50 +320,50 @@ function ProviderBreakdown({
             className="py-8"
           />
         ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {providers.slice(0, 6).map((provider) => (
-            <div key={provider.providerId} className="rounded-lg border bg-muted/20 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <p className="truncate text-sm font-semibold">{provider.displayName}</p>
-                    {provider.rechargeRequired && (
-                      <span className="rounded-full bg-amber-500 px-2 py-0.5 text-xs font-medium text-white">
-                        等待充值
-                      </span>
-                    )}
+          <div className="grid gap-px border-y bg-border md:grid-cols-2 xl:grid-cols-3">
+            {providers.slice(0, 6).map((provider) => (
+              <div key={provider.providerId} className="min-w-0 bg-card px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-semibold">{provider.displayName}</p>
+                      {provider.rechargeRequired && (
+                        <span className="rounded-full bg-amber-500 px-2 py-0.5 text-xs font-medium text-white">
+                          等待充值
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{provider.providerId}</p>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{provider.providerId}</p>
+                  <span
+                    className={cn(
+                      'rounded-full px-2 py-0.5 text-xs font-medium',
+                      provider.status === 'healthy' && 'bg-emerald-500/10 text-emerald-600',
+                      provider.status === 'degraded' && 'bg-amber-500/10 text-amber-600',
+                      provider.status === 'cooldown' && 'bg-violet-500/10 text-violet-600',
+                      provider.status === 'down' && 'bg-rose-500/10 text-rose-600',
+                    )}
+                  >
+                    {statusText(provider.status)}
+                  </span>
                 </div>
-                <span
-                  className={cn(
-                    'rounded-full px-2 py-0.5 text-xs font-medium',
-                    provider.status === 'healthy' && 'bg-emerald-500/10 text-emerald-600',
-                    provider.status === 'degraded' && 'bg-amber-500/10 text-amber-600',
-                    provider.status === 'cooldown' && 'bg-violet-500/10 text-violet-600',
-                    provider.status === 'down' && 'bg-rose-500/10 text-rose-600',
-                  )}
-                >
-                  {statusText(provider.status)}
-                </span>
+                <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <p className="text-muted-foreground">请求</p>
+                    <p className="mt-1 font-mono font-semibold">{formatNumber(provider.requestsTotal)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Token</p>
+                    <p className="mt-1 font-mono font-semibold">{formatNumber(providerTokens(provider))}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">费用</p>
+                    <p className="mt-1 font-mono font-semibold">{formatUsd(provider.costEstimateUsdTotal || 0, 4)}</p>
+                  </div>
+                </div>
               </div>
-              <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
-                <div>
-                  <p className="text-muted-foreground">请求</p>
-                  <p className="mt-1 font-mono font-semibold">{formatNumber(provider.requestsTotal)}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Token</p>
-                  <p className="mt-1 font-mono font-semibold">{formatNumber(providerTokens(provider))}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">费用</p>
-                  <p className="mt-1 font-mono font-semibold">{formatUsd(provider.costEstimateUsdTotal || 0, 4)}</p>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -391,65 +391,65 @@ function ModelDistributionCard({
             className="min-h-[260px] py-8"
           />
         ) : (
-          <div className="grid gap-4 xl:grid-cols-[240px_1fr]">
-          <div className="flex min-h-[220px] items-center justify-center">
-            {pieData.length > 0 && (
-              <ResponsiveContainer width="100%" height={220}>
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={54}
-                    outerRadius={86}
-                    paddingAngle={1.2}
-                    minAngle={pieData.length > 1 ? 4 : 0}
-                    cornerRadius={2}
-                    dataKey="value"
-                    stroke="var(--card)"
-                    strokeWidth={2}
-                  >
-                    {pieData.map((_, idx) => (
-                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip {...TOOLTIP_STYLE} />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>模型</TableHead>
-                <TableHead className="text-right">请求</TableHead>
-                <TableHead className="text-right">Token</TableHead>
-                <TableHead className="text-right">费用</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row, idx) => (
-                <TableRow key={`${row.provider}:${row.model}`}>
-                  <TableCell>
-                    <div className="flex min-w-0 items-start gap-2">
-                      <span
-                        className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background"
-                        style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}
-                      />
-                      <div className="min-w-0">
-                        <div className="max-w-[220px] truncate font-mono text-xs font-medium">{row.model}</div>
-                        <div className="text-xs text-muted-foreground">{row.provider}</div>
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatNumber(row.requests)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatNumber(row.tokens)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatUsd(row.cost, 4)}</TableCell>
+          <div className="grid gap-4 2xl:grid-cols-[240px_1fr]">
+            <div className="flex min-h-[220px] items-center justify-center">
+              {pieData.length > 0 && (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie
+                      data={pieData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={54}
+                      outerRadius={86}
+                      paddingAngle={1.2}
+                      minAngle={pieData.length > 1 ? 4 : 0}
+                      cornerRadius={2}
+                      dataKey="value"
+                      stroke="var(--card)"
+                      strokeWidth={2}
+                    >
+                      {pieData.map((_, idx) => (
+                        <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip {...TOOLTIP_STYLE} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>模型</TableHead>
+                  <TableHead className="text-right">请求</TableHead>
+                  <TableHead className="text-right">Token</TableHead>
+                  <TableHead className="text-right">费用</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row, idx) => (
+                  <TableRow key={`${row.provider}:${row.model}`}>
+                    <TableCell>
+                      <div className="flex min-w-0 items-start gap-2">
+                        <span
+                          className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background"
+                          style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}
+                        />
+                        <div className="min-w-0">
+                          <div className="max-w-[220px] truncate font-mono text-xs font-medium">{row.model}</div>
+                          <div className="text-xs text-muted-foreground">{row.provider}</div>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">{formatNumber(row.requests)}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">{formatNumber(row.tokens)}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">{formatUsd(row.cost, 4)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -500,29 +500,31 @@ function RecentUsageCard({ logs }: { logs: RequestLog[] }) {
         <CardTitle className="text-base">最近使用</CardTitle>
         <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">近 {logs.length} 条</span>
       </CardHeader>
-      <CardContent className="space-y-3 pt-0">
+      <CardContent className="p-0">
         {logs.length === 0 ? (
           <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">暂无请求记录</div>
         ) : (
-          logs.slice(0, 5).map((log) => (
-            <div key={log.id} className="flex items-center justify-between gap-4 rounded-lg bg-muted/35 p-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
-                  <Box className="h-4 w-4" />
+          <div className="divide-y border-y">
+            {logs.slice(0, 5).map((log) => (
+              <div key={log.id} className="flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-muted/25">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600">
+                    <Box className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-sm font-medium">{log.resolvedModel || log.model}</p>
+                    <p className="text-xs text-muted-foreground">{formatRelativeTime(log.timestamp)}</p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <p className="truncate font-mono text-sm font-medium">{log.resolvedModel || log.model}</p>
-                  <p className="text-xs text-muted-foreground">{formatRelativeTime(log.timestamp)}</p>
+                <div className="shrink-0 text-right">
+                  <p className="font-mono text-sm font-semibold text-emerald-600">{formatUsd(log.costEstimate || 0, 4)}</p>
+                  <p className="text-xs text-muted-foreground">{formatNumber(log.totalTokens || 0)} tokens</p>
                 </div>
               </div>
-              <div className="shrink-0 text-right">
-                <p className="font-mono text-sm font-semibold text-emerald-600">{formatUsd(log.costEstimate || 0, 4)}</p>
-                <p className="text-xs text-muted-foreground">{formatNumber(log.totalTokens || 0)} tokens</p>
-              </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
-        <Button asChild variant="ghost" className="w-full text-primary">
+        <Button asChild variant="ghost" className="h-11 w-full rounded-none text-primary">
           <Link to="/logs">
             查看全部
             <ArrowRight className="h-4 w-4" />
@@ -546,14 +548,14 @@ function QuickActionsCard() {
       <CardHeader className="pb-3">
         <CardTitle className="text-base">快捷操作</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3 pt-0">
+      <CardContent className="divide-y border-y p-0">
         {actions.map((action) => {
           const Icon = action.icon
           return (
             <Link
               key={action.to}
               to={action.to}
-              className="flex items-center justify-between gap-4 rounded-lg bg-muted/35 p-4 transition-colors hover:bg-muted"
+              className="flex items-center justify-between gap-4 px-4 py-3.5 transition-colors hover:bg-muted/35"
             >
               <div className="flex min-w-0 items-center gap-3">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -607,14 +609,14 @@ function FirstRunGuide({ stats }: { stats: DashboardStats }) {
   ]
 
   return (
-    <Card className="border-primary/20 bg-primary/[0.025]">
+    <Card className="overflow-hidden border-primary/20 bg-primary/[0.025]">
       <CardHeader className="pb-3">
         <CardTitle className="text-base">完成首次接入</CardTitle>
         <p className="text-sm text-muted-foreground">按顺序完成上游、路由、访问凭据和请求验证，避免拿到 Key 后才发现路由不可用。</p>
       </CardHeader>
-      <CardContent className="grid gap-3 pt-0 sm:grid-cols-2 xl:grid-cols-4">
+      <CardContent className="grid gap-px border-t bg-border p-0 md:grid-cols-2 xl:grid-cols-4">
         {steps.map((step, index) => (
-          <Link key={step.title} to={step.to} className="group rounded-lg border bg-background p-3 transition-colors hover:border-primary/40 hover:bg-primary/[0.03]">
+          <Link key={step.title} to={step.to} className="group min-w-0 bg-card px-4 py-3.5 transition-colors hover:bg-primary/[0.045]">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-muted-foreground">步骤 {index + 1}</span>
               {step.done
@@ -755,7 +757,7 @@ export function DashboardPage() {
   // ---- Render ----
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* ---------------------------------------------------------------- */}
       {/* Header                                                           */}
       {/* ---------------------------------------------------------------- */}
@@ -802,7 +804,7 @@ export function DashboardPage() {
       {/* ---------------------------------------------------------------- */}
       {/* Metric Cards                                                     */}
       {/* ---------------------------------------------------------------- */}
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           title={`${rangeName}请求`}
           value={formatNumber(summary.totalRequests)}
@@ -836,14 +838,14 @@ export function DashboardPage() {
         />
       </div>
 
-      <Card className="overflow-hidden">
-        <CardContent className="grid grid-cols-2 divide-x divide-y p-0 lg:grid-cols-4 lg:divide-y-0">
+      <section aria-label="补充运行指标" className="overflow-hidden border-y bg-card">
+        <div className="grid grid-cols-2 divide-x divide-y lg:grid-cols-4 lg:divide-y-0">
           <OperationalStat label={`${rangeName} Token`} value={formatNumber(summaryTokens)} detail={summaryTokenDesc} />
           <OperationalStat label="范围吞吐" value={`${formatRate(summary?.rpm ?? 0)} RPM`} detail={`${formatRate(summary?.tpm ?? 0)} TPM`} />
           <OperationalStat label="客户端密钥" value={`${formatNumber(stats.apiKeysActive ?? 0)} / ${formatNumber(stats.apiKeysTotal ?? 0)}`} detail="启用 / 总数" />
           <OperationalStat label="缓存命中" value={formatPercentValue(cacheHitRate)} detail={`读 ${formatNumber(summaryCacheReadTokens)} Token`} />
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       <GatewayOperationsPanel
         stats={stats}
@@ -925,12 +927,12 @@ export function DashboardPage() {
 
       <ProviderBreakdown providers={stats.providerHealth} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2">
         <ModelDistributionCard rows={modelUsageRows} pieData={modelPieData} />
         <TokenTrendCard data={tokenTrendData} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+      <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
         <RecentUsageCard logs={logsData?.logs ?? []} />
         <QuickActionsCard />
       </div>

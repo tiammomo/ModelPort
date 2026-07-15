@@ -73,7 +73,7 @@ export function MetricCard({
                 </div>
               </div>
               {sparkline && sparkline.length > 0 && (
-                <Sparkline data={sparkline} width={52} height={28} className="hidden shrink-0 opacity-70 xl:block" />
+                <Sparkline data={sparkline} width={52} height={28} className="hidden shrink-0 opacity-70 2xl:block" />
               )}
             </div>
 

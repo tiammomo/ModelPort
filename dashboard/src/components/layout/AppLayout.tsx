@@ -7,9 +7,9 @@ import { Toaster } from 'sonner'
 import { useEffect, useState } from 'react'
 
 function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches)
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 1023px)').matches)
   useEffect(() => {
-    const mq = window.matchMedia('(max-width: 768px)')
+    const mq = window.matchMedia('(max-width: 1023px)')
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
     mq.addEventListener('change', handler)
     return () => mq.removeEventListener('change', handler)
@@ -70,8 +70,12 @@ export function AppLayout() {
           isMobile={isMobile}
           mobileMenuOpen={mobileOpen}
         />
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto bg-muted/15 px-4 py-5 outline-none md:px-6 md:py-6">
-          <div className="mx-auto w-full max-w-[1600px]">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="flex-1 overflow-y-auto bg-muted/15 px-3 py-5 outline-none sm:px-4 md:py-6 lg:px-5 2xl:px-6"
+        >
+          <div className="mx-auto w-full max-w-[1920px]">
             <Outlet />
           </div>
         </main>

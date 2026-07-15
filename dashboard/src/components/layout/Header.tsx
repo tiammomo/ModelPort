@@ -62,19 +62,21 @@ export function Header({ onMenuClick, isMobile, mobileMenuOpen }: HeaderProps) {
 
       <div className="flex items-center gap-1.5">
         {/* Command palette trigger */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="hidden h-8 gap-2 text-xs text-muted-foreground md:flex"
-          onClick={openCommandPalette}
-          aria-label="打开快速导航"
-        >
-          <Search className="h-3.5 w-3.5" />
-          <span>快速跳转</span>
-          <kbd className="pointer-events-none ml-1 select-none rounded border border-border/75 bg-muted/70 px-1.5 font-mono text-[10px] font-medium">
-            {isMac ? '⌘' : 'Ctrl+'}K
-          </kbd>
-        </Button>
+        {!isMobile && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-2 text-xs text-muted-foreground"
+            onClick={openCommandPalette}
+            aria-label="打开快速导航"
+          >
+            <Search className="h-3.5 w-3.5" />
+            <span>快速跳转</span>
+            <kbd className="pointer-events-none ml-1 select-none rounded border border-border/75 bg-muted/70 px-1.5 font-mono text-[10px] font-medium">
+              {isMac ? '⌘' : 'Ctrl+'}K
+            </kbd>
+          </Button>
+        )}
 
         {isMobile && (
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={openCommandPalette} aria-label="打开快速导航">
