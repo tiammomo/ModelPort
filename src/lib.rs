@@ -6,6 +6,7 @@ mod config;
 mod control;
 mod control_view;
 mod database;
+mod deployment;
 mod domain;
 mod enterprise_ledger;
 mod error;

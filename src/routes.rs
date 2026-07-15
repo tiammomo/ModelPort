@@ -132,12 +132,17 @@ enum IpRule {
 
 impl TrustedProxyConfig {
     pub fn from_env() -> Result<Self, AppError> {
+        let value = env::var("MODELPORT_TRUSTED_PROXIES").ok();
+        Self::from_value(value.as_deref())
+    }
+
+    pub(crate) fn from_value(value: Option<&str>) -> Result<Self, AppError> {
         let mut rules = vec![
             IpRule::Exact(IpAddr::from([127, 0, 0, 1])),
             IpRule::Exact(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1])),
         ];
 
-        if let Ok(value) = env::var("MODELPORT_TRUSTED_PROXIES") {
+        if let Some(value) = value {
             for item in value
                 .split(',')
                 .map(str::trim)
@@ -165,6 +170,38 @@ impl TrustedProxyConfig {
     fn is_trusted(&self, ip: IpAddr) -> bool {
         ip.is_loopback() || self.rules.iter().any(|rule| ip_rule_matches(rule, ip))
     }
+}
+
+pub(crate) fn validate_allowed_origins_from_env() -> Result<(), AppError> {
+    let value = env::var("MODELPORT_ALLOWED_ORIGINS").ok();
+    validate_allowed_origins(value.as_deref())
+}
+
+fn validate_allowed_origins(value: Option<&str>) -> Result<(), AppError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    for origin in value.split(',').map(str::trim) {
+        let authority = origin
+            .strip_prefix("https://")
+            .or_else(|| origin.strip_prefix("http://"))
+            .filter(|authority| !authority.is_empty())
+            .ok_or_else(|| {
+                AppError::Config(
+                    "MODELPORT_ALLOWED_ORIGINS entries must be absolute http:// or https:// origins"
+                        .to_owned(),
+                )
+            })?;
+        if authority.contains(['/', '?', '#', '@'])
+            || authority.parse::<axum::http::uri::Authority>().is_err()
+        {
+            return Err(AppError::Config(
+                "MODELPORT_ALLOWED_ORIGINS entries must contain only scheme, host, and optional port"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl GatewaySecurityPolicy {
@@ -3945,6 +3982,20 @@ data: [DONE]
                 .iter()
                 .any(|row| row.get("type").and_then(Value::as_str) == Some("apiKey"))
         );
+    }
+
+    #[test]
+    fn deployment_network_values_reject_invalid_proxies_and_origins() {
+        assert!(TrustedProxyConfig::from_value(Some("10.0.0.0/8,192.0.2.10")).is_ok());
+        assert!(TrustedProxyConfig::from_value(Some("not-a-network")).is_err());
+
+        assert!(
+            validate_allowed_origins(Some("https://console.example.com,http://127.0.0.1:5173"))
+                .is_ok()
+        );
+        assert!(validate_allowed_origins(Some("console.example.com")).is_err());
+        assert!(validate_allowed_origins(Some("https://user@example.com")).is_err());
+        assert!(validate_allowed_origins(Some("https://example.com/admin")).is_err());
     }
 
     #[test]

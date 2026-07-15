@@ -8,6 +8,7 @@ use crate::{
     auth::AuthStore,
     config::{AppConfig, ConfigIssueSeverity, RuntimeConfig},
     control::ControlStore,
+    deployment,
     enterprise_ledger::EnterpriseLedger,
     http::HttpTransport,
     metrics::Metrics,
@@ -16,6 +17,7 @@ use crate::{
 
 pub(crate) async fn serve() -> Result<(), AppError> {
     let config = AppConfig::load()?;
+    deployment::validate_environment()?;
     let issues = config.validation_issues();
     let errors = issues
         .iter()

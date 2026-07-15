@@ -8,7 +8,7 @@ use crate::{
     auth::AuthStore,
     config::{AppConfig, ConfigIssueSeverity},
     control::ControlStore,
-    enterprise_ledger::EnterpriseLedger,
+    deployment,
     storage::{JsonStore, write_json_file_atomic},
 };
 
@@ -75,7 +75,7 @@ fn parse_command(args: &[String]) -> Result<Command, AppError> {
 
 fn validate_config() -> Result<(), AppError> {
     let config = AppConfig::load()?;
-    EnterpriseLedger::validate_configuration()?;
+    deployment::validate_environment()?;
     let issues = config.validation_issues();
     let errors = issues
         .iter()

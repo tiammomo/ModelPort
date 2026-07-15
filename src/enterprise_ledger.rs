@@ -450,7 +450,7 @@ impl EnterpriseLedger {
     }
 
     pub(crate) async fn connect_from_env() -> Result<Self, AppError> {
-        let enterprise = enterprise_mode_enabled();
+        let enterprise = enterprise_mode_enabled()?;
         let (lease_ttl, reconcile_interval) = lease_config()?;
         if enterprise && control_database_url().is_none() {
             return Err(AppError::Config(
@@ -468,7 +468,7 @@ impl EnterpriseLedger {
             return Ok(Self::memory());
         };
 
-        let pool = connect_pool(&database_url, None, enterprise).await?;
+        let pool = connect_pool(&database_url, None).await?;
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await

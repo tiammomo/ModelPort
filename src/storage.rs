@@ -311,7 +311,7 @@ async fn connect_and_initialize(
     namespace: &str,
     file_path: &Path,
 ) -> Result<PgPool, AppError> {
-    let pool = connect_pool(database_url, Some(1), false).await?;
+    let pool = connect_pool(database_url, Some(1)).await?;
     initialize_postgres(&pool).await?;
     import_file_if_empty(&pool, namespace, file_path).await?;
     Ok(pool)
