@@ -181,7 +181,7 @@ function GatewayOperationsPanel({
   const providerIssues = stats.providerHealth.filter(
     (provider) => provider.status !== 'healthy' || provider.rechargeRequired,
   )
-  const allHealthy = stats.providerHealth.length > 0 && providerIssues.length === 0
+  const allProvidersHealthy = stats.providerHealth.length > 0 && providerIssues.length === 0
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
@@ -190,17 +190,17 @@ function GatewayOperationsPanel({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
-                {allHealthy
+                {allProvidersHealthy
                   ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                   : <TriangleAlert className="h-4 w-4 text-amber-600" />}
                 运行状态
               </CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">
-                先确认路由是否可用，再处理异常请求和上游账号问题。
+                基于 Provider 健康记录定位异常请求和上游账号问题。
               </p>
             </div>
-            <Badge variant={allHealthy ? 'success' : providerIssues.length > 0 ? 'warning' : 'secondary'}>
-              {allHealthy ? '路由正常' : providerIssues.length > 0 ? `${providerIssues.length} 项需关注` : '等待 Provider'}
+            <Badge variant={allProvidersHealthy ? 'success' : providerIssues.length > 0 ? 'warning' : 'secondary'}>
+              {allProvidersHealthy ? 'Provider 健康' : providerIssues.length > 0 ? `${providerIssues.length} 项需关注` : '等待 Provider'}
             </Badge>
           </div>
         </CardHeader>

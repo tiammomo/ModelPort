@@ -22,6 +22,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
+import { gatewayProcessStatus } from './sidebar-status'
 
 const iconMap: Record<string, React.ElementType> = {
   LayoutDashboard,
@@ -53,7 +54,7 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
     staleTime: 10_000,
     retry: 1,
   })
-  const connected = !livenessError && liveness?.status === 'ok'
+  const processStatus = gatewayProcessStatus(liveness?.status, livenessError)
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -146,9 +147,9 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
         {/* Status indicator + collapse toggle */}
         <div className="flex items-center justify-between p-2">
           {!isCollapsed && (
-            <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground" title={connected ? '网关健康检查正常' : '暂时无法确认网关状态'}>
-              <span className={cn('h-2 w-2 shrink-0 rounded-full shadow-[0_0_0_3px_currentColor]', connected ? 'bg-emerald-500 text-emerald-500/10' : livenessError ? 'bg-rose-500 text-rose-500/10' : 'bg-amber-500 text-amber-500/10')} />
-              <span className="truncate">{connected ? '网关已连接' : livenessError ? '连接异常' : '正在检查'}</span>
+            <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground" title={processStatus.title}>
+              <span className={cn('h-2 w-2 shrink-0 rounded-full shadow-[0_0_0_3px_currentColor]', processStatus.kind === 'online' ? 'bg-emerald-500 text-emerald-500/10' : processStatus.kind === 'error' ? 'bg-rose-500 text-rose-500/10' : 'bg-amber-500 text-amber-500/10')} />
+              <span className="truncate">{processStatus.label}</span>
             </div>
           )}
           {!mobile && (
