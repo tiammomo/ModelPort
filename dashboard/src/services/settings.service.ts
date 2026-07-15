@@ -30,6 +30,21 @@ export const settingsService = {
     await mockDelay(undefined)
   },
 
+  updateProviderOrder: async (providerOrder: string[]): Promise<void> => {
+    if (!isMockMode) {
+      await api.put('/admin/settings', { gateway: { providerOrder } })
+      return
+    }
+    mockSettingsStore = {
+      ...mockSettingsStore,
+      gateway: {
+        ...mockSettingsStore.gateway,
+        providerOrder,
+      },
+    }
+    await mockDelay(undefined)
+  },
+
   testProviderConnection: (providerId: string): Promise<{ success: boolean; message: string; testedAt?: string; models?: string[]; modelCount?: number }> => {
     if (!isMockMode) return api.post('/admin/settings/test-provider', { providerId })
     const provider = mockProviders.find((item) => item.id === providerId)

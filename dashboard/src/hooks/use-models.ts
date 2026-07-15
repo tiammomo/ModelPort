@@ -242,3 +242,36 @@ export function useUpdateDefaultProvider() {
     },
   })
 }
+
+export function useUpdateProviderOrder() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (providerOrder: string[]) => modelsService.updateProviderOrder(providerOrder),
+    onMutate: async (providerOrder) => {
+      await qc.cancelQueries({ queryKey: queryKeys.settings })
+      const previousSettings = qc.getQueryData<SystemSettings>(queryKeys.settings)
+      qc.setQueryData<SystemSettings>(queryKeys.settings, (current) => current
+        ? {
+            ...current,
+            gateway: {
+              ...current.gateway,
+              providerOrder,
+            },
+          }
+        : current)
+      return { previousSettings }
+    },
+    onError: (_error, _providerOrder, context) => {
+      if (context?.previousSettings) {
+        qc.setQueryData(queryKeys.settings, context.previousSettings)
+      }
+    },
+    onSettled: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.providers }),
+        qc.invalidateQueries({ queryKey: queryKeys.settings }),
+        qc.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ])
+    },
+  })
+}

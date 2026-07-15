@@ -16,6 +16,7 @@ import {
   useToggleModel,
   useUpdateDefaultModel,
   useUpdateDefaultProvider,
+  useUpdateProviderOrder,
   useUpdateProvider,
   useUpdateProviderCredential,
   useUpdateProviderCredentialPoolMode,
@@ -87,8 +88,11 @@ import {
   validateProviderForm,
   type ProviderReadinessLevel,
 } from '@/features/models/operator-state'
+import { moveProviderInOrder, normalizeProviderOrder, type ProviderOrderDirection } from '@/features/models/provider-order'
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -168,6 +172,7 @@ export function ModelsPage() {
   const bulkToggleModels = useBulkToggleModels()
   const updateDefaultModel = useUpdateDefaultModel()
   const updateDefault = useUpdateDefaultProvider()
+  const updateProviderOrder = useUpdateProviderOrder()
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
   const [expandedModel, setExpandedModel] = useState<string | null>(null)
@@ -202,8 +207,19 @@ export function ModelsPage() {
   } | null>(null)
 
   const configuredProviderIds = useMemo(() => new Set(providers.map((provider) => provider.id)), [providers])
-  const activeProviders = providers.filter((provider) => provider.status === 'active')
   const defaultProvider = settings?.gateway.defaultProvider.trim() ?? ''
+  const providerOrder = useMemo(
+    () => normalizeProviderOrder(settings?.gateway.providerOrder, providers.map((provider) => provider.id)),
+    [providers, settings?.gateway.providerOrder],
+  )
+  const orderedProviders = useMemo(() => {
+    const providersById = new Map(providers.map((provider) => [provider.id, provider]))
+    return providerOrder.flatMap((providerId) => {
+      const provider = providersById.get(providerId)
+      return provider ? [provider] : []
+    })
+  }, [providerOrder, providers])
+  const activeProviders = orderedProviders.filter((provider) => provider.status === 'active')
   const rechargeProviders = useMemo(() => providers.filter(providerNeedsRecharge), [providers])
   const degradedProviders = useMemo(() => providers.filter(providerIsDegraded), [providers])
   const filteredProviders = useMemo(() => providers.filter((provider) => {
@@ -235,7 +251,7 @@ export function ModelsPage() {
   const modelRows = useMemo<ModelRow[]>(() => {
     const rows = new Map<string, ModelChannel[]>()
 
-    providers.forEach((provider, priority) => {
+    orderedProviders.forEach((provider, priority) => {
       provider.models.forEach((model) => {
         const channels = rows.get(model) || []
         channels.push({
@@ -259,7 +275,7 @@ export function ModelsPage() {
         }
       })
       .sort((a, b) => a.family.localeCompare(b.family) || a.model.localeCompare(b.model))
-  }, [providers])
+  }, [orderedProviders])
 
   const filteredModelRows = useMemo(() => modelRows.filter((row) => {
     const haystack = [
@@ -512,6 +528,14 @@ export function ModelsPage() {
       onError: (error) => toast.error(
         error instanceof Error ? error.message : '更新默认供应商失败',
       ),
+    })
+  }
+
+  const handleMoveProvider = (provider: Provider, direction: ProviderOrderDirection) => {
+    const nextOrder = moveProviderInOrder(providerOrder, provider.id, direction)
+    updateProviderOrder.mutate(nextOrder, {
+      onSuccess: () => toast.success(`${providerDisplayTitle(provider)} 已${direction === 'up' ? '上移' : '下移'}，路由顺序已生效`),
+      onError: (error) => toast.error(error instanceof Error ? error.message : '更新 Provider 路由顺序失败'),
     })
   }
 
@@ -1118,9 +1142,9 @@ export function ModelsPage() {
           ) : (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
+              <CardTitle className="flex items-center gap-2 text-base" role="heading" aria-level={2}>
                 <Settings className="h-4 w-4" />
-                默认提供商
+                默认路由策略
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1146,19 +1170,62 @@ export function ModelsPage() {
               </div>
 
               <div className="space-y-2">
-                <div>
-                  <Label>Provider 解析顺序</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">此处仅展示当前有效顺序；请通过部署配置或设置 API 调整，不支持拖拽。</p>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <Label>Provider 解析顺序</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">同名模型从上到下匹配可用 Provider；调整后立即保存并参与新请求路由。</p>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground" aria-live="polite">
+                    {updateProviderOrder.isPending ? '正在保存…' : `${orderedProviders.length} 个 Provider`}
+                  </span>
                 </div>
-                <div className="space-y-1">
-                  {providers.map((provider, index) => (
-                    <div key={provider.id} className="flex items-center gap-3 rounded-md border px-3 py-2">
-                      <span className="w-6 text-sm text-muted-foreground">{index + 1}</span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{providerDisplayTitle(provider)}</span>
+                {orderedProviders.length > 0 ? <div className="divide-y border-y">
+                  {orderedProviders.map((provider, index) => (
+                    <div key={provider.id} className="flex min-h-14 items-center gap-3 py-2">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground" aria-label={`优先级 ${index + 1}`}>
+                        {index + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="truncate text-sm font-medium">{providerDisplayTitle(provider)}</span>
+                          {index === 0 && <Badge variant="secondary" className="text-[10px]">最高优先级</Badge>}
+                          {provider.id === defaultProvider && <Badge variant="outline" className="text-[10px]">默认</Badge>}
+                        </div>
+                        <p className="truncate font-mono text-xs text-muted-foreground">{provider.id}</p>
+                      </div>
                       <StatusBadge status={provider.status} />
+                      <div className="flex shrink-0 items-center gap-1" aria-label={`${providerDisplayTitle(provider)} 排序操作`}>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          disabled={!canManage || updateProviderOrder.isPending || index === 0}
+                          onClick={() => handleMoveProvider(provider, 'up')}
+                          aria-label={`上移 ${providerDisplayTitle(provider)}`}
+                          title="提高路由优先级"
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          disabled={!canManage || updateProviderOrder.isPending || index === orderedProviders.length - 1}
+                          onClick={() => handleMoveProvider(provider, 'down')}
+                          aria-label={`下移 ${providerDisplayTitle(provider)}`}
+                          title="降低路由优先级"
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
-                </div>
+                </div> : (
+                  <p className="border-y py-5 text-center text-sm text-muted-foreground">暂无可排序的 Provider</p>
+                )}
+                {!canManage && <p className="text-xs text-muted-foreground">当前账号为只读角色，只有管理员可以调整路由优先级。</p>}
               </div>
             </CardContent>
           </Card>

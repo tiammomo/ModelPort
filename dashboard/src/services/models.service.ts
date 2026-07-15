@@ -293,8 +293,7 @@ export const modelsService = {
   },
 
   updateProviderOrder: async (order: string[]): Promise<void> => {
-    if (isMockMode) return mockDelay(undefined)
-    await api.put('/admin/settings', { gateway: { providerOrder: order } })
+    await settingsService.updateProviderOrder(order)
   },
 
   updateDefaultProvider: (providerId: string): Promise<void> =>

@@ -41,4 +41,22 @@ test.describe('models', () => {
     await expect(page.getByText('deepseek-v4-flash').first()).toBeVisible()
     await expect(page.getByText(/DeepSeek/).first()).toBeVisible()
   })
+
+  test('exposes provider priority controls without changing the route', async ({ page }) => {
+    const settingsWrites: string[] = []
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/admin/settings' && request.method() !== 'GET') {
+        settingsWrites.push(request.method())
+      }
+    })
+
+    await page.goto('/models')
+    await page.getByRole('tab', { name: '默认路由' }).click()
+
+    await expect(page.getByRole('heading', { name: '默认路由策略' })).toBeVisible()
+    await expect(page.getByText('Provider 解析顺序')).toBeVisible()
+    await expect(page.getByRole('button', { name: /^上移 / }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /^下移 / }).first()).toBeVisible()
+    expect(settingsWrites).toEqual([])
+  })
 })
