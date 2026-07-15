@@ -35,7 +35,7 @@ export function Header({ onMenuClick, isMobile, mobileMenuOpen }: HeaderProps) {
   const openCommandPalette = () => document.dispatchEvent(new CustomEvent('modelport:open-command-palette'))
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border/50 bg-background/80 backdrop-blur-xl px-4 md:px-6">
+    <header className="flex h-14 items-center justify-between border-b border-border/70 bg-background/86 px-4 backdrop-blur-xl md:px-6">
       <div className="flex items-center gap-3 min-w-0">
         {isMobile && (
           <Button
@@ -54,7 +54,7 @@ export function Header({ onMenuClick, isMobile, mobileMenuOpen }: HeaderProps) {
           <BreadcrumbNav />
         </div>
         {isMockMode && (
-          <span className="shrink-0 rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300">
+          <span className="shrink-0 rounded-full border border-amber-200/80 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/45 dark:text-amber-300">
             演示数据
           </span>
         )}
@@ -71,7 +71,7 @@ export function Header({ onMenuClick, isMobile, mobileMenuOpen }: HeaderProps) {
         >
           <Search className="h-3.5 w-3.5" />
           <span>快速跳转</span>
-          <kbd className="pointer-events-none ml-1 select-none rounded border bg-muted px-1 text-[10px] font-medium">
+          <kbd className="pointer-events-none ml-1 select-none rounded border border-border/75 bg-muted/70 px-1.5 font-mono text-[10px] font-medium">
             {isMac ? '⌘' : 'Ctrl+'}K
           </kbd>
         </Button>
@@ -109,7 +109,7 @@ export function Header({ onMenuClick, isMobile, mobileMenuOpen }: HeaderProps) {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="打开账户菜单">
-              <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+              <Avatar className="h-8 w-8 border border-primary/15 ring-2 ring-primary/10">
                 <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
                   {currentUser?.username?.charAt(0).toUpperCase() || 'U'}
                 </AvatarFallback>

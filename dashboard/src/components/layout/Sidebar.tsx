@@ -12,6 +12,7 @@ import {
   Boxes,
   ScrollText,
   Settings,
+  ShieldCheck,
   ChevronLeft,
   ChevronRight,
   Zap,
@@ -30,6 +31,7 @@ const iconMap: Record<string, React.ElementType> = {
   Boxes,
   ScrollText,
   Settings,
+  ShieldCheck,
 }
 
 interface SidebarProps {
@@ -58,13 +60,13 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
       <aside
         aria-label="主导航"
         className={cn(
-          'flex h-screen flex-col border-r border-border/50 bg-sidebar/80 backdrop-blur-xl text-sidebar-foreground transition-all duration-200',
+          'flex h-screen flex-col border-r border-sidebar-border/75 bg-sidebar/92 backdrop-blur-xl text-sidebar-foreground transition-all duration-200',
           isCollapsed ? 'w-14' : mobile ? 'w-64' : 'w-56',
         )}
       >
         {/* Logo */}
-        <div className="flex h-14 items-center gap-2.5 border-b border-border/50 px-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+        <div className="flex h-14 items-center gap-2.5 border-b border-sidebar-border/70 px-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/60 bg-primary text-primary-foreground shadow-[0_4px_12px_oklch(0.35_0.08_185/0.14)]">
             <Zap className="h-4 w-4" />
           </div>
           {!isCollapsed && (
@@ -102,9 +104,9 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
                   to={item.path}
                   onClick={onNavigate}
                   className={cn(
-                    'group flex items-center gap-3 rounded-md px-2.5 py-2 text-sm font-medium transition-all duration-150',
+                    'group relative flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-[color,background-color] duration-150 before:absolute before:left-0 before:h-5 before:w-0.5 before:rounded-full before:bg-transparent before:transition-colors',
                     isActive
-                      ? 'bg-sidebar-accent text-sidebar-primary shadow-sm'
+                      ? 'bg-sidebar-accent/85 text-sidebar-primary before:bg-sidebar-primary'
                       : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
                   )}
                 >
@@ -145,7 +147,7 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
         <div className="flex items-center justify-between p-2">
           {!isCollapsed && (
             <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground" title={connected ? '网关健康检查正常' : '暂时无法确认网关状态'}>
-              <span className={cn('h-2 w-2 shrink-0 rounded-full', connected ? 'bg-emerald-500' : livenessError ? 'bg-rose-500' : 'bg-amber-500')} />
+              <span className={cn('h-2 w-2 shrink-0 rounded-full shadow-[0_0_0_3px_currentColor]', connected ? 'bg-emerald-500 text-emerald-500/10' : livenessError ? 'bg-rose-500 text-rose-500/10' : 'bg-amber-500 text-amber-500/10')} />
               <span className="truncate">{connected ? '网关已连接' : livenessError ? '连接异常' : '正在检查'}</span>
             </div>
           )}

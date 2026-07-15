@@ -28,7 +28,7 @@ export function MetricCard({
 }: MetricCardProps) {
   if (loading) {
     return (
-      <Card className={cn('transition-all duration-200', className)}>
+      <Card className={cn('border-border/60 shadow-none', className)}>
         <CardContent className="p-4 sm:p-5">
           <div className="flex items-start gap-4">
             <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
@@ -48,7 +48,7 @@ export function MetricCard({
   return (
     <Card
       className={cn(
-        'group transition-all duration-200 motion-safe:hover:-translate-y-0.5 motion-safe:hover:shadow-md',
+        'group border-border/60 shadow-none transition-[border-color,background-color] duration-150 hover:border-primary/20 hover:bg-card/80',
         className,
       )}
     >
@@ -64,7 +64,7 @@ export function MetricCard({
             <div className="flex items-end justify-between gap-3">
               <div className="min-w-0">
                 <p className="whitespace-nowrap text-xs font-medium text-muted-foreground sm:text-sm">{title}</p>
-                <div className="mt-2 whitespace-nowrap text-lg font-bold leading-tight tabular-nums tracking-tight sm:mt-3 sm:text-2xl">
+                <div className="numeric mt-2 whitespace-nowrap text-lg font-semibold leading-tight tracking-[-0.025em] sm:mt-3 sm:text-2xl">
                   {numericValue !== undefined ? (
                     <AnimatedNumber value={numericValue} />
                   ) : (
@@ -84,8 +84,8 @@ export function MetricCard({
                     className={cn(
                       'inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
                       trend.value >= 0
-                        ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                        : 'bg-red-500/10 text-red-600 dark:text-red-400',
+                        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : 'bg-red-500/10 text-red-700 dark:text-red-400',
                     )}
                   >
                     {trend.value >= 0 ? '↑' : '↓'} {Math.abs(trend.value)}%

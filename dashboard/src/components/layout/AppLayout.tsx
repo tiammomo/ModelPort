@@ -31,7 +31,7 @@ export function AppLayout() {
   }, [mobileOpen])
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-muted/10">
+    <div className="flex h-dvh overflow-hidden bg-background">
       <a
         href="#main-content"
         className="fixed left-3 top-3 z-[100] -translate-y-20 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-lg transition-transform focus:translate-y-0"
@@ -43,7 +43,7 @@ export function AppLayout() {
         <button
           type="button"
           aria-label="关闭导航菜单"
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm animate-fade-in"
+          className="fixed inset-0 z-50 bg-slate-950/55 backdrop-blur-[2px] animate-fade-in"
           onClick={() => setMobileOpen(false)}
         />
       )}
@@ -70,7 +70,7 @@ export function AppLayout() {
           isMobile={isMobile}
           mobileMenuOpen={mobileOpen}
         />
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto px-4 py-5 outline-none md:px-6 md:py-6">
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto bg-muted/15 px-4 py-5 outline-none md:px-6 md:py-6">
           <div className="mx-auto w-full max-w-[1600px]">
             <Outlet />
           </div>
