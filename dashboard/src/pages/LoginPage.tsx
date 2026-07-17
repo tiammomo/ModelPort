@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores'
+import { authService, type AuthMethods } from '@/services/auth.service'
+import {
+  buildOidcStartUrl,
+  oidcErrorMessage,
+  safeReturnPath,
+  withoutOidcError,
+} from '@/features/auth/login-auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -8,6 +15,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
   Eye,
   EyeOff,
+  Fingerprint,
   KeyRound,
   Loader2,
   ShieldCheck,
@@ -23,26 +31,25 @@ function readSessionValue(key: string): string {
   }
 }
 
-function safeReturnPath(value: string | null | undefined): string {
-  if (!value || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/login')) return ''
-  return value
-}
-
 export function LoginPage() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const [username, setUsername] = useState(() => window.localStorage.getItem('modelport_last_username') || '')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [capsLock, setCapsLock] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [oidcError, setOidcError] = useState(() => oidcErrorMessage(location.search))
+  const [authMethods, setAuthMethods] = useState<AuthMethods | null>(null)
   const [sessionNotice] = useState(() => readSessionValue('modelport_auth_notice'))
   const [storedReturnTo] = useState(() => readSessionValue('modelport_return_to'))
   const login = useAuthStore((s) => s.login)
-  const navigate = useNavigate()
-  const location = useLocation()
   const from = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)?.from
   const locationReturnTo = from?.pathname ? `${from.pathname}${from.search || ''}${from.hash || ''}` : ''
   const returnTo = safeReturnPath(locationReturnTo) || safeReturnPath(storedReturnTo) || '/dashboard'
+  const passwordEnabled = authMethods?.passwordEnabled ?? true
+  const oidcEnabled = authMethods?.oidc.enabled === true && !!authMethods.oidc.startUrl.trim()
 
   useEffect(() => {
     try {
@@ -52,6 +59,40 @@ export function LoginPage() {
       // Session storage can be unavailable in hardened browser contexts.
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    authService.getMethods()
+      .then((methods) => {
+        if (active) setAuthMethods(methods)
+      })
+      .catch(() => {
+        // Keep password login available when capability discovery is temporarily unavailable.
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const message = oidcErrorMessage(location.search)
+    if (!message) return
+
+    navigate({
+      pathname: location.pathname,
+      search: withoutOidcError(location.search),
+      hash: location.hash,
+    }, { replace: true, state: location.state })
+  }, [location.hash, location.pathname, location.search, location.state, navigate])
+
+  const handleOidcLogin = () => {
+    if (!oidcEnabled || !authMethods) return
+    try {
+      window.location.assign(buildOidcStartUrl(authMethods.oidc.startUrl, returnTo, window.location.origin))
+    } catch {
+      setOidcError('企业单点登录暂不可用，请联系管理员。')
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -147,80 +188,115 @@ export function LoginPage() {
                   {sessionNotice}
                 </div>
               )}
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="username" className="text-xs font-medium text-slate-700">用户名</Label>
-                  <div className="relative">
-                    <UserRound className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                    <Input
-                      id="username"
-                      type="text"
-                      placeholder="请输入用户名"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      disabled={loading}
-                      autoComplete="username"
-                      autoFocus={!username}
-                      aria-invalid={!!error}
-                      aria-describedby={error ? 'login-error' : undefined}
-                      className="h-11 border-slate-200/90 bg-white/85 pl-9 pr-4 text-sm text-slate-950 shadow-[0_1px_2px_rgba(15,23,42,0.04)] placeholder:text-slate-400 hover:border-slate-300 focus-visible:border-teal-500/70 focus-visible:ring-teal-500/12"
-                    />
-                  </div>
+              {oidcError && (
+                <div id="oidc-login-error" role="alert" aria-live="polite" className="mb-5 border-l-2 border-rose-400 bg-rose-50/70 px-3 py-2.5 text-xs leading-5 text-rose-700">
+                  {oidcError}
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password" className="text-xs font-medium text-slate-700">密码</Label>
-                  <div className="relative">
-                    <KeyRound className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                    <Input
-                      id="password"
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="请输入密码"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      onKeyDown={(e) => setCapsLock(e.getModifierState('CapsLock'))}
-                      onKeyUp={(e) => setCapsLock(e.getModifierState('CapsLock'))}
-                      disabled={loading}
-                      autoComplete="current-password"
-                      autoFocus={!!username}
-                      aria-invalid={!!error}
-                      aria-describedby={error ? 'login-error' : capsLock ? 'caps-lock-warning' : undefined}
-                      className="h-11 border-slate-200/90 bg-white/85 pl-9 pr-10 text-sm text-slate-950 shadow-[0_1px_2px_rgba(15,23,42,0.04)] placeholder:text-slate-400 hover:border-slate-300 focus-visible:border-teal-500/70 focus-visible:ring-teal-500/12"
-                    />
-                    <button
-                      type="button"
-                      className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-teal-500/20"
-                      onClick={() => setShowPassword((current) => !current)}
-                      aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                    >
-                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  </div>
-                  {capsLock && (
-                    <p id="caps-lock-warning" className="text-xs text-amber-700">大写锁定已开启</p>
-                  )}
-                  {error && (
-                    <p id="login-error" role="alert" aria-live="polite" className="border-l-2 border-rose-400 bg-rose-50/70 px-3 py-2.5 text-xs leading-5 text-rose-700">
-                      {error}
-                    </p>
+              )}
+              {oidcEnabled && (
+                <div className={passwordEnabled ? 'mb-5' : ''}>
+                  <Button
+                    type="button"
+                    size="lg"
+                    onClick={handleOidcLogin}
+                    className="h-12 w-full border-indigo-600/80 bg-indigo-600 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(79,70,229,0.24),inset_0_1px_0_rgba(255,255,255,0.2)] hover:bg-indigo-500 hover:shadow-[0_18px_38px_rgba(79,70,229,0.28)]"
+                  >
+                    <Fingerprint className="h-4 w-4" />
+                    {authMethods?.oidc.label.trim() || '企业单点登录'}
+                  </Button>
+                  {passwordEnabled && (
+                    <div className="mt-5 flex items-center gap-3 text-[11px] text-slate-400" aria-hidden="true">
+                      <div className="h-px flex-1 bg-slate-200" />
+                      <span>或使用密码</span>
+                      <div className="h-px flex-1 bg-slate-200" />
+                    </div>
                   )}
                 </div>
-                <Button
-                  type="submit"
-                  size="lg"
-                  aria-busy={loading}
-                  className="mt-2 h-11 w-full border-teal-600/80 bg-teal-600 text-sm font-medium text-white shadow-[0_12px_28px_rgba(13,148,136,0.20),inset_0_1px_0_rgba(255,255,255,0.18)] hover:bg-teal-500 hover:shadow-[0_16px_34px_rgba(13,148,136,0.24)]"
-                  disabled={loading}
-                >
-                  {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {loading ? '正在登录…' : '登录'}
-                </Button>
-                <div className="flex items-center gap-3 pt-4 text-xs text-slate-300">
-                  <div className="h-px flex-1 bg-slate-200" />
-                  <ShieldCheck className="h-4 w-4 text-slate-400/80" />
-                  <div className="h-px flex-1 bg-slate-200" />
-                </div>
-                <p className="text-center text-[11px] text-slate-400">连接当前实例 · 安全会话鉴权</p>
-              </form>
+              )}
+              {passwordEnabled && (
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="username" className="text-xs font-medium text-slate-700">用户名</Label>
+                    <div className="relative">
+                      <UserRound className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        id="username"
+                        type="text"
+                        placeholder="请输入用户名"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        disabled={loading}
+                        autoComplete="username"
+                        autoFocus={!username}
+                        aria-invalid={!!error}
+                        aria-describedby={error ? 'login-error' : undefined}
+                        className="h-11 border-slate-200/90 bg-white/85 pl-9 pr-4 text-sm text-slate-950 shadow-[0_1px_2px_rgba(15,23,42,0.04)] placeholder:text-slate-400 hover:border-slate-300 focus-visible:border-teal-500/70 focus-visible:ring-teal-500/12"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="password" className="text-xs font-medium text-slate-700">密码</Label>
+                    <div className="relative">
+                      <KeyRound className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        id="password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="请输入密码"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        onKeyDown={(e) => setCapsLock(e.getModifierState('CapsLock'))}
+                        onKeyUp={(e) => setCapsLock(e.getModifierState('CapsLock'))}
+                        disabled={loading}
+                        autoComplete="current-password"
+                        autoFocus={!!username}
+                        aria-invalid={!!error}
+                        aria-describedby={error ? 'login-error' : capsLock ? 'caps-lock-warning' : undefined}
+                        className="h-11 border-slate-200/90 bg-white/85 pl-9 pr-10 text-sm text-slate-950 shadow-[0_1px_2px_rgba(15,23,42,0.04)] placeholder:text-slate-400 hover:border-slate-300 focus-visible:border-teal-500/70 focus-visible:ring-teal-500/12"
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-teal-500/20"
+                        onClick={() => setShowPassword((current) => !current)}
+                        aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                    {capsLock && (
+                      <p id="caps-lock-warning" className="text-xs text-amber-700">大写锁定已开启</p>
+                    )}
+                    {error && (
+                      <p id="login-error" role="alert" aria-live="polite" className="border-l-2 border-rose-400 bg-rose-50/70 px-3 py-2.5 text-xs leading-5 text-rose-700">
+                        {error}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    type="submit"
+                    size="lg"
+                    aria-busy={loading}
+                    className="mt-2 h-11 w-full border-teal-600/80 bg-teal-600 text-sm font-medium text-white shadow-[0_12px_28px_rgba(13,148,136,0.20),inset_0_1px_0_rgba(255,255,255,0.18)] hover:bg-teal-500 hover:shadow-[0_16px_34px_rgba(13,148,136,0.24)]"
+                    disabled={loading}
+                  >
+                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {loading ? '正在登录…' : '登录'}
+                  </Button>
+                  <div className="flex items-center gap-3 pt-4 text-xs text-slate-300">
+                    <div className="h-px flex-1 bg-slate-200" />
+                    <ShieldCheck className="h-4 w-4 text-slate-400/80" />
+                    <div className="h-px flex-1 bg-slate-200" />
+                  </div>
+                  <p className="text-center text-[11px] text-slate-400">连接当前实例 · 安全会话鉴权</p>
+                </form>
+              )}
+              {!passwordEnabled && !oidcEnabled && (
+                <p role="status" className="rounded-lg border border-amber-200/80 bg-amber-50/70 px-3 py-3 text-center text-xs leading-5 text-amber-800">
+                  当前实例未启用可用的登录方式，请联系管理员。
+                </p>
+              )}
+              {!passwordEnabled && oidcEnabled && (
+                <p className="mt-4 text-center text-[11px] text-slate-400">将通过企业身份提供方完成安全认证</p>
+              )}
             </CardContent>
           </div>
         </div>

@@ -74,7 +74,7 @@ export const mockDashboardStats: DashboardStats = {
     },
     { providerId: 'mimo', displayName: '小米 MiMo', status: 'healthy', requestsTotal: 12300, successRate: 97.5, avgLatencyMs: 2100 },
     { providerId: 'anthropic', displayName: 'Anthropic Claude', status: 'healthy', requestsTotal: 8900, successRate: 99.1, avgLatencyMs: 2800 },
-    { providerId: 'openai', displayName: 'OpenAI', status: 'degraded', requestsTotal: 6200, successRate: 94.3, avgLatencyMs: 3200 },
+    { providerId: 'openai', displayName: 'OpenAI 官方上游', status: 'degraded', requestsTotal: 6200, successRate: 94.3, avgLatencyMs: 3200 },
     { providerId: 'openrouter', displayName: 'OpenRouter', status: 'healthy', requestsTotal: 3500, successRate: 96.0, avgLatencyMs: 2500 },
     { providerId: 'gemini', displayName: 'Google Gemini', status: 'healthy', requestsTotal: 4100, successRate: 97.8, avgLatencyMs: 1800 },
     { providerId: 'dashscope', displayName: '阿里云百炼 Qwen', status: 'healthy', requestsTotal: 2800, successRate: 98.5, avgLatencyMs: 900 },

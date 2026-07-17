@@ -8,9 +8,32 @@ interface LoginResponse {
   expiresAt: string
 }
 
+export interface AuthMethods {
+  passwordEnabled: boolean
+  oidc: {
+    enabled: boolean
+    label: string
+    startUrl: string
+  }
+}
+
+const MOCK_AUTH_METHODS: AuthMethods = {
+  passwordEnabled: true,
+  oidc: {
+    enabled: false,
+    label: '企业单点登录',
+    startUrl: '/admin/auth/oidc/start',
+  },
+}
+
 const MOCK_SESSION_KEY = 'modelport_mock_session'
 
 export const authService = {
+  getMethods: (): Promise<AuthMethods> => {
+    if (!isMockMode) return api.get('/admin/auth/methods')
+    return mockDelay(MOCK_AUTH_METHODS)
+  },
+
   login: async (username: string, password: string): Promise<User> => {
     if (!username.trim() || !password) {
       throw new Error('无效的账号或密码')

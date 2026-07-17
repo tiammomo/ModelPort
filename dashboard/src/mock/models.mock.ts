@@ -89,10 +89,10 @@ export const mockProviders: Provider[] = [
   },
   {
     id: 'openai',
-    displayName: 'OpenAI',
+    displayName: 'OpenAI 官方上游',
     protocol: 'openai-compat',
     baseUrl: 'https://api.openai.com/v1',
-    apiKeyEnv: 'OPENAI_API_KEY',
+    apiKeyEnv: 'MODELPORT_OPENAI_API_KEY',
     apiKeyRequired: true,
     defaultModel: 'gpt-5.5',
     models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1'],
