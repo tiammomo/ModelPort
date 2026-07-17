@@ -160,7 +160,10 @@ retain the automatically saved previous values plus a storage-native backup.
 
 ## Known Security Limits
 
-- No OIDC/SSO, enterprise IAM, or public multi-tenant isolation.
+- The optional [OIDC console sign-in preview](docs/OIDC.md) is single-host and
+  process-local; it is not complete enterprise IAM, distributed SSO/session
+  coordination, SCIM, service-account lifecycle, or public multi-tenant
+  isolation.
 - No complete DNS-rebinding protection for provider hostnames.
 - The default development Compose PostgreSQL service does not provision a
   server certificate; its `prefer` connection can remain plaintext inside the

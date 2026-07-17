@@ -170,6 +170,20 @@ OPENAI_API_KEY=replace-with-the-same-local-router-token
 OPENAI_MODEL=deepseek-v4-flash
 ```
 
+Those standard `OPENAI_*` names belong to the **client process**. If ModelPort
+itself uses OpenAI as an upstream Provider, configure the server separately:
+
+```env
+MODELPORT_OPENAI_BASE_URL=https://api.openai.com/v1
+MODELPORT_OPENAI_API_KEY=replace-with-an-openai-platform-api-key
+MODELPORT_OPENAI_MODEL=gpt-5.5
+```
+
+Do not copy the client `OPENAI_BASE_URL=http://127.0.0.1:17878/v1` into the
+ModelPort service environment: that points the OpenAI Provider back at the
+gateway. Legacy server-side `OPENAI_*` names still work as fallbacks and emit a
+configuration warning so existing deployments can migrate safely.
+
 The current Chat Completions edge is a documented text/function-tool
 compatibility slice, not full OpenAI API parity. See the [API
 reference](docs/API.md#chat-completions) before enabling an application.
@@ -260,6 +274,13 @@ Remote Providers must use HTTPS by default. Plain HTTP exposes Provider API
 keys and prompt/response content; the insecure override is only for an
 explicitly trusted internal upstream. Local/custom runtimes may continue to use
 HTTP on loopback or a controlled local network.
+
+The optional [OIDC console sign-in preview](docs/OIDC.md) authenticates a human
+to the ModelPort dashboard and issues a ModelPort console session only. It does
+not collect, forward, or proxy ChatGPT passwords, cookies, browser sessions, or
+subscriptions, and those are not OpenAI API credentials. Data-plane callers
+still use ModelPort API keys; upstream OpenAI or other Provider credentials stay
+server-side.
 
 For shared use:
 

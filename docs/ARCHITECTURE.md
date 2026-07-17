@@ -27,7 +27,8 @@ Claude Code / OpenAI SDK / API client
                     |
       response/SSE mapping, metrics, usage log
 
-React dashboard -> /admin/* cookie-session control plane
+React dashboard -> local password or OIDC Authorization Code + PKCE
+                -> /admin/* ModelPort cookie-session control plane
 PostgreSQL or JSON files -> auth and control documents
 ```
 
@@ -48,10 +49,10 @@ operator must still account for.
 | --- | --- | --- |
 | Protocol adaptation | Anthropic Messages and the scoped OpenAI Chat Completions contract parse into a typed Exchange IR and share routing/governance. Anthropic/OpenAI Provider adapters render native non-stream and SSE responses in the original client protocol. Parsers enforce frame/stream limits, require terminal signals, preserve reported usage, and reject unsupported semantics. | The IR does not yet cover Responses, multimodal content, reasoning items, or every OpenAI/Anthropic extension. Configured adapters and models are not proof of real-upstream compatibility. |
 | Model routing and fallback | Resolution covers `provider:model`, recursive aliases with a depth guard, exact model matches, prefixes, and the default Provider. The attempt plan skips cooling Providers while an eligible alternative exists and only retries transport/protocol failures, 429, and 5xx against a Provider that accepts the requested or resolved model. | If no non-cooling route remains, the primary is retained as a final attempt. Fallback does not promise semantic model equivalence. Once local live-stream headers are sent, a later failure cannot replay on another Provider. |
-| Identity, policy, and budget | The data plane accepts a control-plane API key or the explicitly allowed legacy token. API-key model/Provider/IP policy, user quota, API-key/team rolling spend, credential availability, capability gates, and Provider/model limits are checked before an attempt is sent. The enterprise ledger then atomically reserves a tenant budget before egress and settles or releases it with the attempt terminal state. Only a sent attempt is chargeable. | Compatibility quotas/spend windows remain preflight guards. PostgreSQL tenant budgets are distributed hard admission control; memory-mode budgets, rate limits, stream permits, and sessions are process-local. |
+| Identity, policy, and budget | Human console sign-in supports local Argon2 credentials and an optional single-host OIDC Authorization Code + PKCE preview. A verified OIDC issuer/subject is bound to a local user, and both methods issue the same first-party console session. The data plane separately accepts a control-plane API key or the explicitly allowed legacy token. API-key model/Provider/IP policy, user quota, API-key/team rolling spend, credential availability, capability gates, and Provider/model limits are checked before an attempt is sent. The enterprise ledger then atomically reserves a tenant budget before egress and settles or releases it with the attempt terminal state. Only a sent attempt is chargeable. | OIDC authorization state and console sessions are process-local and do not provide multi-instance SSO continuity. OIDC does not authenticate `/v1/*` clients. Compatibility quotas/spend windows remain preflight guards. PostgreSQL tenant budgets are distributed hard admission control; memory-mode budgets, rate limits, and stream permits are process-local. |
 | Credential and Provider lifecycle | Provider credentials are environment-backed. Pool selection supports manual, failover, and round-robin behavior; outcomes feed credential/Provider health and cooldown state; unusable managed pools fail closed. | Health is operational state, not an external SLA. A configured credential or successful synthetic test does not establish every model, Tool Use, or stream path as verified. |
 | Persistence and ledger | Base environment/TOML configuration is combined with persisted routing overrides. Auth and control state retain the same two compatibility documents. SQLx/rustls, bounded pools, embedded migrations, composite tenant foreign keys, normalized request/attempt rows, hashed idempotency claims, instance leases, heartbeats, an expired-lease reconciler, and administrator-only indexed ledger queries form the enterprise relational slice. Request and attempt rows are created before upstream egress and terminalized after normal, streaming, or abandoned completion. | Identity, policy, quota reservation, exact usage settlement, and the legacy dashboard usage-log queries have not yet moved out of the compatibility documents. Response replay is not implemented, and an expired lease proves missing terminal evidence rather than whether the Provider accepted work; reconciled rows therefore remain explicitly unbilled. |
-| Security and observability | Browser writes require a session and CSRF token, with Origin/Referer checks when present. Trusted-proxy parsing, remote-Provider HTTPS defaults, URL guards, disabled redirects, bounded bodies/SSE, request/attempt IDs, terminal stream finalization, lease-expiry evidence, Prometheus metrics, retained logs, and source-labelled dashboard aggregation provide operational evidence. | URL guards do not pin or revalidate DNS answers. `upstream-returned` identifies usage provenance, not invoice accuracy; `local-estimate` is heuristic, ordinary live streams may lack final Provider usage, and `unreconciled` requires external evidence before any financial adjustment. |
+| Security and observability | Browser writes require a ModelPort session and CSRF token, with Origin/Referer checks when present. The OIDC preview validates discovery metadata, signed ID-token claims, state, nonce, and PKCE before issuing that session. Trusted-proxy parsing, remote-Provider HTTPS defaults, URL guards, disabled redirects, bounded bodies/SSE, request/attempt IDs, terminal stream finalization, lease-expiry evidence, Prometheus metrics, retained logs, and source-labelled dashboard aggregation provide operational evidence. | OIDC is console authentication, not Provider or data-plane credential delegation, and its pending state is lost on restart. URL guards do not pin or revalidate DNS answers. `upstream-returned` identifies usage provenance, not invoice accuracy; `local-estimate` is heuristic, ordinary live streams may lack final Provider usage, and `unreconciled` requires external evidence before any financial adjustment. |
 
 The detailed lifecycle and failure semantics below are normative. Provider and
 Tool Use verification evidence is maintained separately in the
@@ -86,7 +87,8 @@ Tool Use verification evidence is maintained separately in the
 - `src/http.rs`: the upstream HTTP client, bounded response reading, SSE frame
   parsing, timeouts, redirect policy, and upstream error redaction.
 - `src/auth.rs`: dashboard users, Argon2 password hashes, per-username login
-  lockout, timing-mitigation work, in-memory sessions, and session cookies.
+  lockout, OIDC issuer/subject bindings and local-user resolution,
+  timing-mitigation work, in-memory sessions, and session cookies.
 - `src/control.rs`: API keys, teams, policies, quotas, usage logs, provider
   overrides, credential pools, health, tests, and audit events.
 - `src/storage.rs`: compatibility JSON-file or SQLx/PostgreSQL persistence for
@@ -175,7 +177,7 @@ There are two logical JSON documents:
 
 | Namespace | Contents |
 | --- | --- |
-| `auth` | Users and password hashes. Sessions and failed-login counters are process-local. |
+| `auth` | Users, password hashes, and OIDC issuer/subject bindings. Sessions, pending OIDC authorization state, and failed-login counters are process-local. |
 | `control` | Teams, API-key hashes, policy, quota, usage, audit, routing overrides, credentials metadata, and provider health. |
 
 With `MODELPORT_DATABASE_URL`, the compatibility documents are stored as two
@@ -215,6 +217,15 @@ sequentially; there is no atomic transaction spanning the two logical
 documents.
 
 ## Identity And Budget Boundaries
+
+Human console sign-in can use a local password or the optional
+[OIDC preview](OIDC.md). OIDC identity is bound by the verified issuer/subject
+pair to a local ModelPort user and produces the same HttpOnly console session;
+automatic provisioning, when enabled, creates only an ordinary `user`. The
+identity-provider token and the ModelPort session cookie are never accepted as
+data-plane credentials. Pending OIDC state and active console sessions are
+process-local, so a restart invalidates both and this slice does not provide
+multi-instance enterprise IAM.
 
 An API key must be created for a real active auth user, and the server stores
 the canonical username rather than trusting request metadata. Every data-plane
@@ -324,6 +335,14 @@ upstream outcome.
 ## Security Boundaries
 
 - Data-plane credentials and dashboard sessions are separate.
+- Optional OIDC uses Authorization Code flow with PKCE, state, nonce, and a
+  short-lived HttpOnly browser-flow binding for human console authentication.
+  Verified identities resolve to local users and receive the normal ModelPort
+  session; identity-provider tokens are not forwarded to Providers or accepted
+  by `/v1/*`.
+- Pending OIDC authorization state and console sessions are process-local. A
+  restart invalidates in-progress sign-ins and active sessions, so the preview
+  is intended for the current single-host deployment profile.
 - Admin Argon2 work runs on blocking workers outside the auth-state mutex. A
   process-local four-hash gate returns 429 after a five-second queue wait;
   unknown/disabled-user attempts remain in the expensive hash class, and the
@@ -357,7 +376,10 @@ See [Security Policy](../SECURITY.md) and [Operations](OPERATIONS.md).
 
 - Model inference inside the gateway.
 - A chat client or prompt-history product.
-- Enterprise IAM, OIDC/SSO, public multi-tenancy, or exact billing.
+- Complete enterprise IAM (SCIM, service accounts, organization lifecycle,
+  resource-level RBAC, and distributed SSO/session coordination), public
+  multi-tenancy, or exact billing. The shipped OIDC slice is a single-host
+  console sign-in preview, not that broader identity plane.
 - Distributed rate limiting or multi-instance coordination.
 - A complete provider-neutral Tool/Message IR.
 - Image and Responses APIs in the current text gateway.

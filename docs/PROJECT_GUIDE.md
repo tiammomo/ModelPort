@@ -47,7 +47,16 @@ Implemented:
   cooldown and bounded fallback;
 - users, API keys, teams, quotas, provider/model management, logs, health,
   audit, redacted diagnostic snapshots, PostgreSQL/JSON state;
+- an optional single-host [OIDC console sign-in preview](OIDC.md) using
+  Authorization Code flow, PKCE, durable issuer/subject identity bindings, and
+  the same first-party console session and local roles as password login;
 - Docker Compose, systemd, scripts, CI, dashboard and E2E tests.
+
+The OIDC preview authenticates humans to the ModelPort console only. It is not
+a complete enterprise IAM plane: sessions and authorization state remain
+process-local, and service accounts, SCIM, organization lifecycle, distributed
+session coordination, and resource-level RBAC are not implemented. Data-plane
+clients still require a ModelPort API key.
 
 Configured but not yet evidenced by a committed real-upstream ledger:
 
@@ -58,8 +67,8 @@ Configured but not yet evidenced by a committed real-upstream ledger:
 Proposed, not implemented:
 
 - the OpenAI Responses API and a complete multimodal/item-oriented Exchange IR;
-- organization/project tenancy, OIDC/SSO, service accounts, SCIM, and
-  resource-level RBAC;
+- organization/project tenancy, service accounts, SCIM, enterprise identity
+  lifecycle, and resource-level RBAC;
 - distributed rate limits, sessions, quotas, and health;
 - transactional/event-oriented usage persistence;
 - high-availability deployment roles, Redis coordination, OTLP export, secret

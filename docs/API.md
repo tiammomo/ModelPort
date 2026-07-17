@@ -10,6 +10,9 @@ plane plus a dashboard control plane. The default backend origin is
 | --- | --- | --- |
 | `GET /livez` | none | Process liveness only. |
 | `GET /health` | optional | Minimal public body; router authentication adds provider and storage diagnostics. |
+| `GET /admin/auth/methods` | none | Advertises password availability and the optional OIDC console sign-in label/start path. It does not establish a session. |
+| `GET /admin/auth/oidc/start` | none | Creates single-use OIDC state, nonce, PKCE values, and an HttpOnly browser-flow cookie, then redirects to the configured identity provider. |
+| `GET /admin/auth/oidc/callback` | none | Requires the matching browser-flow cookie, validates and consumes the OIDC callback, resolves the local user, issues the ModelPort console cookie, and redirects to a local return path. |
 | `GET /readyz` | router/API key | Auth/control and normalized-ledger readiness plus detailed diagnostics; Provider degradation does not fail it. |
 | `GET /v1/models` | router/API key | Configured, visible model and alias catalog. Visibility does not prove upstream health. |
 | `POST /v1/messages` | router/API key | Anthropic-compatible Messages request. |
@@ -243,13 +246,23 @@ reviewing them.
 
 ## Dashboard Control Plane
 
-Dashboard login is `POST /admin/auth/login`; it is the only normal admin route
-that does not already require a session. The server sets an HttpOnly,
-SameSite=Lax cookie. Use `MODELPORT_ADMIN_COOKIE_SECURE=1` behind HTTPS.
+Password login is `POST /admin/auth/login`. The three public OIDC/capability
+entry points are `GET /admin/auth/methods`, `GET /admin/auth/oidc/start`, and
+`GET /admin/auth/oidc/callback`, as listed above. All successful human sign-in
+methods issue the same HttpOnly, SameSite=Lax ModelPort console cookie. Use
+`MODELPORT_ADMIN_COOKIE_SECURE=1` behind HTTPS; other normal administrator
+routes require that session.
+
+This console identity boundary is separate from the data plane. Neither an
+OIDC token nor the console cookie authenticates `/v1/messages` or
+`/v1/chat/completions`; clients use a ModelPort API key (or the explicitly
+enabled legacy router token), while upstream Provider credentials remain on
+the ModelPort server. See [OIDC Console Sign-In](OIDC.md).
 
 Route groups include:
 
-- `/admin/auth/*`: login, logout, current session.
+- `/admin/auth/*`: capability discovery, password/OIDC sign-in, logout, and
+  current session.
 - `/admin/dashboard`, `/admin/logs`, `/admin/logs/{id}`, `/admin/latency`:
   operational views.
 - `/admin/enterprise/overview`, `/admin/enterprise/requests`,

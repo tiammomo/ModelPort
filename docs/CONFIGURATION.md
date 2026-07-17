@@ -96,6 +96,15 @@ checks.
 | `MODELPORT_ADMIN_EMAIL` | `admin@modelport.local` | First-admin bootstrap email. |
 | `MODELPORT_ADMIN_SESSION_TTL_SECONDS` | `43200` | Dashboard session lifetime. |
 | `MODELPORT_ADMIN_COOKIE_SECURE` | off | Add `Secure` to the dashboard cookie. Set to `1` behind HTTPS. |
+| `MODELPORT_OIDC_ISSUER` | unset | OIDC issuer discovery URL. OIDC console sign-in stays disabled when no OIDC values are configured. |
+| `MODELPORT_OIDC_CLIENT_ID` | unset | OIDC client identifier; required with issuer and redirect URI when OIDC is enabled. |
+| `MODELPORT_OIDC_CLIENT_SECRET` | unset | Optional confidential-client secret. Leave unset only when the identity provider accepts the supported public-client code exchange. |
+| `MODELPORT_OIDC_REDIRECT_URI` | unset | Exact external callback URL; its path must be `/admin/auth/oidc/callback` with no query or fragment. |
+| `MODELPORT_OIDC_LABEL` | `Single sign-on` | Login-button label. |
+| `MODELPORT_OIDC_AUTO_PROVISION` | off | Create missing ordinary users after a valid OIDC login. Keep off initially and pre-create users; it never grants administrator access. |
+| `MODELPORT_OIDC_USERNAME_CLAIM` | `preferred_username` | ID-token claim used as the ModelPort username. |
+| `MODELPORT_OIDC_EMAIL_CLAIM` | `email` | ID-token claim read as the ModelPort email. Initial linking/JIT requires the standard `email` claim plus `email_verified=true`; verification is not inherited by a custom claim name. |
+| `MODELPORT_OIDC_ALLOW_INSECURE_HTTP` | off | Allow HTTP only for loopback OIDC development URLs. Never enable it for a remote or production identity provider. |
 | `MODELPORT_STATE_DIR` | `.modelport` for auth | Base state directory used by the auth store. |
 | `MODELPORT_AUTH_STORE_PATH` | `<state-dir>/admin-auth.json` | File backend override for auth state. |
 | `MODELPORT_CONTROL_STORE` | `.modelport/control-plane.json` | File backend path for control state. |
@@ -112,6 +121,37 @@ checks.
 
 Bootstrap variables do not overwrite existing users. Dashboard sessions are
 process-local and are invalidated by restart.
+
+OIDC is an optional console-login method and is disabled by default. Once any
+required OIDC value is configured, set `MODELPORT_OIDC_ISSUER`,
+`MODELPORT_OIDC_CLIENT_ID`, and `MODELPORT_OIDC_REDIRECT_URI` together. Register
+the exact external callback ending in `/admin/auth/oidc/callback`; this path is
+fixed. Automatic provisioning remains disabled unless explicitly enabled.
+
+```env
+MODELPORT_OIDC_ISSUER=https://identity.example.com/realms/modelport
+MODELPORT_OIDC_CLIENT_ID=modelport
+MODELPORT_OIDC_REDIRECT_URI=https://modelport.example.com/admin/auth/oidc/callback
+# Optional for a confidential client:
+MODELPORT_OIDC_CLIENT_SECRET=replace-with-client-secret
+MODELPORT_OIDC_LABEL=Company SSO
+MODELPORT_OIDC_AUTO_PROVISION=0
+MODELPORT_OIDC_USERNAME_CLAIM=preferred_username
+MODELPORT_OIDC_EMAIL_CLAIM=email
+# Loopback development only:
+# MODELPORT_OIDC_ALLOW_INSECURE_HTTP=1
+```
+
+For production OIDC, serve one HTTPS origin and also set:
+
+```env
+MODELPORT_ADMIN_COOKIE_SECURE=1
+MODELPORT_ALLOWED_ORIGINS=https://modelport.example.com
+MODELPORT_REQUIRE_CONTROL_API_KEYS=1
+```
+
+OIDC authenticates dashboard users only. Requiring control-plane API keys keeps
+the data plane separate from the browser session and legacy shared router token.
 
 The stream limit is a process-local semaphore separate from the normal request
 service-future limit. The general concurrency layer can release when an Axum
@@ -275,6 +315,7 @@ Names that intentionally differ include:
 | `deepseek_openai` | `DEEPSEEK_OPENAI_API_KEY` (fallback `DEEPSEEK_API_KEY`) | `DEEPSEEK_OPENAI_BASE_URL` | `DEEPSEEK_OPENAI_MODEL` |
 | `mimo` | `MIMO_OPENAI_API_KEY` | `MIMO_OPENAI_BASE_URL` (fallback `BASE_URL`) | `MIMO_MODEL` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_UPSTREAM_BASE_URL` | `ANTHROPIC_UPSTREAM_MODEL` |
+| `openai` | `MODELPORT_OPENAI_API_KEY` (legacy fallback `OPENAI_API_KEY`) | `MODELPORT_OPENAI_BASE_URL` (legacy fallback `OPENAI_BASE_URL`) | `MODELPORT_OPENAI_MODEL` (legacy fallback `OPENAI_MODEL`) |
 | `gemini` | `GEMINI_API_KEY` (fallback `GOOGLE_API_KEY`) | `GEMINI_OPENAI_BASE_URL` | `GEMINI_MODEL` |
 | `dashscope` | `DASHSCOPE_API_KEY` (fallback `QWEN_API_KEY`) | `DASHSCOPE_BASE_URL` | `DASHSCOPE_MODEL` |
 | `kimi` | `MOONSHOT_API_KEY` (fallback `KIMI_API_KEY`) | `KIMI_BASE_URL` | `KIMI_MODEL` |
@@ -287,7 +328,7 @@ DEEPSEEK_MODELS
 DEEPSEEK_OPENAI_MODELS
 MIMO_MODELS
 ANTHROPIC_UPSTREAM_MODELS
-OPENAI_MODELS
+MODELPORT_OPENAI_MODELS
 OPENROUTER_MODELS
 GEMINI_MODELS
 XAI_MODELS
@@ -303,6 +344,14 @@ SGLANG_MODELS
 VLLM_MODELS
 LLAMACPP_MODELS
 ```
+
+The `MODELPORT_OPENAI_*` namespace is deliberately server-specific. Standard
+`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_MODELS` remain
+fallbacks for compatibility, but using one without its `MODELPORT_OPENAI_*`
+counterpart produces a configuration warning. New deployments should reserve
+standard `OPENAI_*` variables for SDK/client processes. A configured `openai`
+Provider whose `/v1` base URL points to the same local listener as
+`MODELPORT_BIND` is rejected as a self-referential routing loop.
 
 Local runtimes use `SGLANG_*`, `VLLM_*`, `LLAMACPP_*`, or `OLLAMA_*` and are
 enabled with the corresponding `MODELPORT_ENABLE_*` flag. `custom` is enabled

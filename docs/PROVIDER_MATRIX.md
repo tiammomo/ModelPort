@@ -28,7 +28,7 @@ provider's runtime model list.
 | `deepseek_openai` | OpenAI-compatible | `deepseek-v4-flash` | delta | `DEEPSEEK_OPENAI_API_KEY`, `DEEPSEEK_OPENAI_BASE_URL`, `DEEPSEEK_OPENAI_MODEL` |
 | `mimo` | OpenAI-compatible | `mimo-v2.5-pro` | delta | `MIMO_OPENAI_API_KEY`, `MIMO_OPENAI_BASE_URL`/`BASE_URL`, `MIMO_MODEL` |
 | `anthropic` | Anthropic | `claude-fable-5` | native | `ANTHROPIC_API_KEY`, `ANTHROPIC_UPSTREAM_BASE_URL`, `ANTHROPIC_UPSTREAM_MODEL` |
-| `openai` | OpenAI-compatible | `gpt-5.5` | delta | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| `openai` | OpenAI-compatible | `gpt-5.5` | delta | `MODELPORT_OPENAI_API_KEY`, `MODELPORT_OPENAI_BASE_URL`, `MODELPORT_OPENAI_MODEL` (legacy `OPENAI_*` fallbacks) |
 | `openrouter` | OpenAI-compatible | `openrouter/auto` | delta | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL` |
 | `gemini` | OpenAI-compatible | `gemini-3.5-flash` | delta | `GEMINI_API_KEY`, `GEMINI_OPENAI_BASE_URL`, `GEMINI_MODEL` |
 | `xai` | OpenAI-compatible | `grok-3` | delta | `XAI_API_KEY`, `XAI_BASE_URL`, `XAI_MODEL` |

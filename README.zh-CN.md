@@ -148,6 +148,19 @@ OPENAI_API_KEY=replace-with-the-same-local-router-token
 OPENAI_MODEL=deepseek-v4-flash
 ```
 
+以上标准 `OPENAI_*` 名称属于**客户端进程**。如果 ModelPort 服务端要把 OpenAI
+作为上游 Provider，请使用独立变量：
+
+```env
+MODELPORT_OPENAI_BASE_URL=https://api.openai.com/v1
+MODELPORT_OPENAI_API_KEY=replace-with-an-openai-platform-api-key
+MODELPORT_OPENAI_MODEL=gpt-5.5
+```
+
+不要把客户端的 `OPENAI_BASE_URL=http://127.0.0.1:17878/v1` 复制到 ModelPort
+服务环境中，否则 OpenAI Provider 会指回网关自身。服务端旧版 `OPENAI_*` 名称仍作为
+兼容回退保留，但启动和 `config validate` 会给出迁移 warning。
+
 当前 Chat Completions 是有文档边界的文本/function-tool 兼容范围，不代表完整
 OpenAI API 等价。应用接入前请阅读 [API 参考](docs/API.md#chat-completions)。
 
@@ -227,6 +240,11 @@ scripts/smoke-test.sh
 远程 Provider 默认必须使用 HTTPS。明文 HTTP 会暴露 Provider API Key、prompt 和
 响应内容；不安全放行开关只能用于边界明确的可信内网上游。本地/custom runtime
 仍可在 loopback 或受控本地网络使用 HTTP。
+
+可选的 [OIDC 控制台登录预览](docs/OIDC.md)只负责对人类用户进行身份验证，
+并签发 ModelPort 控制台会话。它不会收集、转发或代理 ChatGPT 密码、
+Cookie、浏览器会话或订阅，这些也不是 OpenAI API 凭证。数据面调用方仍需
+使用 ModelPort API Key；OpenAI 或其他上游 Provider 凭证始终保留在服务端。
 
 共享使用时：
 

@@ -13,6 +13,8 @@ the source of truth for behavior and operations.
   provider activation, validation, and reload scope.
 - [API](API.md): public endpoints, authentication, model resolution, errors,
   streaming, and control-plane route groups.
+- [OIDC console sign-in](OIDC.md): optional single-host SSO preview,
+  identity linking, configuration, security boundaries, and troubleshooting.
 - [Operations](OPERATIONS.md): health checks, metrics, request logs, backup,
   reload, troubleshooting, and current operational limitations.
 - [Development](DEVELOPMENT.md): toolchain, local workflow, test layers, and
@@ -74,4 +76,4 @@ found. Documentation changes should keep these rules:
 5. Run the checks in [Development](DEVELOPMENT.md#documentation-checks) after
    changing links, commands, provider defaults, or configuration names.
 
-Last reviewed: 2026-07-15.
+Last reviewed: 2026-07-18.
