@@ -12,6 +12,7 @@ use crate::{
     enterprise_ledger::EnterpriseLedger,
     http::HttpTransport,
     metrics::Metrics,
+    oidc::OidcService,
     routes::{self, AppState, GatewaySecurityPolicy, RateLimiter, TrustedProxyConfig},
 };
 
@@ -51,6 +52,7 @@ pub(crate) async fn serve() -> Result<(), AppError> {
     let state = AppState {
         config: Arc::new(RuntimeConfig::new(config.clone())),
         auth: Arc::new(AuthStore::load_or_bootstrap(&config)?),
+        oidc: Arc::new(OidcService::from_env()?),
         control: Arc::new(ControlStore::load()?),
         security: Arc::new(GatewaySecurityPolicy::from_env()),
         rate_limiter: Arc::new(RateLimiter::from_env()),

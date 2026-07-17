@@ -268,6 +268,13 @@ struct ProviderSpec {
     deduplicate_stream_text: bool,
 }
 
+const OPENAI_LEGACY_ENV_MIGRATIONS: &[(&str, &str)] = &[
+    ("MODELPORT_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+    ("MODELPORT_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    ("MODELPORT_OPENAI_MODEL", "OPENAI_MODEL"),
+    ("MODELPORT_OPENAI_MODELS", "OPENAI_MODELS"),
+];
+
 impl AppConfig {
     pub fn load() -> Result<Self, AppError> {
         let path = config_path();
@@ -407,6 +414,20 @@ impl AppConfig {
                 &mut seen_models,
                 &mut issues,
             );
+            if id == "openai"
+                && openai_base_url_targets_modelport_listener(&provider.base_url, self.bind_addr)
+            {
+                issues.push(ConfigIssue::error(format!(
+                    "provider `openai` base_url `{}` points back to this ModelPort listener; set server-side `MODELPORT_OPENAI_BASE_URL` to the upstream OpenAI API and reserve `OPENAI_BASE_URL` for client processes",
+                    provider.base_url
+                )));
+            }
+        }
+
+        if self.providers.get("openai").is_some_and(|provider| {
+            provider.api_key_env.as_deref() == Some("MODELPORT_OPENAI_API_KEY")
+        }) {
+            validate_openai_legacy_env_fallbacks(&mut issues);
         }
 
         for (alias, target) in &self.aliases {
@@ -978,15 +999,15 @@ const OPTIONAL_PROVIDER_SPECS: &[ProviderSpec] = &[
         id: "openai",
         display_name: "OpenAI",
         protocol: ProviderProtocol::OpenaiCompat,
-        base_url_env: "OPENAI_BASE_URL",
-        base_url_env_fallbacks: &[],
+        base_url_env: "MODELPORT_OPENAI_BASE_URL",
+        base_url_env_fallbacks: &["OPENAI_BASE_URL"],
         default_base_url: "https://api.openai.com/v1",
-        api_key_env: Some("OPENAI_API_KEY"),
-        api_key_env_fallbacks: &[],
+        api_key_env: Some("MODELPORT_OPENAI_API_KEY"),
+        api_key_env_fallbacks: &["OPENAI_API_KEY"],
         api_key_required: true,
-        default_model_env: "OPENAI_MODEL",
+        default_model_env: "MODELPORT_OPENAI_MODEL",
         default_model: "gpt-5.5",
-        models_env: "OPENAI_MODELS",
+        models_env: "MODELPORT_OPENAI_MODELS",
         models: &[
             "gpt-5.5",
             "gpt-5.5-pro",
@@ -1317,7 +1338,7 @@ fn insert_spec(
     provider_order: &mut Vec<String>,
     spec: &ProviderSpec,
 ) {
-    let default_model = env_value(spec.default_model_env).unwrap_or_else(|| {
+    let default_model = provider_env_value(spec, spec.default_model_env).unwrap_or_else(|| {
         if spec.id == "mimo" {
             env_value("ANTHROPIC_MODEL")
                 .filter(|model| model.starts_with("mimo-"))
@@ -1326,7 +1347,7 @@ fn insert_spec(
             spec.default_model.to_owned()
         }
     });
-    let mut models = env_list(spec.models_env, spec.models);
+    let mut models = provider_env_list(spec, spec.models_env, spec.models);
     if !models.contains(&default_model) {
         models.insert(0, default_model.clone());
     }
@@ -1454,7 +1475,10 @@ fn should_enable_provider(spec: &ProviderSpec) -> bool {
         return true;
     }
 
-    if env_value(spec.base_url_env).is_some() || env_value(spec.default_model_env).is_some() {
+    if env_value(spec.base_url_env).is_some()
+        || provider_env_value(spec, spec.default_model_env).is_some()
+        || provider_env_value(spec, spec.models_env).is_some()
+    {
         return true;
     }
 
@@ -1490,8 +1514,8 @@ fn extend_mimo_models_from_claude_env(models: &mut Vec<String>) {
     }
 }
 
-fn env_list(name: &str, defaults: &[&str]) -> Vec<String> {
-    env_value(name)
+fn provider_env_list(spec: &ProviderSpec, name: &str, defaults: &[&str]) -> Vec<String> {
+    provider_env_value(spec, name)
         .map(|value| {
             value
                 .split(',')
@@ -1504,7 +1528,40 @@ fn env_list(name: &str, defaults: &[&str]) -> Vec<String> {
         .unwrap_or_else(|| defaults.iter().map(|value| (*value).to_owned()).collect())
 }
 
-fn env_value(name: &str) -> Option<String> {
+fn provider_env_value(spec: &ProviderSpec, name: &str) -> Option<String> {
+    let preferred = env_value(name);
+    let fallback = openai_legacy_env_name(spec.id, name).and_then(env_value);
+    preferred.or(fallback)
+}
+
+fn openai_legacy_env_name(provider_id: &str, preferred_name: &str) -> Option<&'static str> {
+    if provider_id != "openai" {
+        return None;
+    }
+
+    match preferred_name {
+        "MODELPORT_OPENAI_MODEL" => Some("OPENAI_MODEL"),
+        "MODELPORT_OPENAI_MODELS" => Some("OPENAI_MODELS"),
+        _ => None,
+    }
+}
+
+fn validate_openai_legacy_env_fallbacks(issues: &mut Vec<ConfigIssue>) {
+    let active_fallbacks = OPENAI_LEGACY_ENV_MIGRATIONS
+        .iter()
+        .filter(|(preferred, legacy)| env_value(preferred).is_none() && env_value(legacy).is_some())
+        .map(|(preferred, legacy)| format!("`{legacy}` -> `{preferred}`"))
+        .collect::<Vec<_>>();
+
+    if !active_fallbacks.is_empty() {
+        issues.push(ConfigIssue::warning(format!(
+            "provider `openai` is using legacy client-style environment fallback(s): {}; migrate the ModelPort server to `MODELPORT_OPENAI_*` names so client `OPENAI_*` settings cannot be mistaken for upstream configuration",
+            active_fallbacks.join(", ")
+        )));
+    }
+}
+
+pub(crate) fn env_value(name: &str) -> Option<String> {
     let process_value = env::var(name).ok();
     if process_value.is_some() {
         return process_value;
@@ -1726,7 +1783,7 @@ fn first_env_owned(names: &[String]) -> Option<String> {
     names.iter().find_map(|name| env_value(name))
 }
 
-fn env_flag(name: &str) -> bool {
+pub(crate) fn env_flag(name: &str) -> bool {
     env_value(name)
         .map(|value| {
             matches!(
@@ -1990,6 +2047,42 @@ fn validate_provider_base_url_policy(
     Ok(())
 }
 
+fn openai_base_url_targets_modelport_listener(base_url: &str, bind_addr: SocketAddr) -> bool {
+    let Ok(url) = Url::parse(base_url) else {
+        return false;
+    };
+    if url.port_or_known_default() != Some(bind_addr.port()) {
+        return false;
+    }
+    if url.path().trim_matches('/') != "v1" {
+        return false;
+    }
+
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).trim_end_matches('.');
+    if host.eq_ignore_ascii_case("localhost") {
+        return bind_addr.ip().is_loopback() || bind_addr.ip().is_unspecified();
+    }
+
+    let Ok(host_ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    if !host_ip.is_loopback() && !host_ip.is_unspecified() {
+        return false;
+    }
+    if bind_addr.ip().is_unspecified() {
+        return true;
+    }
+
+    match (host_ip, bind_addr.ip()) {
+        (IpAddr::V4(host), IpAddr::V4(bind)) => host.is_unspecified() || host == bind,
+        (IpAddr::V6(host), IpAddr::V6(bind)) => host.is_unspecified() || host == bind,
+        _ => false,
+    }
+}
+
 fn provider_allows_loopback_base_url(provider_id: &str) -> bool {
     provider_id.starts_with("local_")
         || matches!(
@@ -2029,7 +2122,7 @@ fn ipv6_is_unicast_link_local(ip: std::net::Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
-fn is_placeholder_value(value: &str) -> bool {
+pub(crate) fn is_placeholder_value(value: &str) -> bool {
     let value = value.trim();
     value.is_empty()
         || value.starts_with("replace-with-")

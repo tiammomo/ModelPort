@@ -14,6 +14,7 @@ mod exchange;
 mod fidelity;
 mod http;
 mod metrics;
+mod oidc;
 mod policy;
 mod pricing;
 mod provider_credentials;

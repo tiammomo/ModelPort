@@ -10,23 +10,24 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{
-        HeaderMap, HeaderValue,
-        header::{HeaderName, SET_COOKIE},
+        HeaderMap, HeaderValue, StatusCode,
+        header::{CACHE_CONTROL, HeaderName, LOCATION, SET_COOKIE},
     },
     middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::warn;
+use tracing::{info_span, warn};
 
 use crate::{
-    auth::{AuthStore, LoginInput, PublicUser},
+    auth::{AuthStore, FederatedLoginInput, LoginInput, PublicUser},
     config::{
         AppConfig, FidelityMode, MaxTokensField, ProviderConfig, ProviderProtocol, RuntimeConfig,
         ToolUseConfig,
@@ -43,6 +44,7 @@ use crate::{
     error::AppError,
     http::{Header, HttpTransport},
     metrics::Metrics,
+    oidc::{OIDC_FLOW_COOKIE, OidcService},
 };
 
 mod admin_api_keys;
@@ -72,6 +74,7 @@ static ADMIN_LOGIN_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::con
 pub struct AppState {
     pub config: Arc<RuntimeConfig>,
     pub auth: Arc<AuthStore>,
+    pub oidc: Arc<OidcService>,
     pub control: Arc<ControlStore>,
     pub security: Arc<GatewaySecurityPolicy>,
     pub rate_limiter: Arc<RateLimiter>,
@@ -435,7 +438,21 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(client_api::chat_completions))
         .route(
             "/admin/auth/login",
-            post(admin_login).layer(DefaultBodyLimit::max(16 * 1024)),
+            post(admin_login)
+                .layer(DefaultBodyLimit::max(16 * 1024))
+                .layer(middleware::from_fn(add_no_store_header)),
+        )
+        .route(
+            "/admin/auth/methods",
+            get(admin_auth_methods).layer(middleware::from_fn(add_no_store_header)),
+        )
+        .route(
+            "/admin/auth/oidc/start",
+            get(admin_oidc_start).layer(middleware::from_fn(add_no_store_header)),
+        )
+        .route(
+            "/admin/auth/oidc/callback",
+            get(admin_oidc_callback).layer(middleware::from_fn(add_no_store_header)),
         )
         .route("/admin/auth/logout", post(admin_logout))
         .route("/admin/auth/me", get(admin_me))
@@ -547,7 +564,18 @@ pub fn router(state: AppState) -> Router {
                     MakeRequestUuid,
                 ))
                 .layer(PropagateRequestIdLayer::new(X_REQUEST_ID.clone()))
-                .layer(TraceLayer::new_for_http())
+                .layer(TraceLayer::new_for_http().make_span_with(
+                    |request: &axum::extract::Request| {
+                        // Query strings can contain short-lived authorization codes on
+                        // authentication callbacks. Keep correlation metadata while
+                        // ensuring those credentials never enter tracing output.
+                        info_span!(
+                            "http_request",
+                            method = %request.method(),
+                            path = %request.uri().path(),
+                        )
+                    },
+                ))
                 .layer(ConcurrencyLimitLayer::new(max_concurrent_requests)),
         )
         .layer(middleware::from_fn(add_security_headers))
@@ -572,6 +600,159 @@ async fn add_security_headers(request: axum::extract::Request, next: middleware:
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
     response
+}
+
+async fn add_no_store_header(request: axum::extract::Request, next: middleware::Next) -> Response {
+    let mut response = next.run(request).await;
+    set_no_store(&mut response);
+    response
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OidcStartQuery {
+    return_to: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OidcCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn admin_auth_methods(State(state): State<AppState>) -> Response {
+    let mut response = Json(state.oidc.methods()).into_response();
+    set_no_store(&mut response);
+    response
+}
+
+async fn admin_oidc_start(
+    State(state): State<AppState>,
+    Query(query): Query<OidcStartQuery>,
+) -> Response {
+    match state.oidc.start(query.return_to.as_deref()).await {
+        Ok(start) => redirect_no_store(&start.authorization_url, &[start.flow_cookie]),
+        Err(error) => oidc_error_redirect(error.code(), &state.oidc.clear_flow_cookie()),
+    }
+}
+
+async fn admin_oidc_callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    query: Result<Query<OidcCallbackQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let browser_flow = cookie_value(&headers, OIDC_FLOW_COOKIE).unwrap_or("");
+    let clear_flow_cookie = state.oidc.clear_flow_cookie();
+    let Query(mut query) = match query {
+        Ok(query) => query,
+        Err(_) => return oidc_error_redirect("invalid_callback", &clear_flow_cookie),
+    };
+
+    if query.error.take().is_some() {
+        let result = query
+            .state
+            .as_deref()
+            .ok_or(crate::oidc::OidcFlowError::InvalidCallback)
+            .and_then(|state_value| state.oidc.consume_provider_error(state_value, browser_flow));
+        let code = result.map_or_else(|error| error.code(), |_| "provider_error");
+        return oidc_error_redirect(code, &clear_flow_cookie);
+    }
+
+    let code = query.code.take();
+    let callback_state = query.state.take();
+    let (code, state_value) = match (code, callback_state) {
+        (Some(code), Some(state_value)) => (code, state_value),
+        (_, callback_state) => {
+            if let Some(state_value) = callback_state.as_deref() {
+                let _ = state.oidc.consume_provider_error(state_value, browser_flow);
+            }
+            return oidc_error_redirect("invalid_callback", &clear_flow_cookie);
+        }
+    };
+    let completed = match state.oidc.complete(&code, &state_value, browser_flow).await {
+        Ok(completed) => completed,
+        Err(error) => return oidc_error_redirect(error.code(), &clear_flow_cookie),
+    };
+
+    let auth = state.auth.clone();
+    let input = FederatedLoginInput {
+        issuer: completed.issuer,
+        subject: completed.subject,
+        username: completed.username,
+        email: completed.email,
+        email_verified: completed.email_verified,
+        auto_provision: completed.auto_provision,
+    };
+    let _permit = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ADMIN_LOGIN_WORKERS.acquire(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return oidc_error_redirect("oidc_unavailable", &clear_flow_cookie);
+        }
+        Err(_) => {
+            return oidc_error_redirect("oidc_unavailable", &clear_flow_cookie);
+        }
+    };
+    let login = match tokio::task::spawn_blocking(move || auth.login_federated(input)).await {
+        Ok(Ok(login)) => login,
+        Ok(Err(_)) | Err(_) => {
+            return oidc_error_redirect("account_not_authorized", &clear_flow_cookie);
+        }
+    };
+    record_admin_activity(
+        &state,
+        &login.user,
+        "config_change",
+        format!("user:{}", login.user.id),
+        format!("用户 {} 通过 OIDC 登录控制台", login.user.username),
+        "info",
+    );
+    let session_cookie = state.auth.session_cookie(&login.session_token);
+    redirect_no_store(&completed.return_to, &[clear_flow_cookie, session_cookie])
+}
+
+fn oidc_error_redirect(code: &str, clear_flow_cookie: &str) -> Response {
+    let location = format!("/login?oidc_error={code}");
+    redirect_no_store(&location, &[clear_flow_cookie.to_owned()])
+}
+
+fn redirect_no_store(location: &str, cookies: &[String]) -> Response {
+    let mut response = StatusCode::FOUND.into_response();
+    response.headers_mut().insert(
+        LOCATION,
+        HeaderValue::from_str(location)
+            .unwrap_or_else(|_| HeaderValue::from_static("/login?oidc_error=invalid_callback")),
+    );
+    for cookie in cookies {
+        if let Ok(value) = HeaderValue::from_str(cookie) {
+            response.headers_mut().append(SET_COOKIE, value);
+        }
+    }
+    set_no_store(&mut response);
+    response
+}
+
+fn set_no_store(response: &mut Response) {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+}
+
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get("cookie")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|cookie| {
+                let (cookie_name, value) = cookie.trim().split_once('=')?;
+                (cookie_name == name && !value.is_empty()).then_some(value)
+            })
+        })
 }
 
 async fn admin_login(
@@ -611,6 +792,7 @@ async fn admin_login(
         HeaderValue::from_str(&cookie)
             .map_err(|err| AppError::Config(format!("invalid admin session cookie: {err}")))?,
     );
+    set_no_store(&mut response);
     Ok(response)
 }
 
@@ -1939,6 +2121,48 @@ mod tests {
     };
 
     const CLIENT_TOKEN: &str = "client-token";
+
+    #[tokio::test]
+    async fn public_auth_methods_report_disabled_oidc_without_cache() {
+        let app = router(test_state("http://127.0.0.1:9".to_owned(), 1024));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/auth/methods")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["passwordEnabled"], true);
+        assert_eq!(body["oidc"]["enabled"], false);
+        assert_eq!(body["oidc"]["startUrl"], "/admin/auth/oidc/start");
+    }
+
+    #[tokio::test]
+    async fn disabled_oidc_start_redirects_safely_and_clears_flow_cookie() {
+        let app = router(test_state("http://127.0.0.1:9".to_owned(), 1024));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/auth/oidc/start?returnTo=%2Fdashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(response.headers()["location"], "/login?oidc_error=disabled");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let cookie = response.headers()[SET_COOKIE].to_str().unwrap();
+        assert!(cookie.starts_with("modelport_oidc_flow="));
+        assert!(cookie.contains("Max-Age=0"));
+    }
 
     #[test]
     fn quota_owner_is_loaded_from_the_auth_store() {
@@ -4617,6 +4841,7 @@ data: {"type":"message_stop"}
                 aliases: HashMap::new(),
             })),
             auth: Arc::new(AuthStore::for_tests()),
+            oidc: Arc::new(OidcService::disabled()),
             control: Arc::new(ControlStore::for_tests()),
             security: Arc::new(GatewaySecurityPolicy::for_tests()),
             rate_limiter: Arc::new(RateLimiter::disabled()),
@@ -4663,6 +4888,7 @@ data: {"type":"message_stop"}
                 aliases: HashMap::new(),
             })),
             auth: Arc::new(AuthStore::for_tests()),
+            oidc: Arc::new(OidcService::disabled()),
             control: Arc::new(ControlStore::for_tests()),
             security: Arc::new(GatewaySecurityPolicy::for_tests()),
             rate_limiter: Arc::new(RateLimiter::disabled()),

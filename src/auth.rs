@@ -20,7 +20,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::{config::AppConfig, error::AppError, storage::JsonStore};
+use crate::{
+    config::{AppConfig, env_flag},
+    error::AppError,
+    storage::JsonStore,
+};
 
 pub const ADMIN_SESSION_COOKIE: &str = "modelport_admin_session";
 
@@ -62,6 +66,14 @@ struct AdminUserRecord {
     created_at_ms: u64,
     updated_at_ms: u64,
     last_login_at_ms: Option<u64>,
+    #[serde(default)]
+    federated_identities: Vec<FederatedIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct FederatedIdentity {
+    issuer: String,
+    subject: String,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +107,29 @@ pub struct LoginResult {
     pub session_token: String,
     pub expires_at_ms: u64,
     pub user: PublicUser,
+}
+
+pub struct FederatedLoginInput {
+    pub issuer: String,
+    pub subject: String,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub email_verified: bool,
+    pub auto_provision: bool,
+}
+
+impl std::fmt::Debug for FederatedLoginInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FederatedLoginInput")
+            .field("issuer", &self.issuer)
+            .field("subject", &"[redacted]")
+            .field("username_present", &self.username.is_some())
+            .field("email_present", &self.email.is_some())
+            .field("email_verified", &self.email_verified)
+            .field("auto_provision", &self.auto_provision)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for AuthStore {
@@ -323,6 +358,160 @@ impl AuthStore {
         })
     }
 
+    /// Resolves a verified OIDC identity to a local user and issues the same
+    /// first-party session used by password login. The issuer and subject must
+    /// already have been cryptographically verified by the OIDC client.
+    pub fn login_federated(&self, input: FederatedLoginInput) -> Result<LoginResult, AppError> {
+        let issuer = validate_federated_identifier("issuer", &input.issuer, 2_048)?;
+        let subject = validate_federated_identifier("subject", &input.subject, 512)?;
+        let now_ms = now_millis();
+        let mut inner = self.inner.lock().expect("auth lock poisoned");
+        self.prune_expired_sessions_locked(&mut inner, now_ms);
+        if let Some(user_id) = bound_user_id(&inner, &issuer, &subject)? {
+            let previous = inner.clone();
+            return self.finish_federated_login_locked(&mut inner, previous, &user_id, now_ms);
+        }
+
+        // Email is the only mutable claim permitted for an implicit first
+        // binding, and only when the provider asserts that it is verified.
+        if !input.email_verified {
+            return Err(AppError::Auth);
+        }
+        let email = input
+            .email
+            .as_deref()
+            .ok_or(AppError::Auth)
+            .and_then(|email| validate_email(email).map_err(|_| AppError::Auth))?;
+        let email_matches = inner
+            .users
+            .iter()
+            .filter(|(_, user)| user.email.eq_ignore_ascii_case(&email))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        if email_matches.len() > 1 {
+            return Err(AppError::Auth);
+        }
+        if let Some(user_id) = email_matches.into_iter().next() {
+            let user = inner.users.get(&user_id).ok_or_else(|| {
+                AppError::Config("OIDC email-matched user disappeared".to_owned())
+            })?;
+            // Existing admins, inactive accounts, and accounts already bound
+            // to any identity require an explicit administrative binding.
+            if user.role == "admin"
+                || user.status != "active"
+                || !user.federated_identities.is_empty()
+            {
+                return Err(AppError::Auth);
+            }
+            let previous = inner.clone();
+            inner
+                .users
+                .get_mut(&user_id)
+                .expect("email-matched OIDC user should still exist")
+                .federated_identities
+                .push(FederatedIdentity {
+                    issuer: issuer.clone(),
+                    subject: subject.clone(),
+                });
+            return self.finish_federated_login_locked(&mut inner, previous, &user_id, now_ms);
+        }
+        if !input.auto_provision {
+            return Err(AppError::Auth);
+        }
+        let username = input
+            .username
+            .as_deref()
+            .ok_or(AppError::Auth)
+            .and_then(|username| normalize_username(username).map_err(|_| AppError::Auth))?;
+        if inner.users.values().any(|user| {
+            user.username.eq_ignore_ascii_case(&username) || user.email.eq_ignore_ascii_case(&email)
+        }) {
+            return Err(AppError::Auth);
+        }
+
+        // Argon2 is intentionally expensive. Release the global auth mutex
+        // before hashing the unusable random local password for a JIT user.
+        drop(inner);
+        let random_local_secret = format!(
+            "{}{}{}",
+            new_session_token(),
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let password_hash = hash_password(&random_local_secret)?;
+
+        let mut inner = self.inner.lock().expect("auth lock poisoned");
+        self.prune_expired_sessions_locked(&mut inner, now_ms);
+        // Resolve races with another callback for the same identity without
+        // ever creating a shadow username or email.
+        if let Some(user_id) = bound_user_id(&inner, &issuer, &subject)? {
+            let previous = inner.clone();
+            return self.finish_federated_login_locked(&mut inner, previous, &user_id, now_ms);
+        }
+        if inner.users.values().any(|user| {
+            user.username.eq_ignore_ascii_case(&username) || user.email.eq_ignore_ascii_case(&email)
+        }) {
+            return Err(AppError::Auth);
+        }
+        let user = AdminUserRecord {
+            id: format!("usr_{}", Uuid::new_v4().simple()),
+            username,
+            email,
+            role: "user".to_owned(),
+            status: "active".to_owned(),
+            password_hash,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            last_login_at_ms: None,
+            federated_identities: vec![FederatedIdentity { issuer, subject }],
+        };
+        let user_id = user.id.clone();
+        let previous = inner.clone();
+        inner.users.insert(user_id.clone(), user);
+        self.finish_federated_login_locked(&mut inner, previous, &user_id, now_ms)
+    }
+
+    fn finish_federated_login_locked(
+        &self,
+        inner: &mut AuthInner,
+        previous: AuthInner,
+        user_id: &str,
+        now_ms: u64,
+    ) -> Result<LoginResult, AppError> {
+        let Some(user) = inner.users.get_mut(user_id) else {
+            return Err(AppError::Config("OIDC user disappeared".to_owned()));
+        };
+        if user.status != "active" {
+            return Err(AppError::Auth);
+        }
+        user.last_login_at_ms = Some(now_ms);
+        user.updated_at_ms = now_ms;
+
+        let token = new_session_token();
+        let expires_at_ms = now_ms.saturating_add(self.session_ttl_seconds.saturating_mul(1_000));
+        inner.sessions.insert(
+            hash_session_token(&token),
+            AdminSession {
+                user_id: user_id.to_owned(),
+                expires_at_ms,
+            },
+        );
+        if let Err(error) = self.save_locked(inner) {
+            *inner = previous;
+            return Err(error);
+        }
+        let user = inner
+            .users
+            .get(user_id)
+            .map(|user| public_user(user, 1, 0))
+            .ok_or_else(|| AppError::Config("OIDC user disappeared".to_owned()))?;
+        Ok(LoginResult {
+            session_token: token,
+            expires_at_ms,
+            user,
+        })
+    }
+
     pub fn require_session(&self, headers: &HeaderMap) -> Result<PublicUser, AppError> {
         let token = session_token_from_headers(headers).ok_or(AppError::Auth)?;
         let now_ms = now_millis();
@@ -431,6 +620,7 @@ impl AuthStore {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
 
         let mut inner = self.inner.lock().expect("auth lock poisoned");
@@ -626,6 +816,7 @@ impl AuthStore {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
 
         inner.users.insert(user.id.clone(), user);
@@ -679,12 +870,32 @@ fn public_user(user: &AdminUserRecord, api_key_count: u32, request_count_24h: u6
     }
 }
 
+fn bound_user_id(
+    inner: &AuthInner,
+    issuer: &str,
+    subject: &str,
+) -> Result<Option<String>, AppError> {
+    let mut matches = inner.users.iter().filter(|(_, user)| {
+        user.federated_identities
+            .iter()
+            .any(|identity| identity.issuer == issuer && identity.subject == subject)
+    });
+    let first = matches.next().map(|(id, _)| id.clone());
+    if matches.next().is_some() {
+        return Err(AppError::Config(
+            "duplicate federated identity binding in auth store".to_owned(),
+        ));
+    }
+    Ok(first)
+}
+
 pub(crate) fn validate_backup_document(value: &Value) -> Result<(), AppError> {
     let file: AuthFile = serde_json::from_value(value.clone()).map_err(|error| {
         AppError::InvalidRequest(format!("backup auth document is invalid: {error}"))
     })?;
     let mut ids = std::collections::BTreeSet::new();
     let mut usernames = std::collections::BTreeSet::new();
+    let mut federated_identities = std::collections::BTreeSet::new();
     let mut active_admins = 0usize;
 
     for user in &file.users {
@@ -714,6 +925,15 @@ pub(crate) fn validate_backup_document(value: &Value) -> Result<(), AppError> {
             return Err(AppError::InvalidRequest(
                 "backup auth document contains an unsupported password hash".to_owned(),
             ));
+        }
+        for identity in &user.federated_identities {
+            let issuer = validate_federated_identifier("issuer", &identity.issuer, 2_048)?;
+            let subject = validate_federated_identifier("subject", &identity.subject, 512)?;
+            if !federated_identities.insert((issuer, subject)) {
+                return Err(AppError::InvalidRequest(
+                    "backup auth document contains a duplicate federated identity".to_owned(),
+                ));
+            }
         }
         if user.role == "admin" && user.status == "active" {
             active_admins += 1;
@@ -752,6 +972,20 @@ fn validate_email(value: &str) -> Result<String, AppError> {
         return Err(AppError::InvalidRequest("invalid email address".to_owned()));
     }
     Ok(email)
+}
+
+fn validate_federated_identifier(
+    field: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
+        return Err(AppError::InvalidRequest(format!(
+            "invalid federated {field}"
+        )));
+    }
+    Ok(value.to_owned())
 }
 
 fn validate_role(value: &str) -> Result<String, AppError> {
@@ -929,12 +1163,6 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-fn env_flag(name: &str) -> bool {
-    env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-}
-
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -969,6 +1197,7 @@ mod tests {
             created_at_ms: now_millis(),
             updated_at_ms: now_millis(),
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
         store
             .inner
@@ -990,6 +1219,154 @@ mod tests {
 
         let current = store.require_session(&headers).unwrap();
         assert_eq!(current.username, "admin");
+    }
+
+    #[test]
+    fn federated_login_requires_verified_email_and_never_implicitly_binds_admin() {
+        let store = AuthStore::for_tests();
+        let now = now_millis();
+        let user = AdminUserRecord {
+            id: "usr_user".to_owned(),
+            username: "developer".to_owned(),
+            email: "developer@example.com".to_owned(),
+            role: "user".to_owned(),
+            status: "active".to_owned(),
+            password_hash: hash_password("strong-password-123").unwrap(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+            federated_identities: Vec::new(),
+        };
+        let admin = AdminUserRecord {
+            id: "usr_admin".to_owned(),
+            username: "operator".to_owned(),
+            email: "operator@example.com".to_owned(),
+            role: "admin".to_owned(),
+            status: "active".to_owned(),
+            password_hash: hash_password("another-strong-password-123").unwrap(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+            federated_identities: Vec::new(),
+        };
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.users.insert(user.id.clone(), user);
+            inner.users.insert(admin.id.clone(), admin);
+        }
+
+        let unverified = store.login_federated(FederatedLoginInput {
+            issuer: "https://id.example.com".to_owned(),
+            subject: "subject-user".to_owned(),
+            username: Some("developer".to_owned()),
+            email: Some("developer@example.com".to_owned()),
+            email_verified: false,
+            auto_provision: false,
+        });
+        assert!(matches!(unverified, Err(AppError::Auth)));
+
+        let login = store
+            .login_federated(FederatedLoginInput {
+                issuer: "https://id.example.com".to_owned(),
+                subject: "subject-user".to_owned(),
+                username: Some("ignored-username".to_owned()),
+                email: Some("DEVELOPER@example.com".to_owned()),
+                email_verified: true,
+                auto_provision: false,
+            })
+            .unwrap();
+        assert_eq!(login.user.id, "usr_user");
+
+        let admin_login = store.login_federated(FederatedLoginInput {
+            issuer: "https://id.example.com".to_owned(),
+            subject: "subject-admin".to_owned(),
+            username: Some("operator".to_owned()),
+            email: Some("operator@example.com".to_owned()),
+            email_verified: true,
+            auto_provision: true,
+        });
+        assert!(matches!(admin_login, Err(AppError::Auth)));
+        let inner = store.inner.lock().unwrap();
+        assert!(inner.users["usr_admin"].federated_identities.is_empty());
+    }
+
+    #[test]
+    fn bound_federated_identity_ignores_changed_or_malformed_optional_claims() {
+        let store = AuthStore::for_tests();
+        let now = now_millis();
+        let user = AdminUserRecord {
+            id: "usr_bound".to_owned(),
+            username: "bound-user".to_owned(),
+            email: "bound@example.com".to_owned(),
+            role: "user".to_owned(),
+            status: "active".to_owned(),
+            password_hash: hash_password("strong-password-123").unwrap(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_login_at_ms: None,
+            federated_identities: vec![FederatedIdentity {
+                issuer: "https://id.example.com".to_owned(),
+                subject: "stable-subject".to_owned(),
+            }],
+        };
+        store
+            .inner
+            .lock()
+            .unwrap()
+            .users
+            .insert(user.id.clone(), user);
+
+        let login = store
+            .login_federated(FederatedLoginInput {
+                issuer: "https://id.example.com".to_owned(),
+                subject: "stable-subject".to_owned(),
+                username: Some("not a valid local username".to_owned()),
+                email: Some("not-an-email".to_owned()),
+                email_verified: false,
+                auto_provision: false,
+            })
+            .unwrap();
+        assert_eq!(login.user.id, "usr_bound");
+    }
+
+    #[test]
+    fn federated_auto_provision_is_user_only_and_rejects_shadow_username() {
+        let store = AuthStore::for_tests();
+        store
+            .create_user(CreateUserInput {
+                username: "existing-user".to_owned(),
+                email: "existing@example.com".to_owned(),
+                password: "strong-existing-password-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("active".to_owned()),
+            })
+            .unwrap();
+        let collision = store.login_federated(FederatedLoginInput {
+            issuer: "https://id.example.com".to_owned(),
+            subject: "collision-subject".to_owned(),
+            username: Some("EXISTING-USER".to_owned()),
+            email: Some("different@example.com".to_owned()),
+            email_verified: true,
+            auto_provision: true,
+        });
+        assert!(matches!(collision, Err(AppError::Auth)));
+
+        let login = store
+            .login_federated(FederatedLoginInput {
+                issuer: "https://id.example.com".to_owned(),
+                subject: "new-subject".to_owned(),
+                username: Some("new-user".to_owned()),
+                email: Some("new@example.com".to_owned()),
+                email_verified: true,
+                auto_provision: true,
+            })
+            .unwrap();
+        assert_eq!(login.user.role, "user");
+        assert_eq!(login.user.status, "active");
+        let inner = store.inner.lock().unwrap();
+        let record = inner.users.get(&login.user.id).unwrap();
+        assert_eq!(record.federated_identities.len(), 1);
+        assert!(PasswordHash::new(&record.password_hash).is_ok());
     }
 
     #[test]
@@ -1040,6 +1417,42 @@ mod tests {
             }]
         });
         assert!(validate_backup_document(&no_active_admin).is_err());
+
+        let shared_identity = serde_json::json!({
+            "users": [
+                {
+                    "id": "usr_admin",
+                    "username": "operator",
+                    "email": "operator@example.com",
+                    "role": "admin",
+                    "status": "active",
+                    "password_hash": hash_password("strong-password-123").unwrap(),
+                    "created_at_ms": 1,
+                    "updated_at_ms": 1,
+                    "last_login_at_ms": null,
+                    "federated_identities": [{
+                        "issuer": "https://id.example.com",
+                        "subject": "duplicate-subject"
+                    }]
+                },
+                {
+                    "id": "usr_user",
+                    "username": "developer",
+                    "email": "developer@example.com",
+                    "role": "user",
+                    "status": "active",
+                    "password_hash": hash_password("another-strong-password-123").unwrap(),
+                    "created_at_ms": 1,
+                    "updated_at_ms": 1,
+                    "last_login_at_ms": null,
+                    "federated_identities": [{
+                        "issuer": "https://id.example.com",
+                        "subject": "duplicate-subject"
+                    }]
+                }
+            ]
+        });
+        assert!(validate_backup_document(&shared_identity).is_err());
     }
 
     #[test]
@@ -1084,6 +1497,7 @@ mod tests {
             created_at_ms: now,
             updated_at_ms: now,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
         let user = AdminUserRecord {
             id: "usr_user".to_owned(),
@@ -1095,6 +1509,7 @@ mod tests {
             created_at_ms: now,
             updated_at_ms: now,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
         {
             let mut inner = store.inner.lock().unwrap();
@@ -1137,6 +1552,7 @@ mod tests {
             created_at_ms: now,
             updated_at_ms: now,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
         store
             .inner
@@ -1195,6 +1611,7 @@ mod tests {
             created_at_ms: now,
             updated_at_ms: now,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
         let user = AdminUserRecord {
             id: "usr_user".to_owned(),
@@ -1206,6 +1623,7 @@ mod tests {
             created_at_ms: now,
             updated_at_ms: now,
             last_login_at_ms: None,
+            federated_identities: Vec::new(),
         };
         {
             let mut inner = store.inner.lock().unwrap();
