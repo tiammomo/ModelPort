@@ -98,6 +98,11 @@ cargo audit --deny warnings --file Cargo.lock
 npm --prefix dashboard audit --audit-level=low
 ```
 
+Release-oriented backend images must be built with
+`scripts/build-container.sh`. It refuses uncommitted source and records the Git
+revision in OCI labels. `--allow-dirty` is limited to local integration testing;
+downstream release verification rejects the resulting dirty source-state label.
+
 `cargo audit` downloads the current RustSec advisory database, so this networked
 check is kept separate from the deterministic repository check script. Project
 exceptions live in `.cargo/audit.toml` and must document the exact dependency

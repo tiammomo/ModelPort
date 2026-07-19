@@ -542,6 +542,8 @@ repair_invalid_arguments = false
 # OpenAI-compatible provider; omit it for providers without this extension.
 [providers.example.reasoning]
 mode = "llama_cpp"
+default_enabled = false
+model_enabled = { "example-fast" = false, "example-code" = true, "example-deep" = true }
 default_budget_tokens = 4096
 model_budget_tokens = { "example-fast" = 512, "example-deep" = 16384 }
 
@@ -620,8 +622,13 @@ llama.cpp OpenAI-compatible extensions. `thinking.type="disabled"` sends
 `chat_template_kwargs.enable_thinking=false`; `enabled` or `adaptive` enables
 thinking and sends `thinking_budget_tokens`. Budget precedence is the explicit
 request value, then the requested ModelPort alias in `model_budget_tokens`, then
-`default_budget_tokens`. The resolved upstream model ID is unchanged, so these
-logical aliases share one loaded runtime and do not add model memory. Providers
+`default_budget_tokens`. Optional `default_enabled` is the Provider fallback
+when the client protocol has no portable thinking control, especially OpenAI
+Chat Completions. `model_enabled` overrides that fallback by requested logical
+model, so one loaded runtime can keep `fast` non-thinking while enabling
+`code`/`deep` by default. An explicit Anthropic `thinking` value always wins.
+Omit both enable settings to preserve the runtime default. The resolved upstream
+model ID is unchanged, so these aliases do not add model memory. Providers
 without this explicitly configured mode retain their existing native behavior.
 
 `sampling.mode="llama_cpp"` applies a profile selected by the originally
@@ -670,6 +677,40 @@ Reload from the dashboard Operations tab or restart the service. A successful
 reload validates the new base snapshot but does not mutate `.env` or TOML.
 Because process values win, editing a key that Compose already loaded from
 `env_file` has no effect until the container is recreated.
+
+## API Key tenant binding
+
+Every Control API Key has one request-ledger scope:
+`organizationId/projectId/environmentId`. New and pre-upgrade keys start at
+`org_local/prj_default/env_default`; an administrator binds a dedicated key
+before a consuming application declares another scope:
+
+```http
+PUT /admin/api-keys/{key_id}/scope
+Content-Type: application/json
+
+{
+  "organizationId": "org_local",
+  "projectId": "prj_quantpilot",
+  "environmentId": "env_development"
+}
+```
+
+The endpoint is admin-only, validates a complete bounded tuple, persists it in
+the Control Store, and emits an audit activity. The first PostgreSQL request
+auto-provisions the normalized catalog rows for that trusted binding.
+
+Clients may send all three assertion headers:
+
+```text
+X-ModelPort-Organization-Id: org_local
+X-ModelPort-Project-Id: prj_quantpilot
+X-ModelPort-Environment-Id: env_development
+```
+
+Omitting them uses the key binding. A partial tuple is 400; a different tuple is
+403. Headers never create authority. Give every consuming application its own
+key and ModelPort project; do not share QuantPilot's key with future products.
 
 ## Client, Compose, Script, And Dashboard Variables
 

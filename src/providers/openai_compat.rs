@@ -50,6 +50,11 @@ pub async fn chat_completions(
                 false,
                 resolved.provider.max_tokens_field,
             )?;
+            apply_default_reasoning_config(
+                &request.requested_model,
+                &resolved.provider.reasoning,
+                &mut body,
+            )?;
             apply_tool_use_capabilities(&mut body, &resolved.provider.tool_use)?;
             apply_buffered_generation_defaults(&mut body);
             let upstream = state.transport.post_json(&url, &headers, &body).await?;
@@ -83,6 +88,11 @@ pub async fn chat_completions(
 
         let mut body =
             request.to_openai_request(&resolved.model, true, resolved.provider.max_tokens_field)?;
+        apply_default_reasoning_config(
+            &request.requested_model,
+            &resolved.provider.reasoning,
+            &mut body,
+        )?;
         apply_tool_use_capabilities(&mut body, &resolved.provider.tool_use)?;
         let frames = state.transport.post_json_sse(url, headers, body).await?;
         let events =
@@ -95,6 +105,11 @@ pub async fn chat_completions(
             &resolved.model,
             false,
             resolved.provider.max_tokens_field,
+        )?;
+        apply_default_reasoning_config(
+            &request.requested_model,
+            &resolved.provider.reasoning,
+            &mut body,
         )?;
         apply_tool_use_capabilities(&mut body, &resolved.provider.tool_use)?;
         let mut upstream = state.transport.post_json(&url, &headers, &body).await?;
@@ -269,7 +284,11 @@ pub(crate) fn apply_reasoning_config(
         return Ok(());
     }
 
-    let mut enabled_override = None;
+    let mut enabled_override = config
+        .model_enabled
+        .get(&request.model)
+        .copied()
+        .or(config.default_enabled);
     let mut explicit_budget = None;
     if let Some(thinking) = request.extra.get("thinking") {
         let object = thinking
@@ -300,10 +319,42 @@ pub(crate) fn apply_reasoning_config(
         }
     }
 
+    apply_llama_cpp_reasoning(
+        &request.model,
+        enabled_override,
+        explicit_budget,
+        config,
+        body,
+    )
+}
+
+fn apply_default_reasoning_config(
+    requested_model: &str,
+    config: &ReasoningConfig,
+    body: &mut Value,
+) -> Result<(), AppError> {
+    if config.mode == ReasoningMode::None {
+        return Ok(());
+    }
+    let enabled = config
+        .model_enabled
+        .get(requested_model)
+        .copied()
+        .or(config.default_enabled);
+    apply_llama_cpp_reasoning(requested_model, enabled, None, config, body)
+}
+
+fn apply_llama_cpp_reasoning(
+    requested_model: &str,
+    enabled: Option<bool>,
+    explicit_budget: Option<u64>,
+    config: &ReasoningConfig,
+    body: &mut Value,
+) -> Result<(), AppError> {
     let body = body.as_object_mut().ok_or_else(|| {
         AppError::InvalidRequest("upstream request body must be an object".to_owned())
     })?;
-    if let Some(enabled) = enabled_override {
+    if let Some(enabled) = enabled {
         body.insert(
             "chat_template_kwargs".to_owned(),
             json!({"enable_thinking": enabled}),
@@ -314,7 +365,7 @@ pub(crate) fn apply_reasoning_config(
     }
 
     let budget = explicit_budget
-        .or_else(|| config.model_budget_tokens.get(&request.model).copied())
+        .or_else(|| config.model_budget_tokens.get(requested_model).copied())
         .or(config.default_budget_tokens);
     if let Some(budget) = budget {
         body.insert("thinking_budget_tokens".to_owned(), json!(budget));
@@ -394,6 +445,8 @@ mod tests {
     fn reasoning_config() -> ReasoningConfig {
         ReasoningConfig {
             mode: ReasoningMode::LlamaCpp,
+            default_enabled: None,
+            model_enabled: HashMap::new(),
             default_budget_tokens: Some(4096),
             model_budget_tokens: HashMap::from([
                 ("qwen3.5-fast".to_owned(), 512),
@@ -460,6 +513,65 @@ mod tests {
 
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
         assert!(body.get("thinking_budget_tokens").is_none());
+    }
+
+    #[test]
+    fn provider_default_disables_reasoning_for_openai_chat() {
+        let mut config = reasoning_config();
+        config.default_enabled = Some(false);
+        let mut body = json!({});
+
+        apply_default_reasoning_config("qwen3.5-deep", &config, &mut body).unwrap();
+
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(body.get("thinking_budget_tokens").is_none());
+    }
+
+    #[test]
+    fn logical_model_reasoning_policy_overrides_provider_default() {
+        let mut config = reasoning_config();
+        config.default_enabled = Some(false);
+        config.model_enabled.insert("qwen3.5-deep".to_owned(), true);
+        let mut body = json!({});
+
+        apply_default_reasoning_config("qwen3.5-deep", &config, &mut body).unwrap();
+
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(body["thinking_budget_tokens"], 16384);
+    }
+
+    #[test]
+    fn explicit_anthropic_disable_overrides_logical_model_policy() {
+        let request = request(json!({
+            "model": "qwen3.5-deep",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "disabled"}
+        }));
+        let mut config = reasoning_config();
+        config.model_enabled.insert("qwen3.5-deep".to_owned(), true);
+        let mut body = json!({});
+
+        apply_reasoning_config(&request, &config, &mut body).unwrap();
+
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(body.get("thinking_budget_tokens").is_none());
+    }
+
+    #[test]
+    fn explicit_anthropic_reasoning_overrides_disabled_provider_default() {
+        let request = request(json!({
+            "model": "qwen3.5-fast",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "enabled", "budget_tokens": 2048}
+        }));
+        let mut config = reasoning_config();
+        config.default_enabled = Some(false);
+        let mut body = json!({});
+
+        apply_reasoning_config(&request, &config, &mut body).unwrap();
+
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(body["thinking_budget_tokens"], 2048);
     }
 
     #[test]

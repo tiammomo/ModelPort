@@ -20,6 +20,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        MODELPORT_SOURCE_REVISION: ${MODELPORT_SOURCE_REVISION:-unknown}
+        MODELPORT_SOURCE_STATE: ${MODELPORT_SOURCE_STATE:-unknown}
     image: modelport:local
     init: true
     read_only: true

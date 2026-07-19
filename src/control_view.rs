@@ -20,6 +20,9 @@ pub(crate) trait ApiKeyViewRecord {
     fn team_name(&self) -> Option<&str>;
     fn allowed_models(&self) -> &[String];
     fn allowed_providers(&self) -> &[String];
+    fn organization_id(&self) -> &str;
+    fn project_id(&self) -> &str;
+    fn environment_id(&self) -> &str;
     fn created_at_ms(&self) -> u64;
     fn last_used_at_ms(&self) -> Option<u64>;
     fn expires_at_ms(&self) -> Option<u64>;
@@ -128,6 +131,9 @@ where
         team_name: record.team_name().map(str::to_owned),
         allowed_models: record.allowed_models().to_vec(),
         allowed_providers: record.allowed_providers().to_vec(),
+        organization_id: record.organization_id().to_owned(),
+        project_id: record.project_id().to_owned(),
+        environment_id: record.environment_id().to_owned(),
         created_at: record.created_at_ms().to_string(),
         last_used_at: record.last_used_at_ms().map(|value| value.to_string()),
         expires_at: record.expires_at_ms().map(|value| value.to_string()),
@@ -353,6 +359,15 @@ mod tests {
         }
         fn allowed_providers(&self) -> &[String] {
             &[]
+        }
+        fn organization_id(&self) -> &str {
+            "org_local"
+        }
+        fn project_id(&self) -> &str {
+            "prj_default"
+        }
+        fn environment_id(&self) -> &str {
+            "env_default"
         }
         fn created_at_ms(&self) -> u64 {
             1

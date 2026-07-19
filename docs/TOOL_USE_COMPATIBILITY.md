@@ -184,9 +184,10 @@ scripts/tool-use-acceptance.sh
 ```
 
 It creates a temporary local OpenAI-compatible provider and covers non-stream
-mapping, streaming `input_json_delta`, `tool_result` continuation, malformed
-requests, parallel-choice mapping, and strict rejection of undeclared tool
-names and non-object arguments before cleanup.
+mapping, streaming `input_json_delta`, two parallel calls with distinct IDs and
+interleaved argument fragments, `tool_result` continuation, malformed requests,
+parallel-choice mapping, and strict rejection of undeclared tool names and
+non-object arguments before cleanup.
 
 Real provider certification, which may cost money:
 

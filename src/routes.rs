@@ -65,6 +65,9 @@ use settings_view::{alias_row, alias_rows, config_issues_json, settings_row};
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const TRAFFIC_CLASS: HeaderName = HeaderName::from_static("x-modelport-traffic-class");
+const ORGANIZATION_ID: HeaderName = HeaderName::from_static("x-modelport-organization-id");
+const PROJECT_ID: HeaderName = HeaderName::from_static("x-modelport-project-id");
+const ENVIRONMENT_ID: HeaderName = HeaderName::from_static("x-modelport-environment-id");
 const CSRF_HEADER: HeaderName = HeaderName::from_static("x-modelport-csrf");
 const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
 const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
@@ -557,6 +560,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/admin/api-keys/{key_id}",
             put(admin_api_keys::admin_update_api_key).delete(admin_api_keys::admin_delete_api_key),
+        )
+        .route(
+            "/admin/api-keys/{key_id}/scope",
+            put(admin_api_keys::admin_bind_api_key_scope),
         )
         .route("/admin/quotas", get(admin_quotas).post(admin_create_quota))
         .route(
@@ -2135,7 +2142,7 @@ mod tests {
             FidelityMode, MaxTokensField, ProviderConfig, ReasoningConfig, ReasoningMode,
             TokenCountingConfig, TokenCountingMode,
         },
-        control::CreateApiKeyInput,
+        control::{BindApiKeyScopeInput, CreateApiKeyInput},
         metrics::Metrics,
     };
 
@@ -3192,6 +3199,93 @@ data: [DONE]
             post_message_with_key(app, &created.key, message_body(false)).await;
         assert_eq!(api_key_status, StatusCode::OK);
         assert!(body.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn api_key_tenant_scope_is_enforced_for_both_client_protocols() {
+        let upstream = spawn_openai_upstream(
+            StatusCode::OK,
+            r#"{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+            "application/json",
+        )
+        .await;
+        let mut state = test_state(upstream, 1024 * 1024);
+        state.security = Arc::new(GatewaySecurityPolicy::require_control_api_keys_for_tests());
+        let owner = state
+            .auth
+            .create_user(CreateUserInput {
+                username: "scoped-user".to_owned(),
+                email: "scoped-user@example.com".to_owned(),
+                password: "strong-scoped-user-password-123".to_owned(),
+                role: Some("user".to_owned()),
+                status: Some("active".to_owned()),
+            })
+            .unwrap();
+        let created = state
+            .control
+            .create_api_key(CreateApiKeyInput {
+                user_id: owner.id,
+                username: Some(owner.username),
+                name: "scoped client".to_owned(),
+                group: None,
+                team_id: None,
+                allowed_models: None,
+                allowed_providers: None,
+                expires_at: None,
+            })
+            .unwrap();
+        state
+            .control
+            .bind_api_key_scope(
+                &created.public.id,
+                BindApiKeyScopeInput {
+                    organization_id: "org_acme".to_owned(),
+                    project_id: "prj_agent".to_owned(),
+                    environment_id: "env_prod".to_owned(),
+                },
+            )
+            .unwrap();
+        let app = router(state);
+        let bearer = format!("Bearer {}", created.key);
+        let requests = [
+            (
+                "/v1/messages",
+                "x-api-key",
+                created.key.as_str(),
+                message_body(false),
+            ),
+            (
+                "/v1/chat/completions",
+                "authorization",
+                bearer.as_str(),
+                chat_body(false),
+            ),
+        ];
+
+        for (uri, auth_header, auth_value, body) in requests {
+            let forged = post_scoped_json_response(
+                app.clone(),
+                uri,
+                auth_header,
+                auth_value,
+                ("org_acme", "prj_other", "env_prod"),
+                body.clone(),
+            )
+            .await;
+            assert_eq!(forged.status(), StatusCode::FORBIDDEN, "{uri}");
+            assert!(response_body(forged).await.contains("not bound"));
+
+            let matching = post_scoped_json_response(
+                app.clone(),
+                uri,
+                auth_header,
+                auth_value,
+                ("org_acme", "prj_agent", "env_prod"),
+                body,
+            )
+            .await;
+            assert_eq!(matching.status(), StatusCode::OK, "{uri}");
+        }
     }
 
     #[tokio::test]
@@ -4966,6 +5060,33 @@ data: {"type":"message_stop"}
         .unwrap()
     }
 
+    async fn post_scoped_json_response(
+        app: Router,
+        uri: &str,
+        auth_header: &str,
+        auth_value: &str,
+        scope: (&str, &str, &str),
+        body: Value,
+    ) -> Response {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .extension(ConnectInfo(
+                    "127.0.0.1:48178".parse::<SocketAddr>().unwrap(),
+                ))
+                .header(auth_header, auth_value)
+                .header(&ORGANIZATION_ID, scope.0)
+                .header(&PROJECT_ID, scope.1)
+                .header(&ENVIRONMENT_ID, scope.2)
+                .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
     async fn response_body(response: Response) -> String {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         String::from_utf8(body.to_vec()).unwrap()
@@ -5091,6 +5212,8 @@ data: {"type":"message_stop"}
             ),
             reasoning: ReasoningConfig {
                 mode: ReasoningMode::LlamaCpp,
+                default_enabled: None,
+                model_enabled: Default::default(),
                 default_budget_tokens: None,
                 model_budget_tokens: Default::default(),
             },

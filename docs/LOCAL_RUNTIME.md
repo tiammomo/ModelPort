@@ -29,6 +29,8 @@ fidelity_mode = "best_effort"
 
 [providers.local_qwen.reasoning]
 mode = "llama_cpp"
+default_enabled = false
+model_enabled = { "local-fast" = false, "local-code" = true, "local-deep" = true }
 default_budget_tokens = 4096
 model_budget_tokens = { "local-fast" = 512, "local-code" = 4096, "local-deep" = 16384 }
 
@@ -189,9 +191,10 @@ before returning final text, rerun Tool Use acceptance with `--max-tokens 512`.
 For llama.cpp runtimes, the optional `reasoning` block maps Anthropic Messages
 `thinking` controls to `chat_template_kwargs.enable_thinking` and
 `thinking_budget_tokens`. Logical model aliases can carry different default
-budgets while resolving to the same upstream model. An explicit client
-`thinking.budget_tokens` overrides the alias and provider defaults; explicit
-`thinking.type="disabled"` disables thinking for that request.
+budgets and default enable policies while resolving to the same upstream model.
+`model_enabled` wins over `default_enabled`; an explicit Anthropic `thinking`
+value wins over both. This supports a non-thinking `fast` alias and
+thinking-enabled `code`/`deep` aliases without loading more weights.
 
 The optional `sampling` block makes logical aliases carry task-specific sampler
 defaults without loading another model. ModelPort applies only the profile whose

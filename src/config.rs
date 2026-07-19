@@ -90,6 +90,16 @@ pub enum ReasoningMode {
 pub struct ReasoningConfig {
     #[serde(default)]
     pub mode: ReasoningMode,
+    /// Provider policy used when the client protocol has no portable thinking
+    /// control (notably OpenAI Chat Completions). `None` preserves the
+    /// runtime's native default; an explicit boolean is rendered through the
+    /// configured Provider extension.
+    pub default_enabled: Option<bool>,
+    /// Optional logical-model overrides. These let aliases such as `fast`,
+    /// `code`, and `deep` share one runtime while carrying different default
+    /// thinking policies. An explicit client control still wins.
+    #[serde(default)]
+    pub model_enabled: HashMap<String, bool>,
     pub default_budget_tokens: Option<u64>,
     #[serde(default)]
     pub model_budget_tokens: HashMap<String, u64>,
@@ -2093,11 +2103,13 @@ fn validate_provider(
         )));
     }
     if provider.reasoning.mode == ReasoningMode::None
-        && (provider.reasoning.default_budget_tokens.is_some()
+        && (provider.reasoning.default_enabled.is_some()
+            || !provider.reasoning.model_enabled.is_empty()
+            || provider.reasoning.default_budget_tokens.is_some()
             || !provider.reasoning.model_budget_tokens.is_empty())
     {
         issues.push(ConfigIssue::error(format!(
-            "provider `{id}` reasoning budgets require a non-none reasoning.mode"
+            "provider `{id}` reasoning defaults require a non-none reasoning.mode"
         )));
     }
     if provider.reasoning.default_budget_tokens == Some(0) {
@@ -2522,6 +2534,8 @@ mod tests {
 
             [providers.local_vllm.reasoning]
             mode = "llama_cpp"
+            default_enabled = false
+            model_enabled = { "qwen-fast" = false, "qwen-deep" = true }
             default_budget_tokens = 4096
             model_budget_tokens = { "qwen-fast" = 512, "qwen-deep" = 16384 }
 
@@ -2576,6 +2590,11 @@ mod tests {
             provider.reasoning,
             Some(ReasoningConfig {
                 mode: ReasoningMode::LlamaCpp,
+                default_enabled: Some(false),
+                model_enabled: HashMap::from([
+                    ("qwen-fast".to_owned(), false),
+                    ("qwen-deep".to_owned(), true),
+                ]),
                 default_budget_tokens: Some(4096),
                 model_budget_tokens: HashMap::from([
                     ("qwen-fast".to_owned(), 512),

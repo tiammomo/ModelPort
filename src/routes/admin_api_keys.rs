@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{
     auth::AuthStore,
-    control::{CreateApiKeyInput, UpdateApiKeyInput},
+    control::{BindApiKeyScopeInput, CreateApiKeyInput, UpdateApiKeyInput},
 };
 
 use super::*;
@@ -112,6 +112,28 @@ pub(super) async fn admin_update_api_key(
         format!("api_key:{key_id}"),
         format!("更新 API Key {} ({})", updated.name, updated.status),
         "info",
+    );
+    Ok(Json(json!(updated)))
+}
+
+pub(super) async fn admin_bind_api_key_scope(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+    Json(body): Json<BindApiKeyScopeInput>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    let updated = state.control.bind_api_key_scope(&key_id, body)?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "security_change",
+        format!("api_key:{key_id}"),
+        format!(
+            "绑定 API Key {} 到 {}/{}/{}",
+            updated.name, updated.organization_id, updated.project_id, updated.environment_id
+        ),
+        "warning",
     );
     Ok(Json(json!(updated)))
 }

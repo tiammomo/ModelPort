@@ -19,6 +19,10 @@ migration workstreams, and evidence-based release gates.
 
 ModelPort is intended for one trusted host or a small trusted network. It is
 not a public multi-tenant model platform, a chat client, or a model runtime.
+Within that boundary, every client API key can be admin-bound to one
+organization/project/environment ledger scope; request headers only assert the
+binding and cannot select another tenant. See
+[API Key tenant binding](docs/CONFIGURATION.md#api-key-tenant-binding).
 
 ## Implemented Surface
 
@@ -148,7 +152,8 @@ QuantPilot must never receive `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`.
 Start and inspect the stack:
 
 ```bash
-docker compose up -d --build
+scripts/build-container.sh
+docker compose up -d
 docker compose ps
 docker compose logs -f modelport
 ```

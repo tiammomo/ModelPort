@@ -47,9 +47,15 @@ updates, and secret protection.
 ```bash
 cp deploy/docker/modelport.env.example .env
 # replace every required placeholder
-docker compose up -d --build
+scripts/build-container.sh
+docker compose up -d
 docker compose ps
 ```
+
+The build helper refuses a dirty worktree and embeds the Git revision plus
+`io.modelport.source-state=clean` in the backend image. For local-only testing
+of uncommitted changes, `scripts/build-container.sh --allow-dirty` produces an
+explicitly dirty-labeled image that must not be promoted as a release.
 
 Compose normally injects and mounts the root `.env`. For manifest validation or
 an intentionally different deployment file, point both uses at the same path:
@@ -86,7 +92,7 @@ docker compose ps
 docker compose logs -f modelport
 docker compose logs -f dashboard
 docker compose restart modelport
-docker compose up -d --build
+scripts/build-container.sh && docker compose up -d
 docker compose down
 ```
 

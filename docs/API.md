@@ -309,6 +309,16 @@ Route groups include:
 - `GET /admin/audit`, `POST /admin/backup`: audit events and a redacted,
   non-restorable diagnostic snapshot.
 
+`PUT /admin/api-keys/{key_id}/scope` is the administrator-only tenant-binding
+operation. Its JSON body must contain a complete `organizationId`, `projectId`,
+and `environmentId` tuple. The tuple is persisted on the authenticated client
+key and becomes the authoritative ledger scope for both protocol edges.
+Data-plane `X-ModelPort-Organization-Id`, `X-ModelPort-Project-Id`, and
+`X-ModelPort-Environment-Id` headers are optional assertions: a partial tuple is
+400 and a tuple different from the key binding is 403. They never grant access
+or auto-select another project. See the complete procedure in
+[API Key tenant binding](CONFIGURATION.md#api-key-tenant-binding).
+
 ### Enterprise Ledger Views
 
 `GET /admin/enterprise/overview` reports the active ledger backend, its

@@ -32,6 +32,14 @@ string_id!(ProjectId);
 string_id!(EnvironmentId);
 string_id!(PrincipalId);
 
+pub(crate) fn valid_tenant_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
 impl RequestId {
     pub(crate) fn new() -> Self {
         Self::from_string(format!("req_{}", Uuid::new_v4().simple()))
@@ -67,6 +75,18 @@ impl TenantScope {
             environment_id: EnvironmentId::from_string("env_default"),
         }
     }
+
+    pub(crate) fn from_strings(
+        organization_id: impl Into<String>,
+        project_id: impl Into<String>,
+        environment_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            organization_id: OrganizationId::from_string(organization_id),
+            project_id: ProjectId::from_string(project_id),
+            environment_id: EnvironmentId::from_string(environment_id),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,17 +113,32 @@ pub(crate) struct RequestContext {
 }
 
 impl RequestContext {
-    pub(crate) fn legacy(
+    pub(crate) fn scoped(
         request_id: RequestId,
+        tenant: TenantScope,
         principal_id: impl Into<String>,
         protocol: ClientProtocol,
     ) -> Self {
         Self {
             request_id,
-            tenant: TenantScope::legacy_local(),
+            tenant,
             principal_id: PrincipalId::from_string(principal_id),
             protocol,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy(
+        request_id: RequestId,
+        principal_id: impl Into<String>,
+        protocol: ClientProtocol,
+    ) -> Self {
+        Self::scoped(
+            request_id,
+            TenantScope::legacy_local(),
+            principal_id,
+            protocol,
+        )
     }
 }
 
@@ -142,5 +177,14 @@ mod tests {
         assert_eq!(context.tenant.project_id.as_str(), "prj_default");
         assert_eq!(context.tenant.environment_id.as_str(), "env_default");
         assert_eq!(context.protocol.as_str(), "anthropic-messages");
+    }
+
+    #[test]
+    fn tenant_identifiers_are_bounded_ascii_scope_values() {
+        assert!(valid_tenant_identifier("org.example:prod-1"));
+        assert!(!valid_tenant_identifier(""));
+        assert!(!valid_tenant_identifier("org with spaces"));
+        assert!(!valid_tenant_identifier("组织"));
+        assert!(!valid_tenant_identifier(&"x".repeat(129)));
     }
 }

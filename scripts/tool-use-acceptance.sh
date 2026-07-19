@@ -199,6 +199,47 @@ message_request() {
   ' "$model" "$stream" "$max_tokens"
 }
 
+parallel_tool_request() {
+  local model="$1"
+  local stream="$2"
+  node -e '
+    const model = process.argv[1];
+    const stream = process.argv[2] === "true";
+    const maxTokens = Number(process.argv[3]);
+    process.stdout.write(JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      temperature: 0,
+      stream,
+      tools: [
+        {
+          name: "read_file",
+          input_schema: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+            additionalProperties: false
+          }
+        },
+        {
+          name: "lookup_symbol",
+          input_schema: {
+            type: "object",
+            properties: { symbol: { type: "string" } },
+            required: ["symbol"],
+            additionalProperties: false
+          }
+        }
+      ],
+      tool_choice: { type: "auto", disable_parallel_tool_use: false },
+      messages: [{
+        role: "user",
+        content: "MODELPORT_PARALLEL_TOOL_FIXTURE"
+      }]
+    }));
+  ' "$model" "$stream" "$max_tokens"
+}
+
 tool_result_request() {
   local model="$1"
   node -e '
@@ -425,6 +466,87 @@ assert_tool_stream() {
   ' "$body_file"
 }
 
+assert_parallel_tool_response() {
+  node -e '
+    const fs = require("fs");
+    const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const calls = (body.content || []).filter((block) => block?.type === "tool_use");
+    if (calls.length !== 2) {
+      console.error(`expected two parallel tool_use blocks, got ${calls.length}`);
+      process.exit(1);
+    }
+    if (new Set(calls.map((call) => call.id)).size !== 2) {
+      console.error("parallel tool_use IDs are not unique");
+      process.exit(1);
+    }
+    const byName = Object.fromEntries(calls.map((call) => [call.name, call.input]));
+    if (byName.read_file?.path !== "Cargo.toml") {
+      console.error(`unexpected read_file input: ${JSON.stringify(byName.read_file)}`);
+      process.exit(1);
+    }
+    if (byName.lookup_symbol?.symbol !== "ToolResponsePolicy") {
+      console.error(`unexpected lookup_symbol input: ${JSON.stringify(byName.lookup_symbol)}`);
+      process.exit(1);
+    }
+    if (body.stop_reason !== "tool_use") {
+      console.error(`unexpected stop_reason: ${body.stop_reason}`);
+      process.exit(1);
+    }
+  ' "$body_file"
+}
+
+assert_parallel_tool_stream() {
+  node -e '
+    const fs = require("fs");
+    const raw = fs.readFileSync(process.argv[1], "utf8");
+    const calls = new Map();
+    let currentEvent = "";
+    let sawStopReason = false;
+    for (const line of raw.split(/\r?\n/)) {
+      if (line.startsWith("event:")) {
+        currentEvent = line.slice(6).trim();
+        continue;
+      }
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let parsed;
+      try { parsed = JSON.parse(data); } catch { continue; }
+      if (currentEvent === "content_block_start" && parsed?.content_block?.type === "tool_use") {
+        calls.set(parsed.index, {
+          id: parsed.content_block.id,
+          name: parsed.content_block.name,
+          partial: ""
+        });
+      }
+      if (currentEvent === "content_block_delta" && parsed?.delta?.type === "input_json_delta") {
+        const call = calls.get(parsed.index);
+        if (call) call.partial += String(parsed.delta.partial_json || "");
+      }
+      if (currentEvent === "message_delta" && parsed?.delta?.stop_reason === "tool_use") {
+        sawStopReason = true;
+      }
+    }
+    if (calls.size !== 2 || new Set([...calls.values()].map((call) => call.id)).size !== 2) {
+      console.error(`expected two unique streamed tool calls, got ${calls.size}`);
+      process.exit(1);
+    }
+    const parsedCalls = {};
+    for (const call of calls.values()) {
+      try { parsedCalls[call.name] = JSON.parse(call.partial); }
+      catch { console.error(`invalid streamed arguments for ${call.name}: ${call.partial}`); process.exit(1); }
+    }
+    if (parsedCalls.read_file?.path !== "Cargo.toml" || parsedCalls.lookup_symbol?.symbol !== "ToolResponsePolicy") {
+      console.error(`unexpected parallel streamed inputs: ${JSON.stringify(parsedCalls)}`);
+      process.exit(1);
+    }
+    if (!sawStopReason) {
+      console.error("missing parallel tool_use stop_reason");
+      process.exit(1);
+    }
+  ' "$body_file"
+}
+
 assert_text_response() {
   node -e '
     const fs = require("fs");
@@ -498,17 +620,50 @@ const server = http.createServer(async (req, res) => {
   const body = JSON.parse(raw || "{}");
   const lastMessage = [...(body.messages || [])].reverse().find((message) => message.role !== "system");
   const lastText = typeof lastMessage?.content === "string" ? lastMessage.content : "";
+  const parallelFixture = lastText.includes("MODELPORT_PARALLEL_TOOL_FIXTURE");
 
   if (body.stream) {
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache"
     });
-    res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_acceptance","function":{"name":"read_file","arguments":""}}]},"finish_reason":null,"index":0}]}\n\n');
-    res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"Cargo.toml\\"}"}}]},"finish_reason":null,"index":0}]}\n\n');
+    if (parallelFixture) {
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_parallel_read","function":{"name":"read_file","arguments":"{\\"path\\":"}},{"index":1,"id":"call_parallel_lookup","function":{"name":"lookup_symbol","arguments":"{\\"symbol\\":"}}]},"finish_reason":null,"index":0}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\\"ToolResponsePolicy\\"}"}},{"index":0,"function":{"arguments":"\\"Cargo.toml\\"}"}}]},"finish_reason":null,"index":0}]}\n\n');
+    } else {
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_acceptance","function":{"name":"read_file","arguments":""}}]},"finish_reason":null,"index":0}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"Cargo.toml\\"}"}}]},"finish_reason":null,"index":0}]}\n\n');
+    }
     res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n');
     res.write("data: [DONE]\n\n");
     res.end();
+    return;
+  }
+
+  if (parallelFixture) {
+    writeJson(res, {
+      id: "chatcmpl_parallel_tool_acceptance",
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_parallel_read",
+              type: "function",
+              function: { name: "read_file", arguments: "{\"path\":\"Cargo.toml\"}" }
+            },
+            {
+              id: "call_parallel_lookup",
+              type: "function",
+              function: { name: "lookup_symbol", arguments: "{\"symbol\":\"ToolResponsePolicy\"}" }
+            }
+          ]
+        }
+      }],
+      usage: { prompt_tokens: 16, completion_tokens: 8 }
+    });
     return;
   }
 
@@ -723,6 +878,32 @@ run_tool_use_roundtrip() {
   ok "Anthropic tool_result converted to OpenAI role=tool"
 }
 
+run_parallel_tool_use_roundtrip() {
+  local status
+
+  status="$(post_message "$(parallel_tool_request "$test_model" false)")"
+  expect_status "$status" "200" "non-streaming parallel Tool Use"
+  assert_parallel_tool_response
+  ok "two OpenAI tool_calls converted to distinct Anthropic tool_use blocks"
+
+  status="$(post_message_stream "$(parallel_tool_request "$test_model" true)")"
+  expect_status "$status" "200" "streaming parallel Tool Use"
+  if grep -Eq '^event:[[:space:]]*error' "$body_file"; then
+    printf '[fail] streaming parallel Tool Use emitted error event\n' >&2
+    sed -n '1,200p' "$body_file" >&2 || true
+    exit 1
+  fi
+  assert_parallel_tool_stream
+  ok "interleaved OpenAI argument fragments preserve parallel Tool Use identity"
+
+  if ! grep -q '"parallel_tool_calls":true' "$mock_log_file"; then
+    printf '[fail] mock upstream did not receive parallel_tool_calls=true\n' >&2
+    sed -n '1,160p' "$mock_log_file" >&2 || true
+    exit 1
+  fi
+  ok "Anthropic parallel Tool Use mapped to OpenAI parallel_tool_calls=true"
+}
+
 run_strict_response_rejections() {
   local status
 
@@ -746,8 +927,8 @@ run_strict_response_rejections() {
 
   status="$(post_message "$(strict_schema_guard_request "$test_model")")"
   expect_status "$status" "502" "strict JSON Schema mismatch rejection"
-  if ! grep -q 'declared input schema' "$body_file"; then
-    printf '[fail] strict response error did not identify a schema mismatch\n' >&2
+  if [[ "$(json_get "$body_file" "error.code" || true)" != "tool_arguments_invalid" ]]; then
+    printf '[fail] strict response error did not return tool_arguments_invalid\n' >&2
     sed -n '1,120p' "$body_file" >&2 || true
     exit 1
   fi
@@ -770,6 +951,7 @@ run_validation_rejections
 run_tool_use_roundtrip
 
 if [[ "$mode" == "mock" ]]; then
+  run_parallel_tool_use_roundtrip
   run_strict_response_rejections
   assert_mock_received_parallel_false
 fi

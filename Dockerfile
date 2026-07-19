@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
 ARG RUST_VERSION=1.96.0
+ARG MODELPORT_SOURCE_REVISION=unknown
+ARG MODELPORT_SOURCE_STATE=unknown
 FROM rust:${RUST_VERSION}-bookworm AS builder
 
 WORKDIR /app
@@ -21,6 +23,15 @@ RUN mkdir -p /data /config \
   && chown -R modelport:modelport /data /config
 
 COPY --from=builder /app/target/release/model-port /usr/local/bin/model-port
+
+# Keep source metadata after dependency and binary layers so a new commit label
+# does not invalidate the slow apt or Rust build cache.
+ARG MODELPORT_SOURCE_REVISION
+ARG MODELPORT_SOURCE_STATE
+LABEL org.opencontainers.image.title="ModelPort" \
+      org.opencontainers.image.source="https://github.com/tiammomo/ModelPort" \
+      org.opencontainers.image.revision="$MODELPORT_SOURCE_REVISION" \
+      io.modelport.source-state="$MODELPORT_SOURCE_STATE"
 
 USER modelport
 

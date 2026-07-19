@@ -24,6 +24,7 @@ use crate::{
         provider_credential_health_row, provider_health_row, public_api_key, public_quota,
         public_team,
     },
+    domain::{TenantScope, valid_tenant_identifier},
     error::{AppError, audit_safe_persisted_error},
     policy::{
         enforce_ip_policy, enforce_model_policy, enforce_provider_policy, enforce_spend_limit,
@@ -50,6 +51,51 @@ pub use crate::usage::UsageEstimate;
 const DEFAULT_USAGE_LIMIT: usize = 5_000;
 const HOUR_MS: u64 = 60 * 60 * 1_000;
 const SPEND_LEDGER_RETENTION_MS: u64 = 31 * DAY_MS;
+
+fn default_organization_id() -> String {
+    "org_local".to_owned()
+}
+
+fn default_project_id() -> String {
+    "prj_default".to_owned()
+}
+
+fn default_environment_id() -> String {
+    "env_default".to_owned()
+}
+
+fn normalized_tenant_id(field: &str, value: String) -> Result<String, AppError> {
+    let value = value.trim();
+    if !valid_tenant_identifier(value) {
+        return Err(AppError::InvalidRequest(format!(
+            "API key {field} must contain 1-128 safe scope characters"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+fn normalize_tenant_scope(
+    organization_id: Option<String>,
+    project_id: Option<String>,
+    environment_id: Option<String>,
+) -> Result<(String, String, String), AppError> {
+    match (organization_id, project_id, environment_id) {
+        (None, None, None) => Ok((
+            default_organization_id(),
+            default_project_id(),
+            default_environment_id(),
+        )),
+        (Some(organization_id), Some(project_id), Some(environment_id)) => Ok((
+            normalized_tenant_id("organizationId", organization_id)?,
+            normalized_tenant_id("projectId", project_id)?,
+            normalized_tenant_id("environmentId", environment_id)?,
+        )),
+        _ => Err(AppError::InvalidRequest(
+            "API key organizationId, projectId, and environmentId must be supplied together"
+                .to_owned(),
+        )),
+    }
+}
 
 pub(crate) fn validate_backup_document(value: &serde_json::Value) -> Result<(), AppError> {
     serde_json::from_value::<ControlFile>(value.clone())
@@ -622,6 +668,12 @@ struct ApiKeyRecord {
     allowed_models: Vec<String>,
     #[serde(default)]
     allowed_providers: Vec<String>,
+    #[serde(default = "default_organization_id")]
+    organization_id: String,
+    #[serde(default = "default_project_id")]
+    project_id: String,
+    #[serde(default = "default_environment_id")]
+    environment_id: String,
     created_at_ms: u64,
     last_used_at_ms: Option<u64>,
     expires_at_ms: Option<u64>,
@@ -687,6 +739,18 @@ impl ApiKeyViewRecord for ApiKeyRecord {
 
     fn allowed_providers(&self) -> &[String] {
         &self.allowed_providers
+    }
+
+    fn organization_id(&self) -> &str {
+        &self.organization_id
+    }
+
+    fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    fn environment_id(&self) -> &str {
+        &self.environment_id
     }
 
     fn created_at_ms(&self) -> u64 {
@@ -911,6 +975,9 @@ pub struct PublicApiKey {
     pub team_name: Option<String>,
     pub allowed_models: Vec<String>,
     pub allowed_providers: Vec<String>,
+    pub organization_id: String,
+    pub project_id: String,
+    pub environment_id: String,
     pub created_at: String,
     pub last_used_at: Option<String>,
     pub expires_at: Option<String>,
@@ -976,6 +1043,14 @@ pub struct UpdateApiKeyInput {
     pub daily_limit_usd: Option<f64>,
     pub weekly_limit_usd: Option<f64>,
     pub monthly_limit_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindApiKeyScopeInput {
+    pub organization_id: String,
+    pub project_id: String,
+    pub environment_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2258,6 +2333,22 @@ impl ControlStore {
             .collect()
     }
 
+    pub fn tenant_scope(&self, identity: &ClientIdentity) -> Result<TenantScope, AppError> {
+        let Some(key_id) = identity.api_key_id.as_deref() else {
+            return Ok(TenantScope::legacy_local());
+        };
+        let inner = self.inner.lock().expect("control lock poisoned");
+        let record = inner.api_keys.get(key_id).ok_or(AppError::Auth)?;
+        if record.status != "active" || record.user_id != identity.user_id {
+            return Err(AppError::Auth);
+        }
+        Ok(TenantScope::from_strings(
+            record.organization_id.clone(),
+            record.project_id.clone(),
+            record.environment_id.clone(),
+        ))
+    }
+
     pub fn list_user_api_keys(&self, user_id: &str) -> Vec<PublicApiKey> {
         self.list_api_keys()
             .into_iter()
@@ -2299,6 +2390,8 @@ impl ControlStore {
         let username = input.username.unwrap_or_else(|| user_id.to_owned());
         let allowed_models = normalize_policy_list(input.allowed_models.unwrap_or_default())?;
         let allowed_providers = normalize_policy_list(input.allowed_providers.unwrap_or_default())?;
+        let (organization_id, project_id, environment_id) =
+            normalize_tenant_scope(None, None, None)?;
         let now = now_millis();
         let expires_at_ms = input
             .expires_at
@@ -2332,6 +2425,9 @@ impl ControlStore {
             team_name,
             allowed_models,
             allowed_providers,
+            organization_id,
+            project_id,
+            environment_id,
             created_at_ms: now,
             last_used_at_ms: None,
             expires_at_ms,
@@ -2463,6 +2559,29 @@ impl ControlStore {
             ));
         }
 
+        let previous = inner.clone();
+        inner.api_keys.insert(updated.id.clone(), updated.clone());
+        self.save_or_restore_locked(&mut inner, previous)?;
+        Ok(public_api_key(&updated, &inner.usage, now_millis()))
+    }
+
+    pub fn bind_api_key_scope(
+        &self,
+        key_id: &str,
+        input: BindApiKeyScopeInput,
+    ) -> Result<PublicApiKey, AppError> {
+        let (organization_id, project_id, environment_id) = normalize_tenant_scope(
+            Some(input.organization_id),
+            Some(input.project_id),
+            Some(input.environment_id),
+        )?;
+        let mut inner = self.inner.lock().expect("control lock poisoned");
+        let Some(mut updated) = inner.api_keys.get(key_id).cloned() else {
+            return Err(AppError::InvalidRequest("API key not found".to_owned()));
+        };
+        updated.organization_id = organization_id;
+        updated.project_id = project_id;
+        updated.environment_id = environment_id;
         let previous = inner.clone();
         inner.api_keys.insert(updated.id.clone(), updated.clone());
         self.save_or_restore_locked(&mut inner, previous)?;
@@ -3709,6 +3828,51 @@ mod tests {
             allowed_providers: None,
             expires_at: None,
         }
+    }
+
+    #[test]
+    fn api_key_tenant_scope_is_admin_bound_and_used_for_requests() {
+        let store = ControlStore::for_tests();
+        let created = store.create_api_key(api_key_input(None)).unwrap();
+        let bound = store
+            .bind_api_key_scope(
+                &created.public.id,
+                BindApiKeyScopeInput {
+                    organization_id: "org_dave".to_owned(),
+                    project_id: "prj_quantpilot".to_owned(),
+                    environment_id: "env_test".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(bound.organization_id, "org_dave");
+        assert_eq!(bound.project_id, "prj_quantpilot");
+        assert_eq!(bound.environment_id, "env_test");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_str(&created.key).unwrap());
+        let identity = store.authenticate_headers(&headers).unwrap().unwrap();
+        let tenant = store.tenant_scope(&identity).unwrap();
+        assert_eq!(tenant.organization_id.as_str(), "org_dave");
+        assert_eq!(tenant.project_id.as_str(), "prj_quantpilot");
+        assert_eq!(tenant.environment_id.as_str(), "env_test");
+    }
+
+    #[test]
+    fn api_key_scope_binding_rejects_unsafe_identifiers() {
+        let store = ControlStore::for_tests();
+        let created = store.create_api_key(api_key_input(None)).unwrap();
+        assert!(
+            store
+                .bind_api_key_scope(
+                    &created.public.id,
+                    BindApiKeyScopeInput {
+                        organization_id: "org dave".to_owned(),
+                        project_id: "prj_quantpilot".to_owned(),
+                        environment_id: "env_test".to_owned(),
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]

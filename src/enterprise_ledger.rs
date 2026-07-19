@@ -558,6 +558,8 @@ impl EnterpriseLedger {
                 );
             }
             LedgerBackend::Postgres(pool) => {
+                let mut transaction = pool.begin().await?;
+                ensure_tenant_catalog(&mut transaction, &request.tenant).await?;
                 let result = sqlx::query(
                     "INSERT INTO modelport_gateway_requests (
                         ledger_id, request_id,
@@ -587,7 +589,7 @@ impl EnterpriseLedger {
                 .bind(request_fingerprint)
                 .bind(&request.lease_owner)
                 .bind(duration_secs_i32(self.lease_ttl))
-                .execute(pool)
+                .execute(&mut *transaction)
                 .await?;
 
                 if result.rows_affected() == 0 {
@@ -608,13 +610,14 @@ impl EnterpriseLedger {
                     .bind(&request.tenant.project_id)
                     .bind(&request.tenant.environment_id)
                     .bind(key_hash)
-                    .fetch_one(pool)
+                    .fetch_one(&mut *transaction)
                     .await?;
                     return Err(idempotency_conflict(
                         existing.0 == request_fingerprint,
                         existing.1 != "started",
                     ));
                 }
+                transaction.commit().await?;
             }
         }
         Ok(request)
@@ -1600,6 +1603,41 @@ impl EnterpriseLedger {
             .filter(|record| record.record.tenant == tenant && !record.record.terminal)
             .count()
     }
+}
+
+async fn ensure_tenant_catalog(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &TenantKey,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO modelport_organizations (organization_id, display_name)
+         VALUES ($1, $1)
+         ON CONFLICT (organization_id) DO NOTHING",
+    )
+    .bind(&tenant.organization_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO modelport_projects (organization_id, project_id, display_name)
+         VALUES ($1, $2, $2)
+         ON CONFLICT (organization_id, project_id) DO NOTHING",
+    )
+    .bind(&tenant.organization_id)
+    .bind(&tenant.project_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO modelport_environments (
+             organization_id, project_id, environment_id, display_name
+         ) VALUES ($1, $2, $3, $3)
+         ON CONFLICT (organization_id, project_id, environment_id) DO NOTHING",
+    )
+    .bind(&tenant.organization_id)
+    .bind(&tenant.project_id)
+    .bind(&tenant.environment_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 async fn update_terminal_record_pg(

@@ -61,6 +61,7 @@ temporary provider through the dashboard API, and validates:
 
 - non-stream Tool Use response mapping;
 - streaming `input_json_delta` mapping;
+- two parallel calls with distinct IDs and interleaved streaming arguments;
 - `tool_result` continuation to OpenAI `role=tool`;
 - malformed Tool Use rejection before upstream;
 - `disable_parallel_tool_use` mapping;

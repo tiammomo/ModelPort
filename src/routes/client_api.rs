@@ -395,12 +395,31 @@ async fn handle_inference(
             return Err(err);
         }
     };
-    let request_context = RequestContext::legacy(
+    let bound_tenant = match state.control.tenant_scope(&identity) {
+        Ok(tenant) => tenant,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
+    let tenant = match request_tenant_scope(&headers, &bound_tenant) {
+        Ok(tenant) => tenant,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
+    let request_context = RequestContext::scoped(
         RequestId::from_external_or_new(
             headers
                 .get(&X_REQUEST_ID)
                 .and_then(|value| value.to_str().ok()),
         ),
+        tenant,
         identity.user_id.clone(),
         exchange.client_protocol(),
     );
@@ -852,6 +871,48 @@ async fn handle_inference(
         );
     }
     result
+}
+
+fn request_tenant_scope(
+    headers: &HeaderMap,
+    bound_tenant: &crate::domain::TenantScope,
+) -> Result<crate::domain::TenantScope, AppError> {
+    let requested = [&ORGANIZATION_ID, &PROJECT_ID, &ENVIRONMENT_ID]
+        .map(|name| headers.get(name).map(|value| value.to_str()))
+        .into_iter()
+        .map(|value| match value {
+            None => Ok(None),
+            Some(Ok(value)) => {
+                let value = value.trim();
+                if !crate::domain::valid_tenant_identifier(value) {
+                    return Err(AppError::InvalidRequest(
+                        "ModelPort tenant scope headers contain an invalid identifier".to_owned(),
+                    ));
+                }
+                Ok(Some(value))
+            }
+            Some(Err(_)) => Err(AppError::InvalidRequest(
+                "ModelPort tenant scope headers must be ASCII".to_owned(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match requested.as_slice() {
+        [None, None, None] => Ok(bound_tenant.clone()),
+        [Some(organization_id), Some(project_id), Some(environment_id)]
+            if *organization_id == bound_tenant.organization_id.as_str()
+                && *project_id == bound_tenant.project_id.as_str()
+                && *environment_id == bound_tenant.environment_id.as_str() =>
+        {
+            Ok(bound_tenant.clone())
+        }
+        [Some(_), Some(_), Some(_)] => Err(AppError::Forbidden(
+            "requested ModelPort tenant scope is not bound to this API key".to_owned(),
+        )),
+        _ => Err(AppError::InvalidRequest(
+            "x-modelport-organization-id, x-modelport-project-id, and x-modelport-environment-id must be supplied together"
+                .to_owned(),
+        )),
+    }
 }
 
 async fn enforce_context_admission(
@@ -1646,8 +1707,48 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
     use super::{
-        ResponseObservation, classify_tool_outcome, request_traffic_class, validate_context_budget,
+        ENVIRONMENT_ID, ORGANIZATION_ID, PROJECT_ID, ResponseObservation, classify_tool_outcome,
+        request_tenant_scope, request_traffic_class, validate_context_budget,
     };
+
+    #[test]
+    fn tenant_scope_headers_are_assertions_not_authority() {
+        let bound =
+            crate::domain::TenantScope::from_strings("org_dave", "prj_quantpilot", "env_test");
+        let mut matching = HeaderMap::new();
+        matching.insert(&ORGANIZATION_ID, HeaderValue::from_static("org_dave"));
+        matching.insert(&PROJECT_ID, HeaderValue::from_static("prj_quantpilot"));
+        matching.insert(&ENVIRONMENT_ID, HeaderValue::from_static("env_test"));
+        assert_eq!(request_tenant_scope(&matching, &bound).unwrap(), bound);
+
+        let mut forged = matching;
+        forged.insert(&PROJECT_ID, HeaderValue::from_static("prj_other"));
+        assert!(matches!(
+            request_tenant_scope(&forged, &bound),
+            Err(crate::error::AppError::Forbidden(_))
+        ));
+
+        let mut partial = HeaderMap::new();
+        partial.insert(&ORGANIZATION_ID, HeaderValue::from_static("org_dave"));
+        assert!(matches!(
+            request_tenant_scope(&partial, &bound),
+            Err(crate::error::AppError::InvalidRequest(_))
+        ));
+
+        let mut invalid = HeaderMap::new();
+        invalid.insert(&ORGANIZATION_ID, HeaderValue::from_static("org dave"));
+        invalid.insert(&PROJECT_ID, HeaderValue::from_static("prj_quantpilot"));
+        invalid.insert(&ENVIRONMENT_ID, HeaderValue::from_static("env_test"));
+        assert!(matches!(
+            request_tenant_scope(&invalid, &bound),
+            Err(crate::error::AppError::InvalidRequest(_))
+        ));
+
+        assert_eq!(
+            request_tenant_scope(&HeaderMap::new(), &bound).unwrap(),
+            bound
+        );
+    }
 
     #[test]
     fn traffic_class_is_bounded_and_defaults_to_business() {
