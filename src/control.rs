@@ -825,6 +825,12 @@ struct UsageRecord {
     tool_use_requested: bool,
     #[serde(default = "default_tool_outcome")]
     tool_outcome: String,
+    #[serde(default = "default_traffic_class")]
+    traffic_class: String,
+    #[serde(default)]
+    tool_repair_attempted: bool,
+    #[serde(default)]
+    tool_repair_recovered: bool,
     stream: bool,
     status: String,
     status_code: u16,
@@ -1045,6 +1051,11 @@ pub struct UsageEventInput {
     pub tool_use_requested: bool,
     /// Aggregate-only Tool Use outcome. Never contains tool names or arguments.
     pub tool_outcome: String,
+    /// Caller-supplied bounded traffic classification used to keep synthetic
+    /// acceptance traffic out of business SLOs.
+    pub traffic_class: String,
+    pub tool_repair_attempted: bool,
+    pub tool_repair_recovered: bool,
     pub stream: bool,
     pub success: bool,
     pub timed_out: bool,
@@ -2612,6 +2623,9 @@ impl ControlStore {
             client_protocol: input.client_protocol,
             tool_use_requested: input.tool_use_requested,
             tool_outcome: input.tool_outcome,
+            traffic_class: input.traffic_class,
+            tool_repair_attempted: input.tool_repair_attempted,
+            tool_repair_recovered: input.tool_repair_recovered,
             stream: input.stream,
             status: usage_status(input.success, input.timed_out).to_owned(),
             status_code: input.status_code,
@@ -2717,6 +2731,9 @@ impl ControlStore {
                     "clientProtocol": record.client_protocol,
                     "toolUseRequested": record.tool_use_requested,
                     "toolOutcome": tool_outcome,
+                    "trafficClass": record.traffic_class,
+                    "toolRepairAttempted": record.tool_repair_attempted,
+                    "toolRepairRecovered": record.tool_repair_recovered,
                     "requestType": if record.status == "success" { "consume" } else { "error" },
                     "stream": if record.stream { "stream" } else { "non-stream" },
                     "status": record.status,
@@ -3498,6 +3515,10 @@ fn default_tool_outcome() -> String {
     "unknown_legacy".to_owned()
 }
 
+fn default_traffic_class() -> String {
+    "business".to_owned()
+}
+
 fn reset_expired_quotas_locked(inner: &mut ControlInner, now: u64) {
     for quota in inner.quotas.values_mut() {
         if quota.reset_at_ms > now {
@@ -3883,6 +3904,9 @@ mod tests {
                 client_protocol: "anthropic-messages".to_owned(),
                 tool_use_requested: false,
                 tool_outcome: "not_requested".to_owned(),
+                traffic_class: "business".to_owned(),
+                tool_repair_attempted: false,
+                tool_repair_recovered: false,
                 stream: false,
                 success: false,
                 timed_out: false,
@@ -3930,6 +3954,9 @@ mod tests {
                 client_protocol: "anthropic-messages".to_owned(),
                 tool_use_requested: true,
                 tool_outcome: "completed".to_owned(),
+                traffic_class: "business".to_owned(),
+                tool_repair_attempted: false,
+                tool_repair_recovered: false,
                 stream: false,
                 success: true,
                 timed_out: false,
@@ -4041,6 +4068,9 @@ mod tests {
                 client_protocol: "anthropic-messages".to_owned(),
                 tool_use_requested: false,
                 tool_outcome: "not_requested".to_owned(),
+                traffic_class: "business".to_owned(),
+                tool_repair_attempted: false,
+                tool_repair_recovered: false,
                 stream: false,
                 success: true,
                 timed_out: false,
@@ -4116,6 +4146,9 @@ mod tests {
                     client_protocol: "anthropic-messages".to_owned(),
                     tool_use_requested: false,
                     tool_outcome: "not_requested".to_owned(),
+                    traffic_class: "business".to_owned(),
+                    tool_repair_attempted: false,
+                    tool_repair_recovered: false,
                     stream: false,
                     success: true,
                     timed_out: false,
@@ -4298,6 +4331,9 @@ mod tests {
                 client_protocol: "anthropic-messages".to_owned(),
                 tool_use_requested: false,
                 tool_outcome: "not_requested".to_owned(),
+                traffic_class: "business".to_owned(),
+                tool_repair_attempted: false,
+                tool_repair_recovered: false,
                 stream: false,
                 success: true,
                 timed_out: false,

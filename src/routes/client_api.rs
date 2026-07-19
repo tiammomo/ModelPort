@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, net::SocketAddr};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    net::SocketAddr,
+};
 
 use axum::{
     Json,
@@ -382,6 +385,15 @@ async fn handle_inference(
         }
     };
     let request_client_ip = client_ip(&headers, Some(peer_addr), &state.trusted_proxies);
+    let traffic_class = match request_traffic_class(&headers) {
+        Ok(traffic_class) => traffic_class,
+        Err(err) => {
+            state
+                .metrics
+                .record_route(route_name, false, started.elapsed());
+            return Err(err);
+        }
+    };
     let request_context = RequestContext::legacy(
         RequestId::from_external_or_new(
             headers
@@ -470,7 +482,10 @@ async fn handle_inference(
         "routing inference request"
     );
 
-    let attempts = route_attempts(&state, &config, &requested_model, resolved);
+    let mut attempts = route_attempts(&state, &config, &requested_model, resolved)
+        .into_iter()
+        .map(|resolved| (resolved, None))
+        .collect::<VecDeque<_>>();
     let mut provider_id = String::new();
     let mut upstream_model = String::new();
     let mut protocol = String::new();
@@ -480,12 +495,20 @@ async fn handle_inference(
     let mut first_sent_provider = None::<String>;
     let mut sent_attempts = 0u32;
     let mut last_sent = None::<SentAttempt>;
+    let mut tool_repair_attempted = false;
+    let mut tool_repair_recovered = false;
+    let mut prior_invalid_tool_usage = UsageEstimate::default();
 
-    for mut attempt in attempts {
+    while let Some((mut attempt, repair)) = attempts.pop_front() {
         let attempt_id = AttemptId::new();
         provider_id = attempt.provider_id.clone();
         upstream_model = attempt.model.clone();
         protocol = provider_protocol_value(attempt.provider.protocol).to_owned();
+        let repair_template = attempt.clone();
+        let repair_enabled = exchange.is_anthropic_client()
+            && !stream
+            && attempt.provider.protocol == ProviderProtocol::OpenaiCompat
+            && attempt.provider.tool_use.repair_invalid_arguments;
         let credential_id = match state
             .control
             .apply_selected_provider_credential_for_request(&provider_id, &mut attempt.provider)
@@ -539,7 +562,9 @@ async fn handle_inference(
         };
         if sent_attempts > 0 {
             retry_count = retry_count.saturating_add(1);
-            fallback_from_provider = first_sent_provider.clone();
+            if first_sent_provider.as_deref() != Some(provider_id.as_str()) {
+                fallback_from_provider = first_sent_provider.clone();
+            }
         } else {
             first_sent_provider = Some(provider_id.clone());
         }
@@ -569,6 +594,7 @@ async fn handle_inference(
             exchange.clone(),
             &headers,
             stream_lifecycle,
+            repair,
         )
         .await;
         let attempt_success = attempt_result.is_ok();
@@ -598,6 +624,19 @@ async fn handle_inference(
                 .ok()
                 .and_then(|response| pricing::usage_from_headers(response.headers()))
                 .map(usage_estimate_from_charge)
+                .or_else(|| {
+                    attempt_result
+                        .as_ref()
+                        .err()
+                        .and_then(AppError::tool_argument_usage)
+                        .map(|usage| {
+                            usage_estimate_from_charge(pricing::charge_for_model_with_pricing(
+                                &upstream_model,
+                                usage,
+                                repair_template.provider.pricing,
+                            ))
+                        })
+                })
                 .unwrap_or(estimate);
             let ledger_outcome = LedgerOutcome::provider_attempt(
                 attempt_success,
@@ -619,9 +658,40 @@ async fn handle_inference(
             }
         }
         result = attempt_result;
-        if result.is_ok() || !is_retryable_message_error(result.as_ref().err()) {
+        if result.is_ok() {
+            tool_repair_recovered = repair.is_some();
             break;
         }
+
+        let repair_candidate = match result.as_ref().err() {
+            Some(AppError::ToolArgumentsInvalid { .. })
+                if repair_enabled && !tool_repair_attempted =>
+            {
+                Some(providers::openai_compat::ToolArgumentRepair)
+            }
+            _ => None,
+        };
+        if let Some(repair_candidate) = repair_candidate {
+            tool_repair_attempted = true;
+            accumulate_invalid_tool_usage(
+                &mut prior_invalid_tool_usage,
+                result.as_ref().err(),
+                &upstream_model,
+                repair_template.provider.pricing,
+            );
+            attempts.push_front((repair_template, Some(repair_candidate)));
+            continue;
+        }
+
+        if !is_retryable_message_error(result.as_ref().err()) || attempts.is_empty() {
+            break;
+        }
+        accumulate_invalid_tool_usage(
+            &mut prior_invalid_tool_usage,
+            result.as_ref().err(),
+            &upstream_model,
+            repair_template.provider.pricing,
+        );
     }
     let success = result.is_ok();
     let duration = started.elapsed();
@@ -648,16 +718,21 @@ async fn handle_inference(
         .map(|sent| sent.estimate)
         .unwrap_or_default();
     let applied_pricing = last_sent.as_ref().and_then(|sent| sent.pricing);
-    let actual_estimate = upstream_usage
-        .map(|charge| UsageEstimate {
-            input_tokens: charge.input_tokens,
-            output_tokens: charge.output_tokens,
-            cache_write_tokens: charge.cache_write_tokens,
-            cache_read_tokens: charge.cache_read_tokens,
-            cost_estimate: charge.cost_estimate,
-        })
-        .unwrap_or(local_estimate);
-    let billing_mode = if upstream_usage.is_some() {
+    let actual_estimate = merge_usage_estimates(
+        prior_invalid_tool_usage,
+        upstream_usage
+            .map(|charge| UsageEstimate {
+                input_tokens: charge.input_tokens,
+                output_tokens: charge.output_tokens,
+                cache_write_tokens: charge.cache_write_tokens,
+                cache_read_tokens: charge.cache_read_tokens,
+                cost_estimate: charge.cost_estimate,
+            })
+            .unwrap_or(local_estimate),
+    );
+    let billing_mode = if tool_repair_attempted && upstream_usage.is_some() {
+        "upstream-returned+tool-repair"
+    } else if upstream_usage.is_some() {
         "upstream-returned"
     } else {
         "local-estimate"
@@ -696,6 +771,9 @@ async fn handle_inference(
         client_protocol: request_context.protocol.as_str().to_owned(),
         tool_use_requested,
         tool_outcome,
+        traffic_class,
+        tool_repair_attempted,
+        tool_repair_recovered,
         stream,
         success,
         timed_out,
@@ -819,7 +897,23 @@ async fn enforce_context_admission(
         headers,
     )
     .await?;
-    let output_tokens = exchange.estimated_output_tokens();
+    // A repair is a distinct provider attempt with a short gateway-generated
+    // instruction. Reserve a bounded margin during the original exact-token
+    // admission so retrying cannot push a near-limit request over context.
+    const TOOL_REPAIR_CONTEXT_RESERVE: u64 = 256;
+    let repair_reserve = if exchange.is_anthropic_client()
+        && !exchange.stream
+        && exchange.uses_tools()
+        && resolved.provider.protocol == ProviderProtocol::OpenaiCompat
+        && resolved.provider.tool_use.repair_invalid_arguments
+    {
+        TOOL_REPAIR_CONTEXT_RESERVE
+    } else {
+        0
+    };
+    let output_tokens = exchange
+        .estimated_output_tokens()
+        .saturating_add(repair_reserve);
     validate_context_budget(
         input_tokens,
         output_tokens,
@@ -914,6 +1008,35 @@ fn usage_estimate_from_charge(charge: pricing::UsageCharge) -> UsageEstimate {
     }
 }
 
+fn merge_usage_estimates(left: UsageEstimate, right: UsageEstimate) -> UsageEstimate {
+    UsageEstimate {
+        input_tokens: left.input_tokens.saturating_add(right.input_tokens),
+        output_tokens: left.output_tokens.saturating_add(right.output_tokens),
+        cache_write_tokens: left
+            .cache_write_tokens
+            .saturating_add(right.cache_write_tokens),
+        cache_read_tokens: left
+            .cache_read_tokens
+            .saturating_add(right.cache_read_tokens),
+        cost_estimate: left.cost_estimate + right.cost_estimate,
+    }
+}
+
+fn accumulate_invalid_tool_usage(
+    aggregate: &mut UsageEstimate,
+    error: Option<&AppError>,
+    model: &str,
+    pricing: Option<ModelPricing>,
+) {
+    let Some(usage) = error.and_then(AppError::tool_argument_usage) else {
+        return;
+    };
+    let estimate = usage_estimate_from_charge(pricing::charge_for_model_with_pricing(
+        model, usage, pricing,
+    ));
+    *aggregate = merge_usage_estimates(*aggregate, estimate);
+}
+
 fn request_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, AppError> {
     let Some(value) = headers.get(&IDEMPOTENCY_KEY) else {
         return Ok(None);
@@ -934,6 +1057,23 @@ fn request_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, AppErr
         ));
     }
     Ok(Some(value.to_owned()))
+}
+
+fn request_traffic_class(headers: &HeaderMap) -> Result<String, AppError> {
+    let Some(value) = headers.get(&TRAFFIC_CLASS) else {
+        return Ok("business".to_owned());
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| AppError::InvalidRequest("traffic class must be ASCII".to_owned()))?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "business" => Ok("business".to_owned()),
+        "synthetic" => Ok("synthetic".to_owned()),
+        "diagnostic" => Ok("diagnostic".to_owned()),
+        _ => Err(AppError::InvalidRequest(
+            "x-modelport-traffic-class must be business, synthetic, or diagnostic".to_owned(),
+        )),
+    }
 }
 
 struct StreamFinalizationContext {
@@ -1151,6 +1291,7 @@ async fn send_inference_attempt(
     request: ExchangeRequest,
     headers: &HeaderMap,
     stream_lifecycle: StreamLifecycle,
+    repair: Option<providers::openai_compat::ToolArgumentRepair>,
 ) -> Result<Response, AppError> {
     if !request.is_anthropic_client() {
         return match resolved.provider.protocol {
@@ -1184,11 +1325,16 @@ async fn send_inference_attempt(
                 .await
                 .map(IntoResponse::into_response)
         }
-        ProviderProtocol::OpenaiCompat => {
-            providers::openai_compat::messages(state, resolved, request, headers, stream_lifecycle)
-                .await
-                .map(IntoResponse::into_response)
-        }
+        ProviderProtocol::OpenaiCompat => providers::openai_compat::messages(
+            state,
+            resolved,
+            request,
+            headers,
+            stream_lifecycle,
+            repair,
+        )
+        .await
+        .map(IntoResponse::into_response),
     }
 }
 
@@ -1265,7 +1411,11 @@ fn fallback_model_for_provider(
 
 fn is_retryable_message_error(error: Option<&AppError>) -> bool {
     match error {
-        Some(AppError::Transport(_) | AppError::UpstreamProtocol(_)) => true,
+        Some(
+            AppError::Transport(_)
+            | AppError::UpstreamProtocol(_)
+            | AppError::ToolArgumentsInvalid { .. },
+        ) => true,
         Some(AppError::Upstream { status, .. }) => *status == 429 || *status >= 500,
         _ => false,
     }
@@ -1489,7 +1639,30 @@ fn estimate_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::{ResponseObservation, classify_tool_outcome, validate_context_budget};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::{
+        ResponseObservation, classify_tool_outcome, request_traffic_class, validate_context_budget,
+    };
+
+    #[test]
+    fn traffic_class_is_bounded_and_defaults_to_business() {
+        assert_eq!(
+            request_traffic_class(&HeaderMap::new()).unwrap(),
+            "business"
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-modelport-traffic-class",
+            HeaderValue::from_static("synthetic"),
+        );
+        assert_eq!(request_traffic_class(&headers).unwrap(), "synthetic");
+        headers.insert(
+            "x-modelport-traffic-class",
+            HeaderValue::from_static("arbitrary-cardinality"),
+        );
+        assert!(request_traffic_class(&headers).is_err());
+    }
 
     #[test]
     fn context_budget_accepts_reasoning_within_recommended_limit() {

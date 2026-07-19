@@ -144,6 +144,7 @@ tool_choice = true
 parallel_tool_calls = true
 streaming_arguments = "delta" # native | delta | cumulative | best_effort
 response_validation = "best_effort" # best_effort | strict
+repair_invalid_arguments = false
 ```
 
 The first three fields participate in capability validation.
@@ -157,6 +158,15 @@ upstream really follows the declared mode.
 OpenAI-compatible providers. It is opt-in so providers with non-standard output
 can retain compatibility mode, while a certified local runtime can fail closed
 before a malformed or hallucinated call reaches the tool executor.
+
+`repair_invalid_arguments=true` is a separate, opt-in reliability policy for a
+strict OpenAI-compatible provider. It applies only to non-stream Anthropic
+Messages responses rejected by the declared JSON Schema. ModelPort schedules
+one same-provider retry as a normal ledger attempt and sends a fixed correction
+instruction that contains no tool arguments, validation paths, or Provider
+body. A second failure is not repaired again. Live streams are excluded because
+tool argument fragments may already have crossed the client boundary; tool
+execution errors remain the application's responsibility.
 
 Similarly, `fidelity_mode="stability"` labels a stream-rewriting configuration;
 it does not enable a rewrite flag. `fidelity_mode="strict"` actively rejects

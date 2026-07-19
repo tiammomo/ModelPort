@@ -6,6 +6,8 @@ use axum::{
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::pricing::TokenUsageBreakdown;
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("client authentication failed")]
@@ -41,6 +43,14 @@ pub enum AppError {
     Upstream { status: u16, body: String },
     #[error("upstream protocol error: {0}")]
     UpstreamProtocol(String),
+    #[error(
+        "upstream tool arguments failed strict schema validation at {instance_path} (schema path {schema_path}; value [redacted])"
+    )]
+    ToolArgumentsInvalid {
+        instance_path: String,
+        schema_path: String,
+        usage: Option<TokenUsageBreakdown>,
+    },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -50,6 +60,28 @@ pub enum AppError {
 impl AppError {
     pub(crate) fn http_status(&self) -> StatusCode {
         status_code(self)
+    }
+
+    pub(crate) fn with_tool_argument_usage(self, usage: Option<TokenUsageBreakdown>) -> Self {
+        match self {
+            Self::ToolArgumentsInvalid {
+                instance_path,
+                schema_path,
+                ..
+            } => Self::ToolArgumentsInvalid {
+                instance_path,
+                schema_path,
+                usage,
+            },
+            other => other,
+        }
+    }
+
+    pub(crate) fn tool_argument_usage(&self) -> Option<TokenUsageBreakdown> {
+        match self {
+            Self::ToolArgumentsInvalid { usage, .. } => *usage,
+            _ => None,
+        }
     }
 }
 
@@ -94,9 +126,10 @@ impl IntoResponse for AppError {
             AppError::InvalidRequest(_) | AppError::ProviderNotFound(_) => "invalid_request_error",
             AppError::NotFound(_) => "not_found_error",
             AppError::NotReady(_) => "server_error",
-            AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
-                "upstream_error"
-            }
+            AppError::Transport(_)
+            | AppError::Upstream { .. }
+            | AppError::UpstreamProtocol(_)
+            | AppError::ToolArgumentsInvalid { .. } => "upstream_error",
             AppError::Config(_)
             | AppError::Database(_)
             | AppError::MissingSecret(_)
@@ -140,7 +173,9 @@ fn status_code(error: &AppError) -> StatusCode {
         AppError::NotReady(_) => StatusCode::SERVICE_UNAVAILABLE,
         AppError::NotFound(_) => StatusCode::NOT_FOUND,
         AppError::ProviderNotFound(_) => StatusCode::BAD_REQUEST,
-        AppError::Transport(_) | AppError::UpstreamProtocol(_) => StatusCode::BAD_GATEWAY,
+        AppError::Transport(_)
+        | AppError::UpstreamProtocol(_)
+        | AppError::ToolArgumentsInvalid { .. } => StatusCode::BAD_GATEWAY,
         AppError::Upstream { status, .. } => {
             if (400..=599).contains(status) {
                 StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
@@ -169,6 +204,7 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::Transport(_) => "transport_error",
         AppError::Upstream { .. } => "upstream_error",
         AppError::UpstreamProtocol(_) => "upstream_protocol_error",
+        AppError::ToolArgumentsInvalid { .. } => "tool_arguments_invalid",
         AppError::Io(_) => "io_error",
         AppError::Json(_) => "json_error",
     }
@@ -195,7 +231,10 @@ fn error_hint(error: &AppError) -> &'static str {
         AppError::ProviderNotFound(_) => "确认该 provider 已在配置文件或环境变量中启用。",
         AppError::NotReady(_) => "检查持久化存储和运行配置，恢复后再发送流量。",
         AppError::NotFound(_) => "确认资源 ID 正确，且资源仍在当前保留窗口内。",
-        AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
+        AppError::Transport(_)
+        | AppError::Upstream { .. }
+        | AppError::UpstreamProtocol(_)
+        | AppError::ToolArgumentsInvalid { .. } => {
             "上游 provider 连接失败，可先在系统设置中测试连接并查看请求日志。"
         }
         AppError::Io(_) | AppError::Json(_) => {

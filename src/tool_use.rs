@@ -155,11 +155,11 @@ impl ToolResponsePolicy {
                 )
             })?;
             if let Err(error) = validator.validate(&value) {
-                return Err(AppError::UpstreamProtocol(format!(
-                    "OpenAI-compatible tool arguments do not satisfy the declared input schema at {} (schema path {}; value [redacted])",
-                    error.instance_path(),
-                    error.schema_path()
-                )));
+                return Err(AppError::ToolArgumentsInvalid {
+                    instance_path: error.instance_path().to_string(),
+                    schema_path: error.schema_path().to_string(),
+                    usage: None,
+                });
             }
         }
 
@@ -819,7 +819,7 @@ mod tests {
             r#"{"query":"rust","mode":"fast","extra":true}"#,
         ] {
             let error = policy.parse_arguments("lookup", arguments).unwrap_err();
-            assert!(error.to_string().contains("declared input schema"));
+            assert!(error.to_string().contains("strict schema validation"));
         }
     }
 

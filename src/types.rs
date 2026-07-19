@@ -257,9 +257,10 @@ pub fn anthropic_error_event(error: &AppError) -> Result<Event, AppError> {
         | AppError::Config(_)
         | AppError::Database(_)
         | AppError::NotReady(_) => "server_error",
-        AppError::Transport(_) | AppError::Upstream { .. } | AppError::UpstreamProtocol(_) => {
-            "api_error"
-        }
+        AppError::Transport(_)
+        | AppError::Upstream { .. }
+        | AppError::UpstreamProtocol(_)
+        | AppError::ToolArgumentsInvalid { .. } => "api_error",
         AppError::Io(_) | AppError::Json(_) => "server_error",
     };
 

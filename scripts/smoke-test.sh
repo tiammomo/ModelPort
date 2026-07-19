@@ -47,6 +47,7 @@ status="$(
     -o "$body_file" \
     -w '%{http_code}' \
     -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+    -H 'x-modelport-traffic-class: synthetic' \
     -H 'Content-Type: application/json' \
     "$(base_url)/v1/messages" \
     -d "$(printf '{"model":"%s","max_tokens":256,"messages":[{"role":"user","content":"用一句话回复：ModelPort upstream OK。"}]}' "$model")"

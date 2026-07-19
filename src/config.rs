@@ -168,6 +168,11 @@ pub struct ToolUseConfig {
     pub streaming_arguments: ToolArgumentMode,
     #[serde(default, alias = "response_validation")]
     pub response_validation: ToolResponseValidation,
+    /// Retry one non-stream OpenAI-compatible request when strict schema
+    /// validation rejects an upstream tool call. Disabled by default because
+    /// this creates a second billable provider attempt.
+    #[serde(default, alias = "repair_invalid_arguments")]
+    pub repair_invalid_arguments: bool,
 }
 
 impl Default for ToolUseConfig {
@@ -178,6 +183,7 @@ impl Default for ToolUseConfig {
             parallel_tool_calls: true,
             streaming_arguments: ToolArgumentMode::Delta,
             response_validation: ToolResponseValidation::BestEffort,
+            repair_invalid_arguments: false,
         }
     }
 }
@@ -1528,6 +1534,7 @@ fn default_tool_use_config(
         parallel_tool_calls: !is_single_tool_runtime(provider_id),
         streaming_arguments,
         response_validation: ToolResponseValidation::BestEffort,
+        repair_invalid_arguments: false,
     }
 }
 
@@ -2058,6 +2065,15 @@ fn validate_provider(
     {
         issues.push(ConfigIssue::error(format!(
             "provider `{id}` cannot enable tool_choice or parallel_tool_calls when tool_use.supported=false"
+        )));
+    }
+
+    if provider.tool_use.repair_invalid_arguments
+        && (provider.protocol != ProviderProtocol::OpenaiCompat
+            || provider.tool_use.response_validation != ToolResponseValidation::Strict)
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` can enable tool_use.repair_invalid_arguments only for an OpenAI-compatible provider with strict response validation"
         )));
     }
 
@@ -2601,6 +2617,7 @@ mod tests {
                 parallel_tool_calls: false,
                 streaming_arguments: ToolArgumentMode::BestEffort,
                 response_validation: ToolResponseValidation::BestEffort,
+                repair_invalid_arguments: false,
             })
         );
     }

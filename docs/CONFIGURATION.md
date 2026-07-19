@@ -131,6 +131,7 @@ tool_choice = true
 parallel_tool_calls = true
 streaming_arguments = "best_effort"
 response_validation = "strict"
+repair_invalid_arguments = true
 
 [aliases]
 qwen3_5_local = "local_qwen:qwen3.5-9b-q5km"
@@ -535,6 +536,7 @@ tool_choice = true
 parallel_tool_calls = true
 streaming_arguments = "delta"
 response_validation = "best_effort"
+repair_invalid_arguments = false
 
 # Optional llama.cpp request-level thinking mapping. This is valid only for an
 # OpenAI-compatible provider; omit it for providers without this extension.
@@ -597,6 +599,16 @@ rejects missing or undeclared function names, non-object or invalid JSON
 arguments, duplicate call IDs, `tool_choice`/parallel-count violations, and
 inconsistent tool-call finish reasons. In a live stream, a violation is
 reported as an Anthropic `error` event after the SSE handshake.
+
+`tool_use.repair_invalid_arguments` defaults to `false` and is valid only for
+an OpenAI-compatible provider with `response_validation="strict"`. For a
+non-stream Anthropic Messages request, ModelPort may make exactly one additional
+attempt against the same provider when the first tool call fails its declared
+JSON Schema. The retry prompt contains neither arguments nor validation paths,
+the failed candidate is never delivered, both attempts enter the ledger and
+token accounting, and the repair reserves 256 context tokens during admission.
+It never retries streams, transport/auth/time-out failures, tool execution, or
+arbitrary protocol failures.
 
 [`config.example.toml`](../config.example.toml) is intentionally minimal and
 self-contained around DeepSeek. When extending it, keep aliases limited to

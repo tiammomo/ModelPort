@@ -39,6 +39,7 @@ tool_choice = true
 parallel_tool_calls = true
 streaming_arguments = "native"
 response_validation = "best_effort"
+repair_invalid_arguments = false
 
 [aliases]
 deepseek-v4-pro = "deepseek:deepseek-v4-pro"

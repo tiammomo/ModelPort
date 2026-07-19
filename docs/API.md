@@ -518,6 +518,19 @@ supplies usage. `clientProtocol` records `anthropic-messages` or
 `openai-chat-completions` independently from the selected Provider `protocol`,
 and `requestPath` records the public edge used.
 
+Authenticated inference clients may set `x-modelport-traffic-class` to one of
+`business`, `synthetic`, or `diagnostic`; omission defaults to `business` and
+any other value returns 400. The bounded value is exposed as `trafficClass` so
+deployment dashboards can exclude acceptance traffic without provider-name
+heuristics. This is a caller assertion, not an authorization boundary.
+
+`toolRepairAttempted` and `toolRepairRecovered` are aggregate booleans. They
+record the opt-in, one-attempt strict-schema repair lifecycle without retaining
+tool names, arguments, paths, results, or Provider bodies. A recovered request
+uses `billingMode=upstream-returned+tool-repair`; its request-level token and
+cost totals include both Provider responses, while each attempt remains visible
+independently in the enterprise ledger.
+
 `toolUseRequested` is true when the request declares or selects tools, or
 continues an existing tool call/result exchange. It does not prove that the
 model emitted a new call, and ModelPort still does not retain tool names,

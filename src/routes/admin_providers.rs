@@ -668,7 +668,7 @@ fn provider_body_to_record(
         .unwrap_or_else(|| {
             ToolUseConfig::default_for_provider(&id, protocol_kind, deduplicate_stream_text)
         });
-    validate_provider_tool_use(&id, &tool_use)?;
+    validate_provider_tool_use(&id, protocol_kind, &tool_use)?;
 
     Ok(ProviderOverrideRecord {
         id,
@@ -719,10 +719,22 @@ fn resolve_provider_api_key_env(
     Ok(requested.or_else(|| current.map(str::to_owned)))
 }
 
-fn validate_provider_tool_use(provider_id: &str, tool_use: &ToolUseConfig) -> Result<(), AppError> {
+fn validate_provider_tool_use(
+    provider_id: &str,
+    protocol: ProviderProtocol,
+    tool_use: &ToolUseConfig,
+) -> Result<(), AppError> {
     if !tool_use.supported && (tool_use.tool_choice || tool_use.parallel_tool_calls) {
         return Err(AppError::InvalidRequest(format!(
             "provider `{provider_id}` cannot enable toolChoice or parallelToolCalls when toolUse.supported=false"
+        )));
+    }
+    if tool_use.repair_invalid_arguments
+        && (protocol != ProviderProtocol::OpenaiCompat
+            || tool_use.response_validation != ToolResponseValidation::Strict)
+    {
+        return Err(AppError::InvalidRequest(format!(
+            "provider `{provider_id}` can enable repairInvalidArguments only for an OpenAI-compatible provider with strict response validation"
         )));
     }
 
@@ -742,9 +754,33 @@ mod tests {
             ..ToolUseConfig::default()
         };
 
-        let error = validate_provider_tool_use("local", &tool_use).unwrap_err();
+        let error = validate_provider_tool_use("local", ProviderProtocol::OpenaiCompat, &tool_use)
+            .unwrap_err();
 
         assert!(error.to_string().contains("toolUse.supported=false"));
+    }
+
+    #[test]
+    fn rejects_argument_repair_without_strict_openai_contract() {
+        let tool_use = ToolUseConfig {
+            repair_invalid_arguments: true,
+            response_validation: ToolResponseValidation::BestEffort,
+            ..ToolUseConfig::default()
+        };
+        assert!(
+            validate_provider_tool_use("local", ProviderProtocol::OpenaiCompat, &tool_use)
+                .unwrap_err()
+                .to_string()
+                .contains("strict response validation")
+        );
+
+        let tool_use = ToolUseConfig {
+            response_validation: ToolResponseValidation::Strict,
+            ..tool_use
+        };
+        assert!(
+            validate_provider_tool_use("native", ProviderProtocol::Anthropic, &tool_use).is_err()
+        );
     }
 
     #[test]

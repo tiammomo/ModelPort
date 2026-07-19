@@ -204,6 +204,7 @@ check_non_stream() {
       -o "$body_file" \
       -w '%{http_code}' \
       -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+      -H 'x-modelport-traffic-class: synthetic' \
       -H 'Content-Type: application/json' \
       "$(base_url)/v1/messages" \
       -d "$(request_payload "$model" false)" || true
@@ -241,6 +242,7 @@ check_stream() {
       -o "$body_file" \
       -w '%{http_code}' \
       -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+      -H 'x-modelport-traffic-class: synthetic' \
       -H 'Content-Type: application/json' \
       "$(base_url)/v1/messages" \
       -d "$(request_payload "$model" true)" || true

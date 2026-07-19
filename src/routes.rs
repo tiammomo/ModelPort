@@ -30,7 +30,7 @@ use crate::{
     auth::{AuthStore, FederatedLoginInput, LoginInput, PublicUser},
     config::{
         AppConfig, FidelityMode, MaxTokensField, ProviderConfig, ProviderProtocol, RuntimeConfig,
-        ToolUseConfig,
+        ToolResponseValidation, ToolUseConfig,
     },
     control::{
         ActivityInput, ClientIdentity, ControlStore, ProviderCredentialRecord,
@@ -64,6 +64,7 @@ use settings_view::{alias_row, alias_rows, config_issues_json, settings_row};
 
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
+const TRAFFIC_CLASS: HeaderName = HeaderName::from_static("x-modelport-traffic-class");
 const CSRF_HEADER: HeaderName = HeaderName::from_static("x-modelport-csrf");
 const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
 const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
@@ -2107,7 +2108,13 @@ fn env_flag(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::{
+        collections::HashMap,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     use axum::{
         body::{Body, to_bytes},
@@ -2457,6 +2464,95 @@ mod tests {
                 .await,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn repairs_strict_tool_arguments_once_and_accounts_both_attempts() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let handler_calls = calls.clone();
+        let handler_bodies = bodies.clone();
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(body): Json<Value>| {
+                let call = handler_calls.fetch_add(1, Ordering::SeqCst);
+                handler_bodies.lock().unwrap().push(body);
+                async move {
+                    let (arguments, prompt_tokens, completion_tokens) = if call == 0 {
+                        (r#"{"city":42,"private":"do-not-copy"}"#, 10, 2)
+                    } else {
+                        (r#"{"city":"Shanghai"}"#, 12, 3)
+                    };
+                    Json(json!({
+                        "id": format!("chatcmpl-repair-{call}"),
+                        "choices": [{
+                            "message": {
+                                "role": "assistant",
+                                "content": null,
+                                "tool_calls": [{
+                                    "id": format!("call_{call}"),
+                                    "type": "function",
+                                    "function": {"name": "weather", "arguments": arguments}
+                                }]
+                            },
+                            "finish_reason": "tool_calls"
+                        }],
+                        "usage": {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens
+                        }
+                    }))
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, upstream).await.unwrap();
+        });
+
+        let mut state = test_state(format!("http://{addr}/v1"), 1024 * 1024);
+        let mut config = state.config.snapshot();
+        let provider = config.providers.get_mut("mimo").unwrap();
+        provider.tool_use.response_validation = ToolResponseValidation::Strict;
+        provider.tool_use.repair_invalid_arguments = true;
+        state.config = Arc::new(RuntimeConfig::new(config));
+        let control = state.control.clone();
+        let mut body = message_body(false);
+        body["tools"] = json!([{
+            "name": "weather",
+            "description": "Look up weather",
+            "input_schema": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": false
+            }
+        }]);
+
+        let (status, response) = post_message(router(state), body).await;
+
+        assert_eq!(status, StatusCode::OK, "{response}");
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["content"][0]["input"]["city"], "Shanghai");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let bodies = bodies.lock().unwrap();
+        let repair_prompt = bodies[1]["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .and_then(|message| message["content"].as_str())
+            .unwrap();
+        assert!(repair_prompt.contains("JSON Schema validation"));
+        assert!(!repair_prompt.contains("do-not-copy"));
+        drop(bodies);
+        let rows = control.usage_rows();
+        assert_eq!(rows[0]["toolRepairAttempted"], true);
+        assert_eq!(rows[0]["toolRepairRecovered"], true);
+        assert_eq!(rows[0]["retryCount"], 1);
+        assert_eq!(rows[0]["fallbackFromProvider"], Value::Null);
+        assert_eq!(rows[0]["inputTokens"], 22);
+        assert_eq!(rows[0]["outputTokens"], 5);
+        assert_eq!(rows[0]["billingMode"], "upstream-returned+tool-repair");
     }
 
     #[tokio::test]
