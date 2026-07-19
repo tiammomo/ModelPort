@@ -234,7 +234,7 @@ pub(super) async fn admin_provider_models(
             };
             (true, message, models)
         }
-        Err(err) => (false, err.to_string(), Vec::new()),
+        Err(err) => (false, err.audit_message(), Vec::new()),
     };
     let tested_at = state.control.record_provider_test(
         provider_id.clone(),

@@ -83,6 +83,111 @@ impl AppError {
             _ => None,
         }
     }
+
+    /// Returns a bounded-detail message suitable for persistent usage, ledger,
+    /// and provider-health records. The HTTP response can retain actionable
+    /// detail for the authenticated caller, but durable telemetry must not
+    /// retain request values, validation paths, provider bodies, URLs, or
+    /// storage diagnostics that may contain tenant data or credentials.
+    pub(crate) fn audit_message(&self) -> String {
+        match self {
+            Self::Auth => "client authentication failed".to_owned(),
+            Self::Config(_) => "configuration error [details redacted]".to_owned(),
+            Self::Database(_) => "database error [details redacted]".to_owned(),
+            Self::Forbidden(_) => "forbidden [details redacted]".to_owned(),
+            Self::IdempotencyConflict(_) => "idempotency conflict [details redacted]".to_owned(),
+            Self::QuotaExceeded(_) => "quota exceeded [details redacted]".to_owned(),
+            Self::RateLimited { .. } => "rate limited [details redacted]".to_owned(),
+            Self::InvalidRequest(_) => "invalid request [details redacted]".to_owned(),
+            Self::MissingSecret(_) => {
+                "missing secret environment variable [name redacted]".to_owned()
+            }
+            Self::NotReady(_) => "service not ready [details redacted]".to_owned(),
+            Self::NotFound(_) => "not found [details redacted]".to_owned(),
+            Self::ProviderNotFound(_) => "provider not found [details redacted]".to_owned(),
+            Self::Transport(message) if message.to_ascii_lowercase().contains("timed out") => {
+                "upstream transport timed out [details redacted]".to_owned()
+            }
+            Self::Transport(_) => "upstream transport error [details redacted]".to_owned(),
+            Self::Upstream { status, body } => {
+                format!(
+                    "upstream returned HTTP {status}: {}",
+                    upstream_audit_category(*status, body)
+                )
+            }
+            Self::UpstreamProtocol(message) if contains_tool_protocol_marker(message) => {
+                "upstream tool protocol error [details redacted]".to_owned()
+            }
+            Self::UpstreamProtocol(_) => "upstream protocol error [details redacted]".to_owned(),
+            Self::ToolArgumentsInvalid { .. } => {
+                "upstream tool arguments failed strict schema validation \
+                 [value and validation paths redacted]"
+                    .to_owned()
+            }
+            Self::Io(_) => "I/O error [details redacted]".to_owned(),
+            Self::Json(_) => "JSON error [details redacted]".to_owned(),
+        }
+    }
+}
+
+fn upstream_audit_category(status: u16, body: &str) -> &'static str {
+    let normalized = body.to_ascii_lowercase();
+    if [
+        "insufficient_balance",
+        "insufficient balance",
+        "insufficient account balance",
+        "balance not enough",
+        "余额不足",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "insufficient balance [body redacted]"
+    } else if status == 401 || status == 403 {
+        "authentication or authorization failed [body redacted]"
+    } else if status == 429 || normalized.contains("rate limit") {
+        "rate limit [body redacted]"
+    } else {
+        "body [redacted]"
+    }
+}
+
+fn contains_tool_protocol_marker(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    ["tool", "function", "input_json", "tool_use", "tool_result"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+pub(crate) fn audit_safe_persisted_error(message: &str) -> String {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("timed out") || normalized.contains("timeout") {
+        "request failed: timeout [details redacted]".to_owned()
+    } else if [
+        "insufficient_balance",
+        "insufficient balance",
+        "insufficient account balance",
+        "balance not enough",
+        "余额不足",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "request failed: insufficient balance [details redacted]".to_owned()
+    } else if normalized.contains("rate limit") || normalized.contains("rate_limited") {
+        "request failed: rate limit [details redacted]".to_owned()
+    } else if contains_tool_protocol_marker(message) || normalized.contains("schema path") {
+        "request failed: tool protocol error [details redacted]".to_owned()
+    } else if normalized.contains("authentication")
+        || normalized.contains("authorization")
+        || normalized.contains("api key")
+    {
+        "request failed: authentication or authorization [details redacted]".to_owned()
+    } else if normalized.contains("configuration") || normalized.contains("missing secret") {
+        "request failed: configuration [details redacted]".to_owned()
+    } else {
+        "request failed [details redacted]".to_owned()
+    }
 }
 
 impl From<sqlx::Error> for AppError {
@@ -336,6 +441,57 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn audit_messages_redact_provider_bodies_and_tool_validation_paths() {
+        let upstream = AppError::Upstream {
+            status: 500,
+            body: r#"{"echo":"tenant prompt","authorization":"Bearer secret"}"#.to_owned(),
+        };
+        let upstream_audit = upstream.audit_message();
+        assert_eq!(
+            upstream_audit,
+            "upstream returned HTTP 500: body [redacted]"
+        );
+        assert!(!upstream_audit.contains("tenant prompt"));
+        assert!(!upstream_audit.contains("Bearer secret"));
+
+        let tool = AppError::ToolArgumentsInvalid {
+            instance_path: "/private_customer_id".to_owned(),
+            schema_path: "/properties/private_customer_id/type".to_owned(),
+            usage: None,
+        };
+        let tool_audit = tool.audit_message();
+        assert!(tool_audit.contains("tool arguments"));
+        assert!(!tool_audit.contains("private_customer_id"));
+        assert!(!tool_audit.contains("/properties"));
+    }
+
+    #[test]
+    fn audit_messages_keep_only_safe_provider_failure_categories() {
+        let balance = AppError::Upstream {
+            status: 402,
+            body: "Insufficient Balance for account customer@example.test".to_owned(),
+        }
+        .audit_message();
+        assert_eq!(
+            balance,
+            "upstream returned HTTP 402: insufficient balance [body redacted]"
+        );
+        assert!(!balance.contains("customer@example.test"));
+    }
+
+    #[test]
+    fn historical_audit_sanitizer_is_category_only() {
+        let historical = audit_safe_persisted_error(
+            "upstream tool arguments failed at /private_customer_id (schema path /properties/private_customer_id)",
+        );
+        assert_eq!(
+            historical,
+            "request failed: tool protocol error [details redacted]"
+        );
+        assert!(!historical.contains("private_customer_id"));
     }
 
     async fn response_json(response: Response) -> Value {

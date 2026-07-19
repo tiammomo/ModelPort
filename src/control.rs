@@ -24,7 +24,7 @@ use crate::{
         provider_credential_health_row, provider_health_row, public_api_key, public_quota,
         public_team,
     },
-    error::AppError,
+    error::{AppError, audit_safe_persisted_error},
     policy::{
         enforce_ip_policy, enforce_model_policy, enforce_provider_policy, enforce_spend_limit,
         normalize_ip_rules, normalize_policy_list, policy_references_provider,
@@ -1128,7 +1128,7 @@ impl ControlStore {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(DEFAULT_USAGE_LIMIT);
-        let file: ControlFile = store.read_or_default(json!({
+        let mut file: ControlFile = store.read_or_default(json!({
             "teams": [],
             "apiKeys": [],
             "quotas": [],
@@ -1147,6 +1147,9 @@ impl ControlStore {
             "providerCredentialPoolModes": {},
             "providerCredentialHealth": [],
         }))?;
+        if redact_historical_control_errors(&mut file) {
+            store.write_json(&file)?;
+        }
         let mut provider_model_overrides: BTreeMap<
             String,
             BTreeMap<String, ProviderModelOverrideRecord>,
@@ -2921,6 +2924,46 @@ impl ControlStore {
     }
 }
 
+fn redact_historical_control_errors(file: &mut ControlFile) -> bool {
+    let mut changed = false;
+    for record in &mut file.usage {
+        changed |= redact_optional_error(&mut record.error_message);
+    }
+    for record in &mut file.provider_health {
+        changed |= redact_optional_error(&mut record.last_error);
+    }
+    for record in &mut file.provider_credential_health {
+        changed |= redact_optional_error(&mut record.last_error);
+    }
+    for record in &mut file.provider_tests {
+        if !record.success && record.message != "provider test failed [details redacted]" {
+            record.message = "provider test failed [details redacted]".to_owned();
+            changed = true;
+        }
+    }
+    for record in &mut file.activities {
+        if (record.message.contains("测试供应商") || record.message.contains("发现供应商"))
+            && record.message != "供应商诊断完成，详细错误已脱敏"
+        {
+            record.message = "供应商诊断完成，详细错误已脱敏".to_owned();
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn redact_optional_error(error: &mut Option<String>) -> bool {
+    let Some(current) = error.as_deref() else {
+        return false;
+    };
+    let redacted = audit_safe_persisted_error(current);
+    if redacted == current {
+        return false;
+    }
+    *error = Some(redacted);
+    true
+}
+
 fn public_team_with_ledger(inner: &ControlInner, team: &TeamRecord, now: u64) -> serde_json::Value {
     let mut row = public_team(team, &inner.api_keys, &inner.usage, now);
     if let Some(object) = row.as_object_mut() {
@@ -3666,6 +3709,46 @@ mod tests {
             allowed_providers: None,
             expires_at: None,
         }
+    }
+
+    #[test]
+    fn historical_control_errors_are_redacted_before_use() {
+        let mut file = ControlFile {
+            provider_tests: vec![ProviderTestRecord {
+                provider_id: "local".to_owned(),
+                tested_at_ms: 1,
+                success: false,
+                message: "provider echoed Bearer private-token".to_owned(),
+                discovered_models: Vec::new(),
+            }],
+            provider_health: vec![ProviderHealthRecord {
+                provider_id: "local".to_owned(),
+                last_error: Some("tool schema path /properties/private_customer_id".to_owned()),
+                ..ProviderHealthRecord::default()
+            }],
+            activities: vec![ActivityRecord {
+                id: "activity_test".to_owned(),
+                timestamp_ms: 1,
+                activity_type: "config_change".to_owned(),
+                actor: "admin".to_owned(),
+                target: "provider:local".to_owned(),
+                message: "测试供应商 local: private response".to_owned(),
+                severity: "warning".to_owned(),
+            }],
+            ..ControlFile::default()
+        };
+
+        assert!(redact_historical_control_errors(&mut file));
+        assert_eq!(
+            file.provider_tests[0].message,
+            "provider test failed [details redacted]"
+        );
+        assert_eq!(
+            file.provider_health[0].last_error.as_deref(),
+            Some("request failed: tool protocol error [details redacted]")
+        );
+        assert_eq!(file.activities[0].message, "供应商诊断完成，详细错误已脱敏");
+        assert!(!redact_historical_control_errors(&mut file));
     }
 
     fn provider_override(id: &str, display_name: &str) -> ProviderOverrideRecord {

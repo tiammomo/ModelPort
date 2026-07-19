@@ -64,12 +64,20 @@ The persisted usage log records:
 - stream flag, status/status code, lifecycle latency, stream-only first
   semantic latency, retry/fallback;
 - input/output/cache tokens and estimated cost;
-- client IP, request path, and a bounded error message.
+- client IP, request path, and a category-only error message whose diagnostic
+  detail is explicitly redacted before persistence.
 
 It intentionally does not store prompts, complete messages, raw request bodies,
 raw provider bodies, tool names/arguments/results, or plaintext keys. The
 dashboard's protocol JSON panels are reconstructed summaries unless explicitly
 labelled otherwise.
+
+The same category-only policy applies to request/attempt ledger rows and
+Provider/credential health. On startup, control-state records written by an
+older version are rewritten without their historical error detail; the
+relational ledger migration performs the equivalent one-time rewrite. The
+authenticated HTTP caller may still receive a bounded actionable error for the
+current request, but that detail is not copied into durable telemetry.
 
 An HTTP-successful request is not automatically counted as a model tool call.
 `tool_called` means a validated response contained at least one tool call;

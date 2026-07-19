@@ -24,6 +24,7 @@ use crate::{
     providers,
     stream_lifecycle::{
         ResponseObservation, StreamLifecycle, StreamTerminalOutcome, UpstreamStreamState,
+        audit_safe_stream_error,
     },
     types::{AnthropicCountTokensRequest, AnthropicRequest, validate_anthropic_tooling},
 };
@@ -602,7 +603,7 @@ async fn handle_inference(
             .as_ref()
             .map(|response| response.status().as_u16())
             .unwrap_or_else(|error| error.http_status().as_u16());
-        let attempt_error = attempt_result.as_ref().err().map(ToString::to_string);
+        let attempt_error = attempt_result.as_ref().err().map(AppError::audit_message);
         if !(stream && attempt_success) {
             if let Err(err) = state.control.record_provider_outcome_for_credential(
                 &provider_id,
@@ -702,7 +703,7 @@ async fn handle_inference(
     let timed_out = result.as_ref().err().is_some_and(
         |error| matches!(error, AppError::Transport(message) if message.contains("timed out")),
     );
-    let error_message = result.as_ref().err().map(ToString::to_string);
+    let error_message = result.as_ref().err().map(AppError::audit_message);
     let upstream_usage = result
         .as_ref()
         .ok()
@@ -1112,7 +1113,7 @@ impl StreamFinalizationContext {
         self.usage.timed_out = outcome.timed_out();
         self.usage.status_code = outcome.status_code();
         self.usage.terminal_reason = outcome.terminal_reason().to_owned();
-        self.usage.error_message = outcome.error_message().map(str::to_owned);
+        self.usage.error_message = outcome.audit_error_message();
         self.usage.tool_outcome = classify_tool_outcome(
             self.usage.tool_use_requested,
             self.tool_continuation,
@@ -1233,14 +1234,17 @@ fn provider_terminal_outcome(
 ) -> Option<(bool, u16, Option<String>)> {
     match outcome {
         StreamTerminalOutcome::Completed => Some((true, 200, None)),
-        StreamTerminalOutcome::UpstreamFailed(error) => {
-            Some((false, upstream_failure_status(error), Some(error.clone())))
-        }
+        StreamTerminalOutcome::UpstreamFailed(error) => Some((
+            false,
+            upstream_failure_status(error),
+            Some(audit_safe_stream_error(error)),
+        )),
         StreamTerminalOutcome::DeliveryFailed(_)
         | StreamTerminalOutcome::DownstreamCancelled { .. } => match lifecycle.state() {
             UpstreamStreamState::Completed => Some((true, 200, None)),
             UpstreamStreamState::Failed(error) => {
-                Some((false, upstream_failure_status(&error), Some(error)))
+                let status = upstream_failure_status(&error);
+                Some((false, status, Some(audit_safe_stream_error(&error))))
             }
             UpstreamStreamState::Pending => None,
         },

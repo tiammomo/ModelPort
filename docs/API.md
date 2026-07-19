@@ -531,6 +531,12 @@ uses `billingMode=upstream-returned+tool-repair`; its request-level token and
 cost totals include both Provider responses, while each attempt remains visible
 independently in the enterprise ledger.
 
+`errorMessage` is durable audit telemetry, not a copy of the client error
+response. It retains only a coarse category (for example timeout, rate limit,
+authentication, Tool protocol, or generic failure) plus an explicit redaction
+marker. Request values, validation paths, Provider bodies, URLs, and storage
+diagnostics are removed before usage, ledger, and Provider-health persistence.
+
 `toolUseRequested` is true when the request declares or selects tools, or
 continues an existing tool call/result exchange. It does not prove that the
 model emitted a new call, and ModelPort still does not retain tool names,

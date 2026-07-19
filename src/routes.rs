@@ -1279,7 +1279,7 @@ async fn admin_test_provider(
             };
             (true, message, models)
         }
-        Err(err) => (false, err.to_string(), Vec::new()),
+        Err(err) => (false, err.audit_message(), Vec::new()),
     };
     let tested_at = state.control.record_provider_test(
         provider_id.to_owned(),

@@ -263,6 +263,47 @@ impl StreamTerminalOutcome {
             }
         }
     }
+
+    pub(crate) fn audit_error_message(&self) -> Option<String> {
+        match self {
+            Self::Completed => None,
+            Self::UpstreamFailed(error) => Some(audit_safe_stream_error(error)),
+            Self::DeliveryFailed(_) => Some("stream delivery error [details redacted]".to_owned()),
+            Self::DownstreamCancelled {
+                upstream_state: UpstreamStreamState::Failed(error),
+            } => Some(audit_safe_stream_error(error)),
+            Self::DownstreamCancelled { .. } => {
+                Some("downstream cancelled before stream delivery completed".to_owned())
+            }
+        }
+    }
+}
+
+pub(crate) fn audit_safe_stream_error(error: &str) -> String {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("timed out") {
+        "upstream stream timed out [details redacted]".to_owned()
+    } else if [
+        "insufficient_balance",
+        "insufficient balance",
+        "insufficient account balance",
+        "balance not enough",
+        "余额不足",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        "upstream stream error: insufficient balance [details redacted]".to_owned()
+    } else if normalized.contains("rate limit") {
+        "upstream stream error: rate limit [details redacted]".to_owned()
+    } else if ["tool", "function", "input_json", "tool_use", "tool_result"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        "upstream tool stream protocol error [details redacted]".to_owned()
+    } else {
+        "upstream stream error [details redacted]".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -304,6 +345,24 @@ mod tests {
         lifecycle.mark_completed();
         lifecycle.mark_failed("late failure");
         assert_eq!(lifecycle.state(), UpstreamStreamState::Completed);
+    }
+
+    #[test]
+    fn stream_audit_errors_do_not_retain_provider_or_tool_payloads() {
+        let provider = StreamTerminalOutcome::UpstreamFailed(
+            "provider echoed tenant prompt with Bearer secret".to_owned(),
+        );
+        assert_eq!(
+            provider.audit_error_message().as_deref(),
+            Some("upstream stream error [details redacted]")
+        );
+
+        let tool = StreamTerminalOutcome::UpstreamFailed(
+            "tool_result contained private_customer_id".to_owned(),
+        );
+        let audit = tool.audit_error_message().unwrap();
+        assert!(audit.contains("tool"));
+        assert!(!audit.contains("private_customer_id"));
     }
 
     #[test]

@@ -318,6 +318,10 @@ For shared use:
 3. Set `MODELPORT_ADMIN_COOKIE_SECURE=1` behind HTTPS.
 4. Protect PostgreSQL/JSON state and CLI backup files as credential material.
 
+Persistent usage, ledger, and Provider-health errors are category-only: raw
+Provider bodies, Tool validation paths, request values, URLs, and storage
+diagnostics are redacted before they reach durable telemetry.
+
 Read [SECURITY.md](SECURITY.md) for the threat model and reporting process.
 
 ## Local Development

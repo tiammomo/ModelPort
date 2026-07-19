@@ -109,13 +109,19 @@ and should only be used for a trusted internal runtime.
 ## Logs, Errors, And Backups
 
 The usage log stores request ID, identity/team labels, model/provider, token and
-cost estimates, status, latency, retry/fallback, client IP, and bounded error
-text. It does not intentionally persist prompts, complete messages, raw provider
-bodies, authorization headers, or plaintext keys.
+cost estimates, status, latency, retry/fallback, client IP, and a category-only
+error summary. Durable usage, request/attempt ledger, and Provider-health error
+fields remove request values, Tool validation paths, Provider bodies, URLs, and
+storage diagnostics. Startup migration also rewrites older retained error
+detail. ModelPort does not intentionally persist prompts, complete messages,
+raw provider bodies, authorization headers, or plaintext keys.
 
-Upstream errors redact common credential field names and common token patterns.
-This is best-effort defense in depth, not proof that arbitrary third-party text
-is safe to publish. Review logs before sharing them.
+The current authenticated caller can receive a bounded upstream error whose
+common credential fields and token patterns are redacted. That live response
+redaction remains best-effort and is not proof that arbitrary third-party text
+is safe to publish. It is deliberately separate from the stricter
+category-only durable audit record. Review client-captured errors before
+sharing them.
 
 Common secret-bearing configuration, auth, control-store, login, password-input,
 and API-key creation types use custom or redacted `Debug` output, with regression
