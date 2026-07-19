@@ -99,7 +99,12 @@ npm --prefix dashboard audit --audit-level=low
 ```
 
 `cargo audit` downloads the current RustSec advisory database, so this networked
-check is kept separate from the deterministic repository check script.
+check is kept separate from the deterministic repository check script. Project
+exceptions live in `.cargo/audit.toml` and must document the exact dependency
+path, why the affected operation is unreachable, and the condition for removing
+the exception. `RUSTSEC-2023-0071` is currently limited to the transitive
+`openidconnect -> rsa` dependency: ModelPort verifies provider-signed ID tokens
+with public JWKs and does not perform the vulnerable RSA private-key operation.
 
 Install the Playwright browser and OS dependencies using Playwright's supported
 installer for your host when needed, for example:

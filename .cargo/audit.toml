@@ -1,0 +1,8 @@
+# `openidconnect` 4.0.1 unconditionally depends on `rsa` 0.9.x. ModelPort is an
+# OIDC relying party: it verifies provider-signed ID tokens with public JWKs and
+# never loads an OIDC RSA private key or performs RSA private-key operations.
+# RUSTSEC-2023-0071 concerns network-observable timing leakage from private-key
+# operations and currently has no patched release. Remove this exception when
+# `openidconnect` no longer pulls the affected implementation.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
