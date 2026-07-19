@@ -370,6 +370,7 @@ The complete toolchain and test matrix are in
 - [Configuration reference](docs/CONFIGURATION.md)
 - [API reference](docs/API.md)
 - [Operations](docs/OPERATIONS.md)
+- [Data lifecycle and safe maintenance](docs/DATA_LIFECYCLE.md)
 - [Docker Compose](docs/DOCKER.md)
 - [systemd](docs/SYSTEMD.md)
 - [Provider compatibility](docs/PROVIDER_MATRIX.md)

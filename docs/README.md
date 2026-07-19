@@ -18,6 +18,8 @@ the source of truth for behavior and operations.
   identity linking, configuration, security boundaries, and troubleshooting.
 - [Operations](OPERATIONS.md): health checks, metrics, request logs, backup,
   reload, troubleshooting, and current operational limitations.
+- [Data lifecycle](DATA_LIFECYCLE.md): retention ownership, append-only budget
+  evidence, acceptance-test residue, and safe maintenance boundaries.
 - [Development](DEVELOPMENT.md): toolchain, local workflow, test layers, and
   documentation maintenance.
 - [Enterprise gateway roadmap](ENTERPRISE_ROADMAP.md): target product,
