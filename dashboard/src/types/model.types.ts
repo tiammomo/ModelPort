@@ -2,6 +2,7 @@ export type ProviderProtocol = 'anthropic' | 'openai-compat'
 export type MaxTokensField = 'max_completion_tokens' | 'max_tokens' | 'both'
 export type FidelityMode = 'strict' | 'best_effort' | 'stability'
 export type ToolStreamingArguments = 'native' | 'delta' | 'cumulative' | 'best_effort'
+export type ToolResponseValidation = 'best_effort' | 'strict'
 export type ProviderStatus = 'active' | 'inactive' | 'disabled' | 'error'
 export type ProviderModelStatus = 'active' | 'disabled'
 export type ProviderCredentialPoolMode = 'manual' | 'failover' | 'round_robin'
@@ -11,6 +12,14 @@ export interface ToolUseCapabilities {
   toolChoice: boolean
   parallelToolCalls: boolean
   streamingArguments: ToolStreamingArguments
+  responseValidation?: ToolResponseValidation
+}
+
+export interface ModelPricing {
+  inputPerMillion: number
+  outputPerMillion: number
+  cacheWritePerMillion: number
+  cacheReadPerMillion: number
 }
 
 export interface ProviderHealth {
@@ -78,6 +87,7 @@ export interface Provider {
   bufferStreamText: boolean
   fidelityMode?: FidelityMode
   toolUse?: ToolUseCapabilities
+  pricing?: ModelPricing | null
   status: ProviderStatus
   credentials?: ProviderCredential[]
   activeCredentialId?: string | null
@@ -112,6 +122,7 @@ export interface ProviderWritePayload {
   bufferStreamText?: boolean
   fidelityMode?: FidelityMode
   toolUse?: ToolUseCapabilities
+  pricing?: ModelPricing | null
   disabled?: boolean
 }
 
@@ -154,6 +165,22 @@ export interface ProviderModelDiscovery {
   models: string[]
   modelCount: number
   discoveredAt: string
+}
+
+export interface ProviderBalanceInfo {
+  currency: 'CNY' | 'USD'
+  totalBalance: string
+  grantedBalance: string
+  toppedUpBalance: string
+}
+
+export interface ProviderOnlineBalance {
+  providerId: string
+  isAvailable: boolean
+  balanceInfos: ProviderBalanceInfo[]
+  checkedAt: string
+  managementScope: 'read-monitor-alert'
+  billingAuthority: 'deepseek-console'
 }
 
 export interface ModelAlias {

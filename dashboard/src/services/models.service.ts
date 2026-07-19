@@ -4,6 +4,7 @@ import type {
   ProviderCredential,
   ProviderCredentialPoolMode,
   ProviderModelDiscovery,
+  ProviderOnlineBalance,
   ProviderModelInventory,
   ProviderCredentialWritePayload,
   ProviderModelWritePayload,
@@ -137,6 +138,26 @@ export const modelsService = {
       models,
       modelCount: models.length,
       discoveredAt,
+    })
+  },
+
+  checkProviderBalance: async (providerId: string): Promise<ProviderOnlineBalance> => {
+    if (!isMockMode) {
+      return api.post(`/admin/providers/${encodeURIComponent(providerId)}/balance`)
+    }
+    if (providerId !== 'deepseek') throw new Error('仅 DeepSeek 官方 Provider 支持线上余额查询')
+    return mockDelay({
+      providerId,
+      isAvailable: true,
+      balanceInfos: [{
+        currency: 'CNY',
+        totalBalance: '100.00',
+        grantedBalance: '0.00',
+        toppedUpBalance: '100.00',
+      }],
+      checkedAt: Date.now().toString(),
+      managementScope: 'read-monitor-alert',
+      billingAuthority: 'deepseek-console',
     })
   },
 
@@ -343,5 +364,6 @@ function defaultToolUse(protocol: ProviderProtocol, deduplicateStreamText: boole
         : ['custom', 'ollama', 'local_sglang', 'local_vllm', 'local_llamacpp'].includes(providerId)
           ? 'best_effort'
           : 'delta',
+    responseValidation: 'best_effort',
   }
 }

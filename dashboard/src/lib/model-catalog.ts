@@ -123,7 +123,7 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
   },
   {
     id: 'anthropic',
-    displayName: 'Anthropic Claude',
+    displayName: 'Anthropic 官方 Claude',
     family: 'Claude',
     protocol: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
@@ -135,7 +135,7 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
     modelPrefixes: ['claude-'],
     passthroughUnknownModels: false,
     maxTokensField: 'max_tokens',
-    notes: '官方 Anthropic 渠道；Claude 5 与 Claude 4.8 适合高能力任务。',
+    notes: 'Anthropic 官方渠道模板；第三方 Anthropic-compatible 渠道应使用自己的平台名称与实际 Base URL。',
   },
   {
     id: 'openrouter',
@@ -362,6 +362,7 @@ export function providerToml(template: ProviderTemplate): string {
       `tool_choice = ${template.toolUse.toolChoice}`,
       `parallel_tool_calls = ${template.toolUse.parallelToolCalls}`,
       `streaming_arguments = "${template.toolUse.streamingArguments}"`,
+      `response_validation = "${template.toolUse.responseValidation ?? 'best_effort'}"`,
     )
   }
 

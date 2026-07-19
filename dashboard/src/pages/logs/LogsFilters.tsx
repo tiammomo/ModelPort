@@ -15,18 +15,19 @@ import {
   Server,
   UserRound,
   WalletCards,
+  Wrench,
   Zap,
 } from 'lucide-react'
-import type { LogFilters, RequestStatus, StreamMode } from '@/types'
+import type { LogFilters, RequestStatus, StreamMode, ToolUseMode } from '@/types'
 import { timeRangeToDates, type TimeRange } from './log-utils'
 
 const ALL = '__all__'
 
-const TIME_RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
-  { value: '1h', label: '最近 1 小时' },
-  { value: '6h', label: '最近 6 小时' },
-  { value: '24h', label: '最近 24 小时' },
-  { value: '7d', label: '最近 7 天' },
+const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; durationMs: number }[] = [
+  { value: '1h', label: '最近 1 小时', durationMs: 60 * 60 * 1000 },
+  { value: '6h', label: '最近 6 小时', durationMs: 6 * 60 * 60 * 1000 },
+  { value: '24h', label: '最近 24 小时', durationMs: 24 * 60 * 60 * 1000 },
+  { value: '7d', label: '最近 7 天', durationMs: 7 * 24 * 60 * 60 * 1000 },
 ]
 
 // ── Filter field wrapper ─────────────────────────────────────────
@@ -115,17 +116,20 @@ export function LogsFilters({
   providers: string[]
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [quickRange, setQuickRange] = useState<{
-    value: TimeRange
-    dateFrom: string
-    dateTo: string
-  } | null>(null)
+  const activeQuickRange = useMemo(() => {
+    if (!filters.dateFrom || !filters.dateTo) return null
+    const durationMs = new Date(filters.dateTo).getTime() - new Date(filters.dateFrom).getTime()
+    if (!Number.isFinite(durationMs)) return null
+    return TIME_RANGE_OPTIONS.find((option) => Math.abs(option.durationMs - durationMs) < 60_000)?.value ?? null
+  }, [filters.dateFrom, filters.dateTo])
   const activeFilterCount = useMemo(
-    () => Object.values(filters).filter(Boolean).length,
+    () => Object.entries(filters)
+      .filter(([name, value]) => name !== 'dateFrom' && name !== 'dateTo' && Boolean(value))
+      .length + (filters.dateFrom || filters.dateTo ? 1 : 0),
     [filters],
   )
-  const advancedFilterCount = [filters.dateFrom, filters.dateTo, filters.username, filters.group, filters.stream]
-    .filter(Boolean).length
+  const advancedFilterCount = [filters.username, filters.group, filters.stream, filters.toolUse]
+    .filter(Boolean).length + (filters.dateFrom || filters.dateTo ? 1 : 0)
 
   const update = (patch: Partial<LogFilters>) => {
     onFiltersChange({ ...filters, ...patch })
@@ -133,13 +137,11 @@ export function LogsFilters({
 
   const handleTimeRange = (range: TimeRange) => {
     const { dateFrom, dateTo } = timeRangeToDates(range)
-    setQuickRange({ value: range, dateFrom, dateTo })
     onFiltersChange({ ...filters, dateFrom, dateTo })
   }
 
   const reset = () => {
-    setQuickRange(null)
-    onFiltersChange({})
+    onFiltersChange(timeRangeToDates('24h'))
   }
 
   return (
@@ -178,9 +180,7 @@ export function LogsFilters({
         <div className="flex flex-wrap items-center gap-2 border-b bg-muted/10 px-4 py-2.5">
           <span className="text-xs font-medium text-muted-foreground">快速范围</span>
           {TIME_RANGE_OPTIONS.map((opt) => {
-            const isActive = quickRange?.value === opt.value
-              && quickRange.dateFrom === filters.dateFrom
-              && quickRange.dateTo === filters.dateTo
+            const isActive = activeQuickRange === opt.value
             return (
               <Button
                 key={opt.value}
@@ -188,6 +188,7 @@ export function LogsFilters({
                 size="sm"
                 className="h-7 text-xs"
                 onClick={() => handleTimeRange(opt.value)}
+                aria-pressed={isActive}
               >
                 {opt.label}
               </Button>
@@ -270,7 +271,6 @@ export function LogsFilters({
                 className="h-10"
                 value={filters.dateFrom || ''}
                 onChange={(e) => {
-                  setQuickRange(null)
                   update({ dateFrom: e.target.value || undefined })
                 }}
               />
@@ -283,7 +283,6 @@ export function LogsFilters({
                 className="h-10"
                 value={filters.dateTo || ''}
                 onChange={(e) => {
-                  setQuickRange(null)
                   update({ dateTo: e.target.value || undefined })
                 }}
               />
@@ -323,6 +322,24 @@ export function LogsFilters({
                   <SelectItem value={ALL}>全部模式</SelectItem>
                   <SelectItem value="stream">流式</SelectItem>
                   <SelectItem value="non-stream">非流式</SelectItem>
+                </SelectContent>
+              </Select>
+            </FilterField>
+
+            <FilterField label="Tool Use" icon={Wrench} className="xl:col-span-2">
+              <Select
+                value={filters.toolUse || ALL}
+                onValueChange={(v) =>
+                  update({ toolUse: v === ALL ? undefined : (v as ToolUseMode) })
+                }
+              >
+                <SelectTrigger className="h-10">
+                  <SelectValue placeholder="全部工作流" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>全部工作流</SelectItem>
+                  <SelectItem value="requested">Tool Use</SelectItem>
+                  <SelectItem value="not-requested">非 Tool Use</SelectItem>
                 </SelectContent>
               </Select>
             </FilterField>

@@ -66,6 +66,7 @@ describe('model feature data', () => {
         toolChoice: false,
         parallelToolCalls: false,
         streamingArguments: 'cumulative',
+        responseValidation: 'strict',
       },
     })
 

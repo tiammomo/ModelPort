@@ -2,6 +2,7 @@ import type { ProviderProtocol } from './model.types'
 
 export type RequestStatus = 'success' | 'error' | 'timeout'
 export type StreamMode = 'stream' | 'non-stream'
+export type ToolUseMode = 'requested' | 'not-requested'
 
 export interface RequestLog {
   id: string
@@ -22,6 +23,8 @@ export interface RequestLog {
   provider: string
   protocol: ProviderProtocol
   clientProtocol?: 'anthropic-messages' | 'openai-chat-completions'
+  toolUseRequested?: boolean
+  toolOutcome?: 'unknown_legacy' | 'not_requested' | 'completed' | 'client_cancelled' | 'timeout' | 'protocol_error' | 'upstream_or_delivery_error'
   requestType?: 'consume' | 'error'
   stream: StreamMode
   status: RequestStatus
@@ -67,6 +70,7 @@ export interface LogFilters {
   username?: string
   status?: RequestStatus
   stream?: StreamMode
+  toolUse?: ToolUseMode
   dateFrom?: string
   dateTo?: string
   search?: string
@@ -75,6 +79,8 @@ export interface LogFilters {
 export interface LogSummary {
   totalRequests: number
   successRequests: number
+  toolUseRequests?: number
+  toolUseSuccessRequests?: number
   totalInputTokens: number
   totalOutputTokens: number
   totalCacheWriteTokens: number

@@ -44,6 +44,7 @@ describe('logs service', () => {
       username: 'operator',
       group: 'production',
       stream: 'stream',
+      toolUse: 'requested',
     }, 2, 50)
 
     const [rawUrl] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -63,6 +64,7 @@ describe('logs service', () => {
       username: 'operator',
       group: 'production',
       stream: 'stream',
+      toolUse: 'requested',
     })
     expect(result).toEqual(payload)
   })

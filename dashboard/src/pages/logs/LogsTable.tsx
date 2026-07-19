@@ -32,9 +32,12 @@ import {
 
 const ROW_HEIGHT = 108
 const OVERSCAN = 10
-const TABLE_MIN_WIDTH = 1050
+const TABLE_MIN_WIDTH = 1140
 const TABLE_GRID_STYLE: CSSProperties = {
-  gridTemplateColumns: '28px 128px 170px 180px minmax(180px,1fr) 118px 130px 100px',
+  gridTemplateColumns: '24px 124px minmax(150px,184px) minmax(164px,200px) minmax(210px,280px) 118px 128px 100px',
+  columnGap: '12px',
+  justifyContent: 'space-between',
+  width: '100%',
 }
 
 // ── Cell components ──────────────────────────────────────────────
@@ -65,13 +68,19 @@ function TimeStatusCell({ log }: { log: RequestLog }) {
 }
 
 function RouteCell({ log }: { log: RequestLog }) {
+  const channelName = log.channelName || log.provider
+  const channelId = log.channelId || log.provider
+  const showChannelId = channelId !== channelName
+
   return (
     <div className="min-w-0 space-y-1.5">
       <ProviderBadge log={log} />
       <div className="min-w-0 space-y-0.5 text-xs text-muted-foreground">
-        <div className="truncate font-mono" title={log.channelId || log.provider}>
-          {log.channelId || log.provider}
-        </div>
+        {showChannelId && (
+          <div className="truncate font-mono" title={channelId}>
+            {channelId}
+          </div>
+        )}
         <div title={`客户端 ${clientProtocolLabel(log.clientProtocol)}`}>
           {protocolLabel(log.protocol)}
         </div>
@@ -103,11 +112,18 @@ function IdentityCell({ log }: { log: RequestLog }) {
 }
 
 function ModelCell({ log }: { log: RequestLog }) {
+  const resolvedModel = log.resolvedModel || log.model
+
   return (
     <div className="min-w-0 space-y-1.5">
-      <div className="break-all font-mono text-xs font-medium leading-5">{log.resolvedModel || log.model}</div>
-      {log.model !== log.resolvedModel && (
-        <div className="break-all text-xs text-muted-foreground">{log.model}</div>
+      <div className="truncate font-mono text-xs font-medium leading-5" title={resolvedModel}>
+        {resolvedModel}
+      </div>
+      {log.model !== resolvedModel && (
+        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" title={`请求模型 ${log.model}`}>
+          <span className="shrink-0">请求</span>
+          <span className="truncate font-mono">{log.model}</span>
+        </div>
       )}
       <RequestModeBadge log={log} />
     </div>
@@ -184,13 +200,13 @@ function ProviderBadge({ log }: { log: RequestLog }) {
 }
 
 function RequestModeBadge({ log }: { log: RequestLog }) {
-  if (log.status !== 'success') {
-    return <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">异常</Badge>
-  }
   return (
     <div className="flex flex-wrap gap-1">
-      <Badge variant="outline" className="border-lime-200 bg-lime-50 text-lime-700 dark:border-lime-900 dark:bg-lime-950/40 dark:text-lime-300">消费</Badge>
+      {log.status === 'success'
+        ? <Badge variant="outline" className="border-lime-200 bg-lime-50 text-lime-700 dark:border-lime-900 dark:bg-lime-950/40 dark:text-lime-300">消费</Badge>
+        : <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">异常</Badge>}
       {log.stream === 'stream' && <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300">流式</Badge>}
+      {log.toolUseRequested && <Badge variant="outline" title={log.toolOutcome || 'unknown'} className="border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-300">Tool Use · {log.toolOutcome || 'unknown'}</Badge>}
     </div>
   )
 }
@@ -218,18 +234,17 @@ function TokenValue({
 
 function TableHeaderRow() {
   return (
-    <div
-      className="grid items-center border-b bg-muted/40 px-4 text-xs font-medium text-muted-foreground hover:bg-muted/40"
-      style={TABLE_GRID_STYLE}
-    >
-      <div />
-      <div className="py-3">时间 / 状态</div>
-      <div className="py-3">路由渠道</div>
-      <div className="py-3">调用身份</div>
-      <div className="py-3">模型</div>
-      <div className="py-3 text-center">延迟</div>
-      <div className="py-3 text-center">Tokens</div>
-      <div className="py-3 text-center">花费</div>
+    <div className="border-b bg-muted/40 text-xs font-medium text-muted-foreground">
+      <div className="grid items-center px-4" style={TABLE_GRID_STYLE} data-testid="logs-table-header-grid">
+        <div />
+        <div className="py-3">时间 / 状态</div>
+        <div className="py-3">路由渠道</div>
+        <div className="py-3">调用身份</div>
+        <div className="py-3">模型</div>
+        <div className="py-3 text-center">延迟</div>
+        <div className="py-3 text-center">Tokens</div>
+        <div className="py-3 text-center">花费</div>
+      </div>
     </div>
   )
 }
@@ -246,10 +261,9 @@ function VirtualRow({
   return (
     <div
       className={cn(
-        'grid min-h-[108px] cursor-pointer items-start border-b border-l-4 px-4 transition-colors hover:bg-muted/30',
+        'min-h-[108px] cursor-pointer border-b border-l-4 transition-colors hover:bg-muted/30',
         rowTone(log.status),
       )}
-      style={TABLE_GRID_STYLE}
       onClick={() => onSelect(log)}
       role="button"
       tabIndex={0}
@@ -261,29 +275,31 @@ function VirtualRow({
         }
       }}
     >
-      <div className="flex justify-center pt-5">
-        <div className="h-2 w-2 rounded-full bg-muted-foreground/30" />
-      </div>
-      <div className="py-3">
-        <TimeStatusCell log={log} />
-      </div>
-      <div className="py-3">
-        <RouteCell log={log} />
-      </div>
-      <div className="py-3">
-        <IdentityCell log={log} />
-      </div>
-      <div className="py-3">
-        <ModelCell log={log} />
-      </div>
-      <div className="py-3">
-        <LatencyCell log={log} />
-      </div>
-      <div className="py-3">
-        <TokensCell log={log} />
-      </div>
-      <div className="py-3">
-        <CostCell log={log} />
+      <div className="grid items-start px-4" style={TABLE_GRID_STYLE}>
+        <div className="flex justify-center pt-5">
+          <div className="h-2 w-2 rounded-full bg-muted-foreground/30" />
+        </div>
+        <div className="py-3">
+          <TimeStatusCell log={log} />
+        </div>
+        <div className="py-3">
+          <RouteCell log={log} />
+        </div>
+        <div className="py-3">
+          <IdentityCell log={log} />
+        </div>
+        <div className="py-3">
+          <ModelCell log={log} />
+        </div>
+        <div className="py-3">
+          <LatencyCell log={log} />
+        </div>
+        <div className="py-3">
+          <TokensCell log={log} />
+        </div>
+        <div className="py-3">
+          <CostCell log={log} />
+        </div>
       </div>
     </div>
   )

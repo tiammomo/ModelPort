@@ -3,6 +3,7 @@ import {
   useProviders,
   useAliases,
   useBulkToggleModels,
+  useCheckProviderBalance,
   useCreateAlias,
   useCreateProvider,
   useCreateProviderCredential,
@@ -112,6 +113,7 @@ import {
   Search,
   Settings,
   Trash2,
+  WalletCards,
 } from 'lucide-react'
 import type {
   FidelityMode,
@@ -120,8 +122,10 @@ import type {
   ProviderCredential,
   ProviderCredentialPoolMode,
   ProviderDeleteBlocked,
+  ProviderOnlineBalance,
   ProviderProtocol,
   ToolStreamingArguments,
+  ToolResponseValidation,
 } from '@/types'
 
 interface ModelChannel {
@@ -159,6 +163,7 @@ export function ModelsPage() {
   const createAlias = useCreateAlias()
   const deleteAlias = useDeleteAlias()
   const discoverModels = useDiscoverProviderModels()
+  const checkProviderBalance = useCheckProviderBalance()
   const createProvider = useCreateProvider()
   const updateProvider = useUpdateProvider()
   const setProviderDisabled = useSetProviderDisabled()
@@ -177,6 +182,8 @@ export function ModelsPage() {
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
   const [expandedModel, setExpandedModel] = useState<string | null>(null)
   const [discoveringProvider, setDiscoveringProvider] = useState<string | null>(null)
+  const [checkingBalanceProvider, setCheckingBalanceProvider] = useState<string | null>(null)
+  const [onlineBalances, setOnlineBalances] = useState<Record<string, ProviderOnlineBalance>>({})
   const [showAliasDialog, setShowAliasDialog] = useState(false)
   const [showProviderDialog, setShowProviderDialog] = useState(false)
   const [aliasSubmitAttempted, setAliasSubmitAttempted] = useState(false)
@@ -341,6 +348,18 @@ export function ModelsPage() {
       onSettled: () => setDiscoveringProvider(null),
       onSuccess: (result) => toast.success(`已发现 ${result.modelCount} 个模型`),
       onError: (error) => toast.error(error instanceof Error ? error.message : '发现模型失败'),
+    })
+  }
+
+  const handleCheckProviderBalance = (providerId: string) => {
+    setCheckingBalanceProvider(providerId)
+    checkProviderBalance.mutate(providerId, {
+      onSettled: () => setCheckingBalanceProvider(null),
+      onSuccess: (balance) => {
+        setOnlineBalances((current) => ({ ...current, [providerId]: balance }))
+        toast.success(balance.isAvailable ? 'DeepSeek 线上余额可用' : 'DeepSeek 线上余额不足')
+      },
+      onError: (error) => toast.error(error instanceof Error ? error.message : '查询线上余额失败'),
     })
   }
 
@@ -916,7 +935,10 @@ export function ModelsPage() {
                 expanded={expandedProvider === provider.id}
                 className={expandedProvider === provider.id ? 'md:col-span-2 xl:col-span-3' : undefined}
                 discovering={discoveringProvider === provider.id && discoverModels.isPending}
+                checkingBalance={checkingBalanceProvider === provider.id && checkProviderBalance.isPending}
+                onlineBalance={onlineBalances[provider.id]}
                 onDiscover={() => handleDiscoverModels(provider.id)}
+                onCheckBalance={() => handleCheckProviderBalance(provider.id)}
                 onToggleList={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
                 onEdit={() => openEditProviderDialog(provider)}
                 onToggleProvider={() => handleSetProviderDisabled(provider)}
@@ -1427,6 +1449,18 @@ export function ModelsPage() {
                   </SelectContent>
                 </Select>
               </Field>
+              <Field label="Tool Use 响应校验" description="strict 会拒绝未声明工具、非法参数以及违反 tool_choice 的响应。">
+                <Select
+                  value={providerForm.toolResponseValidation}
+                  onValueChange={(value) => setProviderForm({ ...providerForm, toolResponseValidation: value as ToolResponseValidation })}
+                >
+                  <SelectTrigger aria-label="Tool Use 响应校验"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="best_effort">best_effort</SelectItem>
+                    <SelectItem value="strict">strict</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
               <div className="space-y-3 rounded-md border bg-muted/20 p-3 md:col-span-2" aria-label="Provider 能力开关">
                 <SwitchRow
                   label="需要 API Key"
@@ -1912,7 +1946,10 @@ function ProviderCard({
   expanded,
   className,
   discovering,
+  checkingBalance,
+  onlineBalance,
   onDiscover,
+  onCheckBalance,
   onToggleList,
   onEdit,
   onToggleProvider,
@@ -1938,7 +1975,10 @@ function ProviderCard({
   expanded: boolean
   className?: string
   discovering: boolean
+  checkingBalance: boolean
+  onlineBalance?: ProviderOnlineBalance
   onDiscover: () => void
+  onCheckBalance: () => void
   onToggleList: () => void
   onEdit: () => void
   onToggleProvider: () => void
@@ -2078,6 +2118,54 @@ function ProviderCard({
               </Button>}
             </div>
           </div>
+          {provider.id === 'deepseek' && canManage && (
+            <div className="mb-3 rounded-md border bg-background/70 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium">DeepSeek 线上余额</p>
+                    {onlineBalance && (
+                      <Badge variant={onlineBalance.isAvailable ? 'success' : 'destructive'}>
+                        {onlineBalance.isAvailable ? '可调用' : '余额不足'}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    实时只读查询；充值、退款与账单以 DeepSeek 控制台为准。
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onCheckBalance}
+                  disabled={checkingBalance || !credentialReady}
+                >
+                  {checkingBalance
+                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    : <WalletCards className="mr-2 h-4 w-4" />}
+                  {checkingBalance ? '查询中' : '查询余额'}
+                </Button>
+              </div>
+              {onlineBalance && (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {onlineBalance.balanceInfos.map((balance) => (
+                    <div key={balance.currency} className="rounded-md bg-muted/40 px-3 py-2 text-xs">
+                      <p className="text-muted-foreground">{balance.currency} 可用总额</p>
+                      <p className="mt-1 font-mono text-base font-semibold text-foreground">
+                        {balance.totalBalance} {balance.currency}
+                      </p>
+                      <p className="mt-1 text-muted-foreground">
+                        赠金 {balance.grantedBalance} · 充值 {balance.toppedUpBalance}
+                      </p>
+                    </div>
+                  ))}
+                  <p className="self-end text-xs text-muted-foreground">
+                    最近查询：{formatRelativeTime(onlineBalance.checkedAt)}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           {credentials.length === 0 ? (
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <Badge variant={credentialReady ? 'success' : 'destructive'}>

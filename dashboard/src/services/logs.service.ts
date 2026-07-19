@@ -60,6 +60,8 @@ function summarizeLogs(logs: RequestLog[]): LogSummary {
   return {
     totalRequests: logs.length,
     successRequests: logs.filter((log) => log.status === 'success').length,
+    toolUseRequests: logs.filter((log) => log.toolUseRequested).length,
+    toolUseSuccessRequests: logs.filter((log) => log.toolUseRequested && log.status === 'success').length,
     totalInputTokens,
     totalOutputTokens,
     totalCacheWriteTokens,
@@ -97,6 +99,7 @@ function logsPath(filters: LogFilters | undefined, page: number, pageSize: numbe
   appendFilter(params, 'username', filters?.username)
   appendFilter(params, 'group', filters?.group)
   appendFilter(params, 'stream', filters?.stream)
+  appendFilter(params, 'toolUse', filters?.toolUse)
   return `/admin/logs?${params.toString()}`
 }
 
@@ -125,6 +128,10 @@ export const logsService = {
     if (filters?.username) filtered = filtered.filter((log) => log.username.includes(filters.username!))
     if (filters?.status) filtered = filtered.filter((log) => log.status === filters.status)
     if (filters?.stream) filtered = filtered.filter((log) => log.stream === filters.stream)
+    if (filters?.toolUse) {
+      const requested = filters.toolUse === 'requested'
+      filtered = filtered.filter((log) => Boolean(log.toolUseRequested) === requested)
+    }
     if (filters?.dateFrom) {
       const from = new Date(filters.dateFrom).getTime()
       if (Number.isFinite(from)) filtered = filtered.filter((log) => logTime(log) >= from)

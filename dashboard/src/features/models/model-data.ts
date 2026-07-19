@@ -12,6 +12,7 @@ import type {
   ProviderProtocol,
   ProviderWritePayload,
   ToolStreamingArguments,
+  ToolResponseValidation,
 } from '@/types'
 
 export interface ProviderFormState {
@@ -33,6 +34,7 @@ export interface ProviderFormState {
   toolChoice: boolean
   parallelToolCalls: boolean
   toolStreamingArguments: ToolStreamingArguments
+  toolResponseValidation: ToolResponseValidation
   disabled: boolean
 }
 
@@ -82,6 +84,7 @@ export const DEFAULT_PROVIDER_FORM: ProviderFormState = {
   toolChoice: true,
   parallelToolCalls: true,
   toolStreamingArguments: 'delta',
+  toolResponseValidation: 'best_effort',
   disabled: false,
 }
 
@@ -302,6 +305,7 @@ export function providerToForm(provider: Provider): ProviderFormState {
     toolChoice: toolUse.toolChoice,
     parallelToolCalls: toolUse.parallelToolCalls,
     toolStreamingArguments: toolUse.streamingArguments,
+    toolResponseValidation: toolUse.responseValidation ?? 'best_effort',
     disabled: provider.status === 'disabled',
   }
 }
@@ -350,6 +354,7 @@ export function providerPayloadFromForm(
       toolChoice: form.toolChoice,
       parallelToolCalls: form.parallelToolCalls,
       streamingArguments: form.toolStreamingArguments,
+      responseValidation: form.toolResponseValidation,
     },
     disabled: form.disabled,
   }
@@ -387,6 +392,7 @@ export function defaultToolUseForProviderForm(
     toolChoice: true,
     parallelToolCalls: !LOCAL_PROVIDER_IDS.has(providerId),
     streamingArguments: defaultToolStreamingArguments(protocol, deduplicateStreamText, providerId),
+    responseValidation: 'best_effort',
   }
 }
 

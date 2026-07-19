@@ -230,10 +230,16 @@ function GatewayOperationsPanel({
                   <div className="min-w-0">
                     <p className="truncate font-medium">{provider.displayName}</p>
                     <p className="text-xs text-muted-foreground">
-                      {provider.rechargeRequired ? '账号余额或额度需要处理' : `运行状态：${statusText(provider.status)}`}
+                      {provider.rechargeRequired
+                        ? '上游账号余额或额度需要处理'
+                        : provider.status === 'degraded'
+                          ? `调用成功率 ${provider.successRate.toFixed(1)}%，存在失败或客户端取消`
+                          : provider.status === 'cooldown'
+                            ? '路由暂时冷却，等待自动恢复'
+                            : 'Provider 当前不可用，请检查配置或上游服务'}
                     </p>
                   </div>
-                  {isAdmin && <Button asChild variant="ghost" size="sm"><Link to="/models">处理</Link></Button>}
+                  {isAdmin && <Button asChild variant="ghost" size="sm"><Link to="/models">查看详情</Link></Button>}
                 </div>
               ))}
             </div>
@@ -585,53 +591,6 @@ function OperationalStat({ label, value, detail }: { label: string; value: strin
   )
 }
 
-function FirstRunGuide({ stats }: { stats: DashboardStats }) {
-  const isAdmin = useAuthStore((state) => state.currentUser?.role === 'admin')
-  if (!isAdmin) {
-    return (
-      <Card className="border-dashed">
-        <CardContent className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="font-semibold">还没有请求记录</p>
-            <p className="mt-1 text-sm text-muted-foreground">查看管理员分配的客户端 API Key 与可用模型，然后发送首个请求。</p>
-          </div>
-          <Button asChild variant="outline"><Link to="/api-keys">查看我的 API 密钥</Link></Button>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const steps = [
-    { title: '接入 Provider', detail: '配置上游地址与凭证', done: stats.totalProviders > 0, to: '/models' },
-    { title: '确认模型路由', detail: '发现模型并检查默认路由', done: stats.activeProviders > 0 && stats.totalModels > 0, to: '/models' },
-    { title: '签发客户端密钥', detail: '绑定用户、项目与最小权限', done: (stats.apiKeysActive || 0) > 0, to: '/api-keys' },
-    { title: '验证首个请求', detail: '调用后在日志中核对路由', done: stats.totalRequests > 0, to: '/logs' },
-  ]
-
-  return (
-    <Card className="overflow-hidden border-primary/20 bg-primary/[0.025]">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">完成首次接入</CardTitle>
-        <p className="text-sm text-muted-foreground">按顺序完成上游、路由、访问凭据和请求验证，避免拿到 Key 后才发现路由不可用。</p>
-      </CardHeader>
-      <CardContent className="grid gap-px border-t bg-border p-0 md:grid-cols-2 xl:grid-cols-4">
-        {steps.map((step, index) => (
-          <Link key={step.title} to={step.to} className="group min-w-0 bg-card px-4 py-3.5 transition-colors hover:bg-primary/[0.045]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-muted-foreground">步骤 {index + 1}</span>
-              {step.done
-                ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                : <ArrowRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />}
-            </div>
-            <p className="mt-2 text-sm font-semibold">{step.title}</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">{step.detail}</p>
-          </Link>
-        ))}
-      </CardContent>
-    </Card>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -781,8 +740,6 @@ export function DashboardPage() {
           error={rangeError}
         />
       </div>
-
-      {stats.totalRequests === 0 && <FirstRunGuide stats={stats} />}
 
       {(stats.rangeDataEstimated || stats.rangeDataAtRetentionLimit) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">

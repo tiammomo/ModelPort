@@ -76,6 +76,7 @@ function generateLog(id: number, hoursAgo: number): RequestLog {
     provider: route.provider,
     protocol: route.provider === 'anthropic' || route.provider === 'deepseek' ? 'anthropic' : 'openai-compat',
     clientProtocol,
+    toolUseRequested: id % 4 === 0,
     requestType: isSuccess ? 'consume' : 'error',
     stream: isStream ? 'stream' : 'non-stream',
     status: isSuccess ? 'success' : Math.random() > 0.5 ? 'error' : 'timeout',

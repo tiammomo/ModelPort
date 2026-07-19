@@ -1,4 +1,4 @@
-import type { LogFilters, RequestLog, RequestStatus, StreamMode } from '@/types'
+import type { LogFilters, RequestLog, RequestStatus, StreamMode, ToolUseMode } from '@/types'
 
 // ── Display helpers ──────────────────────────────────────────────
 
@@ -133,20 +133,33 @@ export function toLocalDateTimeInput(timestamp: number): string {
 
 const LOG_STATUSES = new Set<RequestStatus>(['success', 'error', 'timeout'])
 const STREAM_MODES = new Set<StreamMode>(['stream', 'non-stream'])
+const TOOL_USE_MODES = new Set<ToolUseMode>(['requested', 'not-requested'])
 const LOG_PAGE_SIZES = new Set([20, 50, 100, 200])
 
-export function logViewStateFromSearchParams(params: URLSearchParams): {
+export function logViewStateFromSearchParams(
+  params: URLSearchParams,
+  nowMs = Date.now(),
+): {
   filters: LogFilters
   page: number
   pageSize: number
 } {
   const status = params.get('status') as RequestStatus | null
   const stream = params.get('stream') as StreamMode | null
+  const toolUse = params.get('toolUse') as ToolUseMode | null
   const page = positiveInteger(params.get('page')) ?? 1
   const requestedPageSize = positiveInteger(params.get('pageSize')) ?? 50
+  const hasExplicitDateRange = params.has('dateFrom') || params.has('dateTo')
+  const dateRange = hasExplicitDateRange
+    ? {
+        dateFrom: dateParamToLocalInput(params.get('dateFrom')),
+        dateTo: dateParamToLocalInput(params.get('dateTo')),
+      }
+    : timeRangeToDates('24h', nowMs)
 
   return {
     filters: compactFilters({
+      ...dateRange,
       search: params.get('search') || undefined,
       provider: params.get('provider') || undefined,
       model: params.get('model') || undefined,
@@ -156,8 +169,7 @@ export function logViewStateFromSearchParams(params: URLSearchParams): {
       group: params.get('group') || undefined,
       status: status && LOG_STATUSES.has(status) ? status : undefined,
       stream: stream && STREAM_MODES.has(stream) ? stream : undefined,
-      dateFrom: dateParamToLocalInput(params.get('dateFrom')),
-      dateTo: dateParamToLocalInput(params.get('dateTo')),
+      toolUse: toolUse && TOOL_USE_MODES.has(toolUse) ? toolUse : undefined,
     }),
     page,
     pageSize: LOG_PAGE_SIZES.has(requestedPageSize) ? requestedPageSize : 50,
@@ -180,6 +192,7 @@ export function logViewSearchParams(filters: LogFilters, page: number, pageSize:
   append('group', filters.group)
   append('status', filters.status)
   append('stream', filters.stream)
+  append('toolUse', filters.toolUse)
   appendDateParam(params, 'dateFrom', filters.dateFrom)
   appendDateParam(params, 'dateTo', filters.dateTo)
   if (page > 1) params.set('page', String(Math.trunc(page)))

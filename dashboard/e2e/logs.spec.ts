@@ -7,8 +7,17 @@ test.describe('request logs', () => {
   })
 
   test('debounces search and automatic refresh removes a fixed end time', async ({ page }) => {
+    const defaultRangeResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return url.pathname === '/admin/logs'
+        && url.searchParams.has('dateFrom')
+        && url.searchParams.has('dateTo')
+        && response.ok()
+    })
     await page.goto('/logs')
+    await defaultRangeResponse
     await expect(page.getByRole('heading', { name: '请求日志' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '最近 24 小时' })).toHaveAttribute('aria-pressed', 'true')
 
     await Promise.all([
       page.waitForResponse((response) => {
@@ -69,5 +78,28 @@ test.describe('request logs', () => {
     await page.keyboard.press('Escape')
     await expect(drawer).toBeHidden()
     await expect(detailButton).toBeFocused()
+  })
+
+  test('uses the available desktop width without empty side gutters', async ({ page }) => {
+    await page.setViewportSize({ width: 2048, height: 960 })
+    await page.goto('/logs')
+    await expect(page.getByRole('heading', { name: '请求日志' })).toBeVisible()
+
+    const headerGrid = page.getByTestId('logs-table-header-grid')
+    await expect(headerGrid).toBeVisible()
+
+    const layout = await headerGrid.evaluate((element) => {
+      const grid = element.getBoundingClientRect()
+      const cells = Array.from(element.children, (child) => child.getBoundingClientRect())
+      return {
+        width: grid.width,
+        leftGap: cells[0].left - grid.left,
+        rightGap: grid.right - cells[cells.length - 1].right,
+      }
+    })
+
+    expect(layout.width).toBeGreaterThan(1600)
+    expect(layout.leftGap).toBeLessThanOrEqual(17)
+    expect(layout.rightGap).toBeLessThanOrEqual(17)
   })
 })

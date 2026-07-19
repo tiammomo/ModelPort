@@ -42,6 +42,14 @@ describe('log page helpers', () => {
     expect(new Date(range.dateFrom).getTime()).toBe(now - 60 * 60 * 1_000)
   })
 
+  it('defaults an unfiltered log view to the most recent 24 hours', () => {
+    const now = Date.UTC(2026, 6, 19, 1, 30)
+    const state = logViewStateFromSearchParams(new URLSearchParams(), now)
+
+    expect(new Date(state.filters.dateTo!).getTime()).toBe(now)
+    expect(new Date(state.filters.dateFrom!).getTime()).toBe(now - 24 * 60 * 60 * 1_000)
+  })
+
   it('round-trips shareable filters using timezone-stable epoch values', () => {
     const dateFrom = '2026-07-11T08:30'
     const dateTo = '2026-07-11T09:45'
@@ -50,6 +58,7 @@ describe('log page helpers', () => {
       provider: 'deepseek',
       status: 'error',
       stream: 'stream',
+      toolUse: 'requested',
       dateFrom,
       dateTo,
     }, 3, 100)
@@ -66,6 +75,7 @@ describe('log page helpers', () => {
         provider: 'deepseek',
         status: 'error',
         stream: 'stream',
+        toolUse: 'requested',
       },
     })
     expect(new Date(state.filters.dateFrom!).getTime()).toBe(new Date(dateFrom).getTime())
@@ -76,6 +86,7 @@ describe('log page helpers', () => {
     const state = logViewStateFromSearchParams(new URLSearchParams({
       status: 'maybe',
       stream: 'sometimes',
+      toolUse: 'sometimes',
       page: '-2',
       pageSize: '999',
       dateFrom: 'not-a-date',

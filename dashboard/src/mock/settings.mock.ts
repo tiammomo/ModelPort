@@ -2,7 +2,7 @@ import type { SystemSettings } from '@/types'
 
 export const mockSettings: SystemSettings = {
   server: {
-    bindAddress: '127.0.0.1:17878',
+    bindAddress: '127.0.0.1:38082',
     maxRequestBodyBytes: 33554432,
     maxConcurrentRequests: 64,
   },
@@ -38,11 +38,11 @@ export const mockSettings: SystemSettings = {
     streamIdleTimeoutSecs: 120,
   },
   runtime: {
-    apiEndpoint: 'http://127.0.0.1:17878/v1/messages',
-    anthropicEndpoint: 'http://127.0.0.1:17878/v1/messages',
-    openaiEndpoint: 'http://127.0.0.1:17878/v1/chat/completions',
-    modelsEndpoint: 'http://127.0.0.1:17878/v1/models',
-    adminEndpoint: 'http://127.0.0.1:17878/admin',
+    apiEndpoint: 'http://127.0.0.1:38082/v1/messages',
+    anthropicEndpoint: 'http://127.0.0.1:38082/v1/messages',
+    openaiEndpoint: 'http://127.0.0.1:38082/v1/chat/completions',
+    modelsEndpoint: 'http://127.0.0.1:38082/v1/models',
+    adminEndpoint: 'http://127.0.0.1:38082/admin',
     controlDataPath: '/home/user/.modelport/control-plane.json',
     authDataPath: '/home/user/.modelport/auth.json',
   },

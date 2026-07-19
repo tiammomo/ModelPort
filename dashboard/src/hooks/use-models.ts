@@ -201,6 +201,12 @@ export function useDiscoverProviderModels() {
   })
 }
 
+export function useCheckProviderBalance() {
+  return useMutation({
+    mutationFn: (providerId: string) => modelsService.checkProviderBalance(providerId),
+  })
+}
+
 export function useCreateAlias() {
   const qc = useQueryClient()
   return useMutation({

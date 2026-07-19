@@ -1,7 +1,7 @@
 import type { ElementType } from 'react'
 import type { LogSummary } from '@/types'
 import { cn } from '@/lib/utils'
-import { Activity, BadgeDollarSign, DatabaseZap, Gauge } from 'lucide-react'
+import { Activity, BadgeDollarSign, DatabaseZap, Gauge, Wrench } from 'lucide-react'
 import { formatInteger, formatMoney, formatPercent } from './log-utils'
 
 // ── Summary metric card ──────────────────────────────────────────
@@ -53,9 +53,12 @@ export function LogsSummaryGrid({
   const successRequests = summary?.successRequests || 0
   const successRate = totalRequests > 0 ? (successRequests / totalRequests) * 100 : 0
   const cacheTokens = (summary?.totalCacheWriteTokens || 0) + (summary?.totalCacheReadTokens || 0)
+  const toolUseRequests = summary?.toolUseRequests || 0
+  const toolUseSuccessRequests = summary?.toolUseSuccessRequests || 0
+  const toolUseSuccessRate = toolUseRequests > 0 ? (toolUseSuccessRequests / toolUseRequests) * 100 : 0
 
   return (
-    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
       <SummaryMetric
         label="消耗费用"
         value={formatMoney(summary?.totalCostEstimate || 0, 4)}
@@ -76,6 +79,13 @@ export function LogsSummaryGrid({
         helper={`TPM ${formatInteger(summary?.tpm || 0)} · RPM ${(summary?.rpm || 0).toFixed(2)}`}
         icon={Gauge}
         tone="amber"
+      />
+      <SummaryMetric
+        label="Tool Use"
+        value={toolUseRequests > 0 ? formatPercent(toolUseSuccessRate) : '—'}
+        helper={`${formatInteger(toolUseSuccessRequests)} 成功 / ${formatInteger(toolUseRequests)} 工作流`}
+        icon={Wrench}
+        tone="sky"
       />
       <SummaryMetric
         label="缓存 Token"
