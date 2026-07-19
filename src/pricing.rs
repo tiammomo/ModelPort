@@ -25,27 +25,39 @@ pub struct UsageCharge {
     pub cost_estimate: f64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPricing {
+    #[serde(alias = "input_per_million")]
     pub input_per_million: f64,
+    #[serde(alias = "output_per_million")]
     pub output_per_million: f64,
+    #[serde(alias = "cache_write_per_million")]
     pub cache_write_per_million: f64,
+    #[serde(alias = "cache_read_per_million")]
     pub cache_read_per_million: f64,
 }
 
-pub fn charge_for_model(model: &str, usage: TokenUsageBreakdown) -> UsageCharge {
+pub fn charge_for_model_with_pricing(
+    model: &str,
+    usage: TokenUsageBreakdown,
+    configured_pricing: Option<ModelPricing>,
+) -> UsageCharge {
     UsageCharge {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         cache_read_tokens: usage.cache_read_tokens,
-        cost_estimate: cost_for_model(model, usage),
+        cost_estimate: cost_for_model_with_pricing(model, usage, configured_pricing),
     }
 }
 
-pub fn cost_for_model(model: &str, usage: TokenUsageBreakdown) -> f64 {
-    let pricing = pricing_for_model(model);
+pub fn cost_for_model_with_pricing(
+    model: &str,
+    usage: TokenUsageBreakdown,
+    configured_pricing: Option<ModelPricing>,
+) -> f64 {
+    let pricing = configured_pricing.unwrap_or_else(|| pricing_for_model(model));
     cost_component(usage.input_tokens, pricing.input_per_million)
         + cost_component(usage.output_tokens, pricing.output_per_million)
         + cost_component(usage.cache_write_tokens, pricing.cache_write_per_million)
@@ -55,8 +67,9 @@ pub fn cost_for_model(model: &str, usage: TokenUsageBreakdown) -> f64 {
 pub fn usage_header_value(
     model: &str,
     usage: TokenUsageBreakdown,
+    configured_pricing: Option<ModelPricing>,
 ) -> Result<HeaderValue, AppError> {
-    let charge = charge_for_model(model, usage);
+    let charge = charge_for_model_with_pricing(model, usage, configured_pricing);
     HeaderValue::from_str(&serde_json::to_string(&charge)?)
         .map_err(|err| AppError::Config(format!("invalid usage header: {err}")))
 }
@@ -332,7 +345,7 @@ mod tests {
                 "completion_tokens": 1_000_000_u64
             }
         }));
-        let charge = charge_for_model("deepseek-v4-flash", usage);
+        let charge = charge_for_model_with_pricing("deepseek-v4-flash", usage, None);
 
         assert_eq!(charge.input_tokens, 1_000_000);
         assert_eq!(charge.cache_read_tokens, 1_000_000);
@@ -349,9 +362,29 @@ mod tests {
                 "output_tokens": 1_000_000_u64
             }
         }));
-        let charge = charge_for_model("claude-sonnet-4-20250514", usage);
+        let charge = charge_for_model_with_pricing("claude-sonnet-4-20250514", usage, None);
 
         assert!((charge.cost_estimate - 22.05).abs() < 0.000001);
+    }
+
+    #[test]
+    fn configured_pricing_overrides_the_model_family_default() {
+        let usage = TokenUsageBreakdown {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+        };
+        let pricing = ModelPricing {
+            input_per_million: 0.0,
+            output_per_million: 0.0,
+            cache_write_per_million: 0.0,
+            cache_read_per_million: 0.0,
+        };
+
+        let charge = charge_for_model_with_pricing("qwen3.5-9b-q5km", usage, Some(pricing));
+
+        assert_eq!(charge.cost_estimate, 0.0);
     }
 
     #[test]

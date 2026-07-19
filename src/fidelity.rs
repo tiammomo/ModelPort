@@ -140,6 +140,7 @@ fn audit_extra_fields(request: &AnthropicRequest, issues: &mut Vec<String>) {
     const SUPPORTED: &[&str] = &[
         "temperature",
         "top_p",
+        "top_k",
         "presence_penalty",
         "frequency_penalty",
         "seed",
@@ -159,7 +160,7 @@ fn audit_extra_fields(request: &AnthropicRequest, issues: &mut Vec<String>) {
             audit_block_keys(
                 tool,
                 &format!("tools[{index}]"),
-                &["name", "description", "input_schema"],
+                &["name", "description", "input_schema", "strict"],
                 issues,
             );
         }

@@ -435,6 +435,7 @@ pub fn router(state: AppState) -> Router {
         .route("/metrics", get(ops::metrics))
         .route("/v1/models", get(client_api::models))
         .route("/v1/messages", post(client_api::messages))
+        .route("/v1/messages/count_tokens", post(client_api::count_tokens))
         .route("/v1/chat/completions", post(client_api::chat_completions))
         .route(
             "/admin/auth/login",
@@ -475,6 +476,10 @@ pub fn router(state: AppState) -> Router {
             post(admin_providers::admin_provider_models)
                 .put(admin_providers::admin_upsert_provider_model)
                 .delete(admin_providers::admin_delete_provider_model),
+        )
+        .route(
+            "/admin/providers/{provider_id}/balance",
+            post(admin_providers::admin_provider_balance),
         )
         .route(
             "/admin/providers/{provider_id}/credentials",
@@ -1861,6 +1866,10 @@ fn provider_record_to_config(record: &ProviderOverrideRecord) -> Result<Provider
         buffer_stream_text: record.buffer_stream_text,
         fidelity_mode: parse_fidelity_mode(&record.fidelity_mode)?,
         tool_use: record.tool_use,
+        reasoning: Default::default(),
+        sampling: Default::default(),
+        token_counting: Default::default(),
+        pricing: record.pricing,
     })
 }
 
@@ -2115,7 +2124,10 @@ mod tests {
     use super::*;
     use crate::{
         auth::{AuthStore, CreateUserInput},
-        config::{FidelityMode, MaxTokensField, ProviderConfig},
+        config::{
+            FidelityMode, MaxTokensField, ProviderConfig, ReasoningConfig, ReasoningMode,
+            TokenCountingConfig, TokenCountingMode,
+        },
         control::CreateApiKeyInput,
         metrics::Metrics,
     };
@@ -2242,6 +2254,10 @@ mod tests {
                 ProviderProtocol::OpenaiCompat,
                 true,
             ),
+            reasoning: Default::default(),
+            sampling: Default::default(),
+            token_counting: Default::default(),
+            pricing: None,
         };
         let inactive = ProviderConfig {
             display_name: "DeepSeek".to_owned(),
@@ -2263,6 +2279,10 @@ mod tests {
                 ProviderProtocol::Anthropic,
                 false,
             ),
+            reasoning: Default::default(),
+            sampling: Default::default(),
+            token_counting: Default::default(),
+            pricing: None,
         };
         let config = AppConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -2291,8 +2311,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(ids.contains(&"mimo-v2.5-pro"));
+        assert!(ids.contains(&"mimo:mimo-v2.5-pro"));
         assert!(ids.contains(&"fast-chat"));
         assert!(!ids.contains(&"deepseek-v4-flash"));
+        assert!(!ids.contains(&"deepseek:deepseek-v4-flash"));
         assert!(!ids.contains(&"deepseek-route"));
     }
 
@@ -2318,6 +2340,10 @@ mod tests {
                 ProviderProtocol::OpenaiCompat,
                 true,
             ),
+            reasoning: Default::default(),
+            sampling: Default::default(),
+            token_counting: Default::default(),
+            pricing: None,
         };
         let config = AppConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -2340,6 +2366,26 @@ mod tests {
 
         assert_eq!(display_name("gpt-5.2"), "第三方 · OpenAI");
         assert_eq!(display_name("mimo-v2.5-pro"), "第三方 · 小米 MiMo");
+    }
+
+    #[test]
+    fn public_model_rows_recognize_deployment_specific_local_providers() {
+        let state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        let mut config = state.config.snapshot();
+        let mut provider = config.providers.remove("mimo").unwrap();
+        provider.display_name = "Qwen3.5-9B Q5_K_M（本地）".to_owned();
+        provider.base_url = "http://qwen-runtime:8080/v1".to_owned();
+        provider.default_model = "qwen3.5-9b-q5km".to_owned();
+        provider.models = vec![provider.default_model.clone()];
+        provider.model_prefixes.clear();
+        config.default_provider = "local_qwen".to_owned();
+        config.provider_order = vec!["local_qwen".to_owned()];
+        config.providers.insert("local_qwen".to_owned(), provider);
+
+        let rows = client_api::public_model_rows(&config);
+
+        assert_eq!(rows[0]["id"], "local_qwen:qwen3.5-9b-q5km");
+        assert_eq!(rows[0]["display_name"], "本地 · Qwen");
     }
 
     #[test]
@@ -4095,6 +4141,7 @@ data: [DONE]
                     ProviderProtocol::OpenaiCompat,
                     false,
                 ),
+                pricing: None,
                 created_at_ms: 0,
                 updated_at_ms: 0,
             })
@@ -4288,6 +4335,10 @@ data: [DONE]
                 ProviderProtocol::Anthropic,
                 false,
             ),
+            reasoning: Default::default(),
+            sampling: Default::default(),
+            token_counting: Default::default(),
+            pricing: None,
         };
 
         let err = discover_provider_models(&state, &provider)
@@ -4625,6 +4676,107 @@ data: {"type":"message_stop"}
         assert!(body.contains("presence_penalty cannot be preserved"));
     }
 
+    #[tokio::test]
+    async fn proxies_anthropic_count_tokens_to_openai_compatible_capability() {
+        let upstream = Router::new().route(
+            "/v1/messages/count_tokens",
+            post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                assert_eq!(headers["authorization"], "Bearer upstream-key");
+                assert_eq!(body["model"], "mimo-v2.5-pro");
+                assert_eq!(body["messages"][0]["content"], "你好，world");
+                assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+                Json(json!({"input_tokens": 13, "ignored": true}))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, upstream).await.unwrap();
+        });
+        let app = router(test_state(format!("http://{addr}/v1"), 1024 * 1024));
+
+        let (status, body) = post_count_tokens(
+            app,
+            json!({
+                "model": "mimo-v2.5-pro",
+                "thinking": {"type": "disabled"},
+                "messages": [{"role": "user", "content": "你好，world"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({"input_tokens": 13})
+        );
+    }
+
+    #[tokio::test]
+    async fn proxies_count_tokens_to_native_anthropic_capability() {
+        let upstream = Router::new().route(
+            "/v1/messages/count_tokens",
+            post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                assert_eq!(headers["x-api-key"], "upstream-key");
+                assert_eq!(headers["anthropic-version"], "2023-06-01");
+                assert_eq!(body["model"], "claude-sonnet-4-6");
+                Json(json!({"input_tokens": 9}))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, upstream).await.unwrap();
+        });
+        let app = router(test_anthropic_state(format!("http://{addr}"), 1024 * 1024));
+
+        let (status, body) = post_count_tokens(
+            app,
+            json!({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({"input_tokens": 9})
+        );
+    }
+
+    #[tokio::test]
+    async fn count_tokens_requires_explicit_provider_capability() {
+        let mut state = test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024);
+        let mut config = state.config.snapshot();
+        config.providers.get_mut("mimo").unwrap().token_counting = Default::default();
+        state.config = Arc::new(RuntimeConfig::new(config));
+
+        let (status, body) = post_count_tokens(
+            router(state),
+            json!({
+                "model": "mimo-v2.5-pro",
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("does not enable Anthropic token counting"));
+    }
+
+    #[tokio::test]
+    async fn count_tokens_reuses_anthropic_input_guardrails() {
+        let app = router(test_state("http://127.0.0.1:1/v1".to_owned(), 1024 * 1024));
+
+        let (status, body) =
+            post_count_tokens(app, json!({"model": "mimo-v2.5-pro", "messages": []})).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("messages must not be empty"));
+    }
+
     async fn post_message(app: Router, body: Value) -> (StatusCode, String) {
         post_message_with_key(app, CLIENT_TOKEN, body).await
     }
@@ -4635,6 +4787,20 @@ data: {"type":"message_stop"}
             "/v1/chat/completions",
             "authorization",
             &format!("Bearer {CLIENT_TOKEN}"),
+            body,
+        )
+        .await;
+        let status = response.status();
+        let body = response_body(response).await;
+        (status, body)
+    }
+
+    async fn post_count_tokens(app: Router, body: Value) -> (StatusCode, String) {
+        let response = post_json_response(
+            app,
+            "/v1/messages/count_tokens",
+            "x-api-key",
+            CLIENT_TOKEN,
             body,
         )
         .await;
@@ -4827,6 +4993,18 @@ data: {"type":"message_stop"}
                 ProviderProtocol::OpenaiCompat,
                 deduplicate_stream_text,
             ),
+            reasoning: ReasoningConfig {
+                mode: ReasoningMode::LlamaCpp,
+                default_budget_tokens: None,
+                model_budget_tokens: Default::default(),
+            },
+            sampling: Default::default(),
+            token_counting: TokenCountingConfig {
+                mode: TokenCountingMode::Anthropic,
+                context_tokens: None,
+                recommended_reasoning_input_tokens: None,
+            },
+            pricing: None,
         };
 
         AppState {
@@ -4874,6 +5052,14 @@ data: {"type":"message_stop"}
                 ProviderProtocol::Anthropic,
                 false,
             ),
+            reasoning: Default::default(),
+            sampling: Default::default(),
+            token_counting: TokenCountingConfig {
+                mode: TokenCountingMode::Anthropic,
+                context_tokens: None,
+                recommended_reasoning_input_tokens: None,
+            },
+            pricing: None,
         };
 
         AppState {

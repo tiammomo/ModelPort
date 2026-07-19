@@ -34,6 +34,7 @@ pub(super) struct ProviderWriteBody {
     buffer_stream_text: Option<bool>,
     fidelity_mode: Option<String>,
     tool_use: Option<ToolUseConfig>,
+    pricing: Option<crate::pricing::ModelPricing>,
     disabled: Option<bool>,
 }
 
@@ -257,6 +258,51 @@ pub(super) async fn admin_provider_models(
         "models": models,
         "modelCount": models.len(),
         "discoveredAt": tested_at.to_string(),
+    })))
+}
+
+pub(super) async fn admin_provider_balance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let actor = require_admin_write_user(&state, &headers)?;
+    if provider_id != "deepseek" {
+        return Err(AppError::InvalidRequest(
+            "online balance is currently supported only for the DeepSeek provider".to_owned(),
+        ));
+    }
+    let config = management_config(&state);
+    let provider = config
+        .providers
+        .get(&provider_id)
+        .ok_or_else(|| AppError::ProviderNotFound(provider_id.clone()))?;
+    let balance =
+        crate::providers::deepseek_account::fetch_balance(&state.transport, provider).await?;
+    record_admin_activity(
+        &state,
+        &actor,
+        "provider_balance_check",
+        format!("provider:{provider_id}"),
+        format!("查询供应商 {provider_id} 线上余额"),
+        if balance.is_available {
+            "info"
+        } else {
+            "warning"
+        },
+    );
+    Ok(Json(json!({
+        "providerId": provider_id,
+        "isAvailable": balance.is_available,
+        "balanceInfos": balance.balance_infos.into_iter().map(|info| json!({
+            "currency": info.currency,
+            "totalBalance": info.total_balance,
+            "grantedBalance": info.granted_balance,
+            "toppedUpBalance": info.topped_up_balance,
+        })).collect::<Vec<_>>(),
+        "checkedAt": now_millis_string(),
+        "managementScope": "read-monitor-alert",
+        "billingAuthority": "deepseek-console",
     })))
 }
 
@@ -646,6 +692,9 @@ fn provider_body_to_record(
         buffer_stream_text,
         fidelity_mode,
         tool_use,
+        pricing: body
+            .pricing
+            .or_else(|| current_provider.and_then(|provider| provider.pricing)),
         created_at_ms: 0,
         updated_at_ms: 0,
     })

@@ -1,5 +1,3 @@
-use crate::pricing::{self, TokenUsageBreakdown};
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UsageEstimate {
     pub input_tokens: u64,
@@ -28,8 +26,6 @@ pub(crate) trait UsageCostRecord {
     fn timestamp_ms(&self) -> u64;
     fn api_key_id(&self) -> Option<&str>;
     fn team_id(&self) -> Option<&str>;
-    fn resolved_model(&self) -> &str;
-    fn token_usage(&self) -> TokenUsageBreakdown;
     fn cost_estimate(&self) -> f64;
 }
 
@@ -63,18 +59,10 @@ pub(crate) fn usage_cost_for_team<T: UsageCostRecord>(
 }
 
 pub(crate) fn usage_record_cost(record: &impl UsageCostRecord) -> f64 {
-    let usage = record.token_usage();
-    let has_token_breakdown = usage
-        .input_tokens
-        .saturating_add(usage.output_tokens)
-        .saturating_add(usage.cache_write_tokens)
-        .saturating_add(usage.cache_read_tokens)
-        > 0;
-    if !has_token_breakdown {
-        return record.cost_estimate();
-    }
-
-    pricing::cost_for_model(record.resolved_model(), usage)
+    // The stored estimate is the rate snapshot applied when the request ran.
+    // Recomputing from the current catalog would silently rewrite history after
+    // a provider changes price or a local deployment sets an explicit zero rate.
+    record.cost_estimate()
 }
 
 pub(crate) fn current_period(period: &str, now: u64) -> (u64, u64) {
@@ -158,8 +146,6 @@ mod tests {
         timestamp_ms: u64,
         api_key_id: Option<String>,
         team_id: Option<String>,
-        resolved_model: String,
-        token_usage: TokenUsageBreakdown,
         cost_estimate: f64,
     }
 
@@ -174,14 +160,6 @@ mod tests {
 
         fn team_id(&self) -> Option<&str> {
             self.team_id.as_deref()
-        }
-
-        fn resolved_model(&self) -> &str {
-            &self.resolved_model
-        }
-
-        fn token_usage(&self) -> TokenUsageBreakdown {
-            self.token_usage
         }
 
         fn cost_estimate(&self) -> f64 {
@@ -230,25 +208,15 @@ mod tests {
     }
 
     #[test]
-    fn usage_record_cost_prefers_token_pricing_when_tokens_exist() {
+    fn usage_record_cost_preserves_the_recorded_price_snapshot() {
         let record = TestUsageRecord {
             timestamp_ms: 1,
             api_key_id: Some("key_a".to_owned()),
             team_id: Some("team_a".to_owned()),
-            resolved_model: "deepseek-v4-flash".to_owned(),
-            token_usage: TokenUsageBreakdown {
-                input_tokens: 1_000,
-                output_tokens: 2_000,
-                cache_write_tokens: 0,
-                cache_read_tokens: 0,
-            },
             cost_estimate: 999.0,
         };
 
-        assert_eq!(
-            usage_record_cost(&record),
-            pricing::cost_for_model("deepseek-v4-flash", record.token_usage)
-        );
+        assert_eq!(usage_record_cost(&record), 999.0);
     }
 
     #[test]
@@ -257,8 +225,6 @@ mod tests {
             timestamp_ms: 1,
             api_key_id: Some("key_a".to_owned()),
             team_id: Some("team_a".to_owned()),
-            resolved_model: "deepseek-v4-flash".to_owned(),
-            token_usage: TokenUsageBreakdown::default(),
             cost_estimate: 0.42,
         };
 
@@ -272,24 +238,18 @@ mod tests {
                 timestamp_ms: 100,
                 api_key_id: Some("key_a".to_owned()),
                 team_id: Some("team_a".to_owned()),
-                resolved_model: "unknown".to_owned(),
-                token_usage: TokenUsageBreakdown::default(),
                 cost_estimate: 1.0,
             },
             TestUsageRecord {
                 timestamp_ms: 200,
                 api_key_id: Some("key_a".to_owned()),
                 team_id: Some("team_b".to_owned()),
-                resolved_model: "unknown".to_owned(),
-                token_usage: TokenUsageBreakdown::default(),
                 cost_estimate: 2.0,
             },
             TestUsageRecord {
                 timestamp_ms: 300,
                 api_key_id: Some("key_b".to_owned()),
                 team_id: Some("team_a".to_owned()),
-                resolved_model: "unknown".to_owned(),
-                token_usage: TokenUsageBreakdown::default(),
                 cost_estimate: -10.0,
             },
         ];

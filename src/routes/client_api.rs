@@ -12,15 +12,15 @@ use serde_json::{Value, json};
 use tracing::{error, info};
 
 use crate::{
-    config::{AppConfig, ProviderConfig, ProviderProtocol, ResolvedProvider},
+    config::{AppConfig, ProviderConfig, ProviderProtocol, ResolvedProvider, TokenCountingMode},
     control::{UsageEstimate, UsageEventInput},
     domain::{AttemptId, RequestContext, RequestId},
     enterprise_ledger::{LedgerAttempt, LedgerLease, LedgerOutcome, LedgerRequest},
     exchange::{ClientRequest, ExchangeRequest, OpenAiChatRequest},
-    pricing::{self, TokenUsageBreakdown},
+    pricing::{self, ModelPricing, TokenUsageBreakdown},
     providers,
     stream_lifecycle::{StreamLifecycle, StreamTerminalOutcome, UpstreamStreamState},
-    types::{AnthropicRequest, validate_anthropic_tooling},
+    types::{AnthropicCountTokensRequest, AnthropicRequest, validate_anthropic_tooling},
 };
 
 use super::*;
@@ -62,9 +62,15 @@ pub(super) fn public_model_rows(config: &AppConfig) -> Vec<Value> {
         }
 
         for model in &provider.models {
-            if seen.insert(model.clone()) {
+            // Both forms are routable. Publish the provider-qualified ID first
+            // so clients can discover the stable, unambiguous contract they
+            // should persist, while retaining the legacy unqualified ID.
+            for public_id in [format!("{id}:{model}"), model.clone()] {
+                if !seen.insert(public_id.clone()) {
+                    continue;
+                }
                 models.push(json!({
-                    "id": model,
+                    "id": public_id,
                     "type": "model",
                     "display_name": public_model_display_name(id, provider, model),
                 }));
@@ -106,6 +112,7 @@ struct SentAttempt {
     protocol: String,
     credential_id: Option<String>,
     estimate: UsageEstimate,
+    pricing: Option<ModelPricing>,
     stream_lifecycle: StreamLifecycle,
     ledger_attempt: LedgerAttempt,
 }
@@ -196,10 +203,9 @@ fn provider_host(base_url: &str) -> String {
 }
 
 fn is_local_provider(provider_id: &str, host: &str) -> bool {
-    matches!(
-        provider_id,
-        "ollama" | "local_sglang" | "local_vllm" | "local_llamacpp"
-    ) || matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
+    provider_id.starts_with("local_")
+        || provider_id == "ollama"
+        || matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
 }
 
 fn official_provider_host(provider_id: &str, host: &str) -> bool {
@@ -228,6 +234,80 @@ pub(super) async fn messages(
     Json(request): Json<AnthropicRequest>,
 ) -> Result<Response, AppError> {
     handle_inference(state, peer_addr, headers, ClientRequest::Anthropic(request)).await
+}
+
+pub(super) async fn count_tokens(
+    State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<AnthropicCountTokensRequest>,
+) -> Result<Json<Value>, AppError> {
+    let started = Instant::now();
+    let result = count_tokens_inner(state.clone(), peer_addr, &headers, request).await;
+    state
+        .metrics
+        .record_route("count_tokens", result.is_ok(), started.elapsed());
+    result
+}
+
+async fn count_tokens_inner(
+    state: AppState,
+    peer_addr: SocketAddr,
+    headers: &HeaderMap,
+    request: AnthropicCountTokensRequest,
+) -> Result<Json<Value>, AppError> {
+    let identity = authenticate_client(&state, headers)?;
+    validate_count_tokens_request(&request)?;
+    let requested_model = request.model.clone();
+    let config = effective_config(&state);
+    let mut resolved = config.resolve(&requested_model)?;
+    if resolved.provider.token_counting.mode != TokenCountingMode::Anthropic {
+        return Err(AppError::InvalidRequest(format!(
+            "provider `{}` does not enable Anthropic token counting",
+            resolved.provider_id
+        )));
+    }
+
+    let request_client_ip = client_ip(headers, Some(peer_addr), &state.trusted_proxies);
+    state.rate_limiter.check(RateLimitScope {
+        identity: &identity,
+        client_ip: request_client_ip.as_deref(),
+        provider_id: None,
+        model: None,
+    })?;
+    state.control.check_quotas(
+        &identity,
+        UsageEstimate {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            cost_estimate: 0.0,
+        },
+        request_client_ip.as_deref(),
+        &requested_model,
+        &resolved.model,
+        &resolved.provider_id,
+    )?;
+    state
+        .control
+        .apply_selected_provider_credential_for_request(
+            &resolved.provider_id,
+            &mut resolved.provider,
+        )?;
+    crate::config::validate_provider_base_url_for_request(
+        &resolved.provider_id,
+        &resolved.provider.base_url,
+        state.security.allow_private_provider_urls,
+    )?;
+    if resolved.provider.api_key_required {
+        let _ = resolved.provider.api_key()?;
+    }
+    state
+        .rate_limiter
+        .check_provider_attempt(&resolved.provider_id, &resolved.model)?;
+
+    providers::token_counting::count_tokens(state, resolved, request, headers).await
 }
 
 pub(super) async fn chat_completions(
@@ -331,6 +411,12 @@ async fn handle_inference(
             .record_route(route_name, false, started.elapsed());
         return Err(err);
     }
+    if let Err(err) = enforce_context_admission(&state, &headers, &exchange, &resolved).await {
+        state
+            .metrics
+            .record_route(route_name, false, started.elapsed());
+        return Err(err);
+    }
     let stream = exchange.stream;
     let stream_permit = if stream {
         match state.stream_permits.clone().try_acquire_owned() {
@@ -408,7 +494,7 @@ async fn handle_inference(
                 continue;
             }
         };
-        let estimate = estimate_usage(&exchange, &upstream_model);
+        let estimate = estimate_usage(&exchange, &upstream_model, attempt.provider.pricing);
         if let Err(err) = state.control.check_quotas(
             &identity,
             estimate,
@@ -471,6 +557,7 @@ async fn handle_inference(
             protocol: protocol.clone(),
             credential_id: credential_id.clone(),
             estimate,
+            pricing: attempt.provider.pricing,
             stream_lifecycle: stream_lifecycle.clone(),
             ledger_attempt: ledger_attempt.clone(),
         });
@@ -558,6 +645,7 @@ async fn handle_inference(
         .as_ref()
         .map(|sent| sent.estimate)
         .unwrap_or_default();
+    let applied_pricing = last_sent.as_ref().and_then(|sent| sent.pricing);
     let actual_estimate = upstream_usage
         .map(|charge| UsageEstimate {
             input_tokens: charge.input_tokens,
@@ -572,6 +660,21 @@ async fn handle_inference(
     } else {
         "local-estimate"
     };
+    let tool_use_requested = exchange.uses_tools();
+    let terminal_reason = if success {
+        "completed"
+    } else if timed_out {
+        "timeout_before_response"
+    } else {
+        "failed_before_response"
+    };
+    let tool_outcome = classify_tool_outcome(
+        tool_use_requested,
+        success,
+        timed_out,
+        terminal_reason,
+        error_message.as_deref(),
+    );
 
     let usage = UsageEventInput {
         identity,
@@ -582,19 +685,15 @@ async fn handle_inference(
         provider: provider_id,
         protocol,
         client_protocol: request_context.protocol.as_str().to_owned(),
+        tool_use_requested,
+        tool_outcome,
         stream,
         success,
         timed_out,
         status_code,
-        terminal_reason: if success {
-            "completed"
-        } else if timed_out {
-            "timeout_before_response"
-        } else {
-            "failed_before_response"
-        }
-        .to_owned(),
+        terminal_reason: terminal_reason.to_owned(),
         estimate: actual_estimate,
+        model_pricing: applied_pricing,
         billing_mode: billing_mode.to_owned(),
         chargeable,
         latency: duration,
@@ -617,6 +716,7 @@ async fn handle_inference(
                 state,
                 usage,
                 credential_id: sent.credential_id,
+                pricing: sent.pricing,
                 lifecycle: sent.stream_lifecycle,
                 ledger_request,
                 ledger_attempt: sent.ledger_attempt,
@@ -659,6 +759,119 @@ async fn handle_inference(
     result
 }
 
+async fn enforce_context_admission(
+    state: &AppState,
+    headers: &HeaderMap,
+    exchange: &ExchangeRequest,
+    resolved: &ResolvedProvider,
+) -> Result<(), AppError> {
+    let admission = &resolved.provider.token_counting;
+    let Some(context_tokens) = admission.context_tokens else {
+        return Ok(());
+    };
+    let Some(count_request) = exchange.anthropic_count_tokens_request() else {
+        // OpenAI Chat Completions has no lossless Anthropic Count Tokens body.
+        // Keep this capability scoped to the Anthropic edge rather than using
+        // the local characters/4 estimate as a hard admission decision.
+        return Ok(());
+    };
+    if admission.mode != TokenCountingMode::Anthropic {
+        return Err(AppError::Config(format!(
+            "provider `{}` context admission requires exact Anthropic token counting",
+            resolved.provider_id
+        )));
+    }
+    let mut counting_provider = resolved.clone();
+    state
+        .control
+        .apply_selected_provider_credential_for_request(
+            &counting_provider.provider_id,
+            &mut counting_provider.provider,
+        )?;
+    crate::config::validate_provider_base_url_for_request(
+        &counting_provider.provider_id,
+        &counting_provider.provider.base_url,
+        state.security.allow_private_provider_urls,
+    )?;
+    if counting_provider.provider.api_key_required {
+        let _ = counting_provider.provider.api_key()?;
+    }
+    let input_tokens = providers::token_counting::input_tokens(
+        state.clone(),
+        counting_provider,
+        count_request,
+        headers,
+    )
+    .await?;
+    let output_tokens = exchange.estimated_output_tokens();
+    validate_context_budget(
+        input_tokens,
+        output_tokens,
+        context_tokens,
+        admission.recommended_reasoning_input_tokens,
+        exchange.thinking_disabled(),
+    )
+}
+
+fn validate_context_budget(
+    input_tokens: u64,
+    output_tokens: u64,
+    context_tokens: u64,
+    recommended_reasoning_input_tokens: Option<u64>,
+    thinking_disabled: bool,
+) -> Result<(), AppError> {
+    let requested_total = input_tokens.saturating_add(output_tokens);
+    if requested_total > context_tokens {
+        let excess = requested_total - context_tokens;
+        return Err(AppError::InvalidRequest(format!(
+            "context admission rejected request: input_tokens={input_tokens} + \
+             max_output_tokens={output_tokens} exceeds context_tokens={context_tokens}; \
+             reduce input or max_tokens by at least {excess} tokens; input is never silently truncated"
+        )));
+    }
+    if !thinking_disabled
+        && let Some(recommended) = recommended_reasoning_input_tokens
+        && input_tokens > recommended
+    {
+        let excess = input_tokens - recommended;
+        return Err(AppError::InvalidRequest(format!(
+            "reasoning context admission rejected request: input_tokens={input_tokens} exceeds \
+             recommended_reasoning_input_tokens={recommended}; reduce input by at least \
+             {excess} tokens or explicitly disable thinking for a non-reasoning task"
+        )));
+    }
+    Ok(())
+}
+
+fn classify_tool_outcome(
+    requested: bool,
+    success: bool,
+    timed_out: bool,
+    terminal_reason: &str,
+    error_message: Option<&str>,
+) -> String {
+    if !requested {
+        return "not_requested".to_owned();
+    }
+    if success {
+        return "completed".to_owned();
+    }
+    if terminal_reason == "downstream_cancelled" {
+        return "client_cancelled".to_owned();
+    }
+    if timed_out || terminal_reason.contains("timeout") {
+        return "timeout".to_owned();
+    }
+    let error = error_message.unwrap_or_default().to_ascii_lowercase();
+    if ["tool", "function", "input_json", "tool_use", "tool_result"]
+        .iter()
+        .any(|marker| error.contains(marker))
+    {
+        return "protocol_error".to_owned();
+    }
+    "upstream_or_delivery_error".to_owned()
+}
+
 fn usage_estimate_from_charge(charge: pricing::UsageCharge) -> UsageEstimate {
     UsageEstimate {
         input_tokens: charge.input_tokens,
@@ -695,6 +908,7 @@ struct StreamFinalizationContext {
     state: AppState,
     usage: UsageEventInput,
     credential_id: Option<String>,
+    pricing: Option<ModelPricing>,
     lifecycle: StreamLifecycle,
     ledger_request: LedgerRequest,
     ledger_attempt: LedgerAttempt,
@@ -707,7 +921,11 @@ impl StreamFinalizationContext {
     fn finalize(mut self, outcome: StreamTerminalOutcome) {
         let duration = self.started.elapsed();
         if let Some(usage) = self.lifecycle.usage() {
-            let charge = pricing::charge_for_model(&self.usage.resolved_model, usage);
+            let charge = pricing::charge_for_model_with_pricing(
+                &self.usage.resolved_model,
+                usage,
+                self.pricing,
+            );
             self.usage.estimate = UsageEstimate {
                 input_tokens: charge.input_tokens,
                 output_tokens: charge.output_tokens,
@@ -722,6 +940,13 @@ impl StreamFinalizationContext {
         self.usage.status_code = outcome.status_code();
         self.usage.terminal_reason = outcome.terminal_reason().to_owned();
         self.usage.error_message = outcome.error_message().map(str::to_owned);
+        self.usage.tool_outcome = classify_tool_outcome(
+            self.usage.tool_use_requested,
+            self.usage.success,
+            self.usage.timed_out,
+            &self.usage.terminal_reason,
+            self.usage.error_message.as_deref(),
+        );
         self.usage.latency = duration;
 
         self.state
@@ -1011,13 +1236,35 @@ fn is_retryable_message_error(error: Option<&AppError>) -> bool {
 }
 
 fn validate_message_request(request: &AnthropicRequest) -> Result<(), AppError> {
+    validate_anthropic_input(request)?;
+    let max_output_tokens = env_u64("MODELPORT_MAX_OUTPUT_TOKENS", 131_072);
+    let max_tokens = request
+        .max_tokens
+        .ok_or_else(|| AppError::InvalidRequest("max_tokens is required".to_owned()))?;
+    if max_tokens == 0 {
+        return Err(AppError::InvalidRequest(
+            "max_tokens must be greater than 0".to_owned(),
+        ));
+    }
+    if max_tokens > max_output_tokens {
+        return Err(AppError::InvalidRequest(format!(
+            "max_tokens exceeds configured limit; max={max_output_tokens}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_count_tokens_request(request: &AnthropicCountTokensRequest) -> Result<(), AppError> {
+    validate_anthropic_input(&request.as_message_request())
+}
+
+fn validate_anthropic_input(request: &AnthropicRequest) -> Result<(), AppError> {
     let max_model_name_chars = env_usize("MODELPORT_MAX_MODEL_NAME_CHARS", 240);
     let max_messages = env_usize("MODELPORT_MAX_MESSAGES", 200);
     let max_messages_json_chars = env_usize("MODELPORT_MAX_MESSAGES_JSON_CHARS", 2 * 1024 * 1024);
     let max_system_json_chars = env_usize("MODELPORT_MAX_SYSTEM_JSON_CHARS", 256 * 1024);
     let max_tools = env_usize("MODELPORT_MAX_TOOLS", 256);
     let max_tools_json_chars = env_usize("MODELPORT_MAX_TOOLS_JSON_CHARS", 1024 * 1024);
-    let max_output_tokens = env_u64("MODELPORT_MAX_OUTPUT_TOKENS", 131_072);
 
     if request.model.trim().is_empty() {
         return Err(AppError::InvalidRequest("model is required".to_owned()));
@@ -1036,20 +1283,6 @@ fn validate_message_request(request: &AnthropicRequest) -> Result<(), AppError> 
     if request.messages.len() > max_messages {
         return Err(AppError::InvalidRequest(format!(
             "too many messages; max={max_messages}"
-        )));
-    }
-
-    let max_tokens = request
-        .max_tokens
-        .ok_or_else(|| AppError::InvalidRequest("max_tokens is required".to_owned()))?;
-    if max_tokens == 0 {
-        return Err(AppError::InvalidRequest(
-            "max_tokens must be greater than 0".to_owned(),
-        ));
-    }
-    if max_tokens > max_output_tokens {
-        return Err(AppError::InvalidRequest(format!(
-            "max_tokens exceeds configured limit; max={max_output_tokens}"
         )));
     }
 
@@ -1189,7 +1422,11 @@ fn validate_openai_chat_request(request: &OpenAiChatRequest) -> Result<(), AppEr
     Ok(())
 }
 
-fn estimate_usage(request: &ExchangeRequest, resolved_model: &str) -> UsageEstimate {
+fn estimate_usage(
+    request: &ExchangeRequest,
+    resolved_model: &str,
+    configured_pricing: Option<ModelPricing>,
+) -> UsageEstimate {
     // Estimate the complete input payload, including tool schemas and flattened
     // protocol fields. The heuristic is conservative and the provider-reported
     // usage replaces it whenever a completed response exposes usage metadata.
@@ -1201,7 +1438,7 @@ fn estimate_usage(request: &ExchangeRequest, resolved_model: &str) -> UsageEstim
         output_tokens,
         cache_write_tokens: 0,
         cache_read_tokens: 0,
-        cost_estimate: pricing::cost_for_model(
+        cost_estimate: pricing::cost_for_model_with_pricing(
             resolved_model,
             TokenUsageBreakdown {
                 input_tokens,
@@ -1209,6 +1446,74 @@ fn estimate_usage(request: &ExchangeRequest, resolved_model: &str) -> UsageEstim
                 cache_write_tokens: 0,
                 cache_read_tokens: 0,
             },
+            configured_pricing,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_tool_outcome, validate_context_budget};
+
+    #[test]
+    fn context_budget_accepts_reasoning_within_recommended_limit() {
+        validate_context_budget(92_000, 32_768, 131_072, Some(94_208), false)
+            .expect("92K reasoning input should remain admissible");
+    }
+
+    #[test]
+    fn context_budget_rejects_hard_overflow_without_truncation() {
+        let error = validate_context_budget(120_000, 16_384, 131_072, Some(94_208), true)
+            .expect_err("hard context overflow must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("exceeds context_tokens=131072"));
+        assert!(message.contains("never silently truncated"));
+    }
+
+    #[test]
+    fn context_budget_requires_explicit_no_thinking_above_recommended_limit() {
+        let error = validate_context_budget(100_000, 8_192, 131_072, Some(94_208), false)
+            .expect_err("reasoning above the production input ceiling must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("recommended_reasoning_input_tokens=94208")
+        );
+        validate_context_budget(100_000, 8_192, 131_072, Some(94_208), true)
+            .expect("explicitly disabled thinking may use the remaining hard context");
+    }
+
+    #[test]
+    fn tool_outcome_distinguishes_lifecycle_and_protocol_failures() {
+        assert_eq!(
+            classify_tool_outcome(false, true, false, "completed", None),
+            "not_requested"
+        );
+        assert_eq!(
+            classify_tool_outcome(true, true, false, "completed", None),
+            "completed"
+        );
+        assert_eq!(
+            classify_tool_outcome(true, false, false, "downstream_cancelled", None),
+            "client_cancelled"
+        );
+        assert_eq!(
+            classify_tool_outcome(true, false, true, "upstream_timeout", None),
+            "timeout"
+        );
+        assert_eq!(
+            classify_tool_outcome(
+                true,
+                false,
+                false,
+                "upstream_protocol_error",
+                Some("tool_use input_json is invalid"),
+            ),
+            "protocol_error"
+        );
+        assert_eq!(
+            classify_tool_outcome(true, false, false, "upstream_error", Some("HTTP 502")),
+            "upstream_or_delivery_error"
+        );
     }
 }

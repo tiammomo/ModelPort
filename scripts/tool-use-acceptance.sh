@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 mode="mock"
 timeout_secs=60
+max_tokens="${MODELPORT_TOOL_USE_MAX_TOKENS:-128}"
 
 usage() {
   cat <<'USAGE'
@@ -19,6 +20,8 @@ Options:
   --mock               Use local mock upstream. Default.
   --upstream           Use the configured default provider and make real upstream Tool Use calls.
   --timeout SECONDS    Per-request timeout. Default: 60.
+  --max-tokens N       Output-token budget for real Tool Use calls. Default: 128.
+                       Increase this for reasoning models that think before answering.
   -h, --help           Show this help.
 
 Required in --mock mode:
@@ -44,6 +47,13 @@ while [[ "$#" -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --max-tokens)
+      max_tokens="${2:-}"
+      if [[ -z "$max_tokens" || ! "$max_tokens" =~ ^[0-9]+$ || "$max_tokens" -lt 1 ]]; then
+        die "--max-tokens requires a positive integer"
+      fi
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -53,6 +63,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$max_tokens" || ! "$max_tokens" =~ ^[0-9]+$ || "$max_tokens" -lt 1 ]]; then
+  die "MODELPORT_TOOL_USE_MAX_TOKENS must be a positive integer"
+fi
 
 load_env
 
@@ -155,9 +169,11 @@ message_request() {
   node -e '
     const model = process.argv[1];
     const stream = process.argv[2] === "true";
+    const maxTokens = Number(process.argv[3]);
     process.stdout.write(JSON.stringify({
       model,
-      max_tokens: 128,
+      max_tokens: maxTokens,
+      temperature: 0,
       stream,
       tools: [{
         name: "read_file",
@@ -180,16 +196,18 @@ message_request() {
         content: "Use read_file on Cargo.toml."
       }]
     }));
-  ' "$model" "$stream"
+  ' "$model" "$stream" "$max_tokens"
 }
 
 tool_result_request() {
   local model="$1"
   node -e '
     const model = process.argv[1];
+    const maxTokens = Number(process.argv[2]);
     process.stdout.write(JSON.stringify({
       model,
-      max_tokens: 128,
+      max_tokens: maxTokens,
+      temperature: 0,
       messages: [
         {
           role: "assistant",
@@ -214,7 +232,7 @@ tool_result_request() {
         }
       ]
     }));
-  ' "$model"
+  ' "$model" "$max_tokens"
 }
 
 invalid_tool_choice_request() {
@@ -261,6 +279,24 @@ duplicate_tool_result_request() {
       ]
     }));
   ' "$model"
+}
+
+strict_response_guard_request() {
+  local model="$1"
+  local tool_name="$2"
+  local prompt="$3"
+  node -e '
+    process.stdout.write(JSON.stringify({
+      model: process.argv[1],
+      max_tokens: 64,
+      tools: [{
+        name: process.argv[2],
+        input_schema: { type: "object" }
+      }],
+      tool_choice: { type: "tool", name: process.argv[2] },
+      messages: [{ role: "user", content: process.argv[3] }]
+    }));
+  ' "$model" "$tool_name" "$prompt"
 }
 
 post_message() {
@@ -314,7 +350,7 @@ assert_tool_stream() {
     const fs = require("fs");
     const raw = fs.readFileSync(process.argv[1], "utf8");
     let sawToolStart = false;
-    let sawJsonDelta = false;
+    let inputJson = "";
     let sawStopReason = false;
     let currentEvent = "";
     for (const line of raw.split(/\r?\n/)) {
@@ -330,8 +366,8 @@ assert_tool_stream() {
       if (currentEvent === "content_block_start" && parsed?.content_block?.type === "tool_use" && parsed.content_block.name === "read_file") {
         sawToolStart = true;
       }
-      if (currentEvent === "content_block_delta" && parsed?.delta?.type === "input_json_delta" && String(parsed.delta.partial_json || "").includes("Cargo.toml")) {
-        sawJsonDelta = true;
+      if (currentEvent === "content_block_delta" && parsed?.delta?.type === "input_json_delta") {
+        inputJson += String(parsed.delta.partial_json || "");
       }
       if (currentEvent === "message_delta" && parsed?.delta?.stop_reason === "tool_use") {
         sawStopReason = true;
@@ -341,8 +377,19 @@ assert_tool_stream() {
       console.error("missing streaming tool_use start");
       process.exit(1);
     }
-    if (!sawJsonDelta) {
+    if (!inputJson) {
       console.error("missing streaming input_json_delta");
+      process.exit(1);
+    }
+    let input;
+    try {
+      input = JSON.parse(inputJson);
+    } catch (error) {
+      console.error(`streaming input_json_delta did not form valid JSON: ${inputJson}`);
+      process.exit(1);
+    }
+    if (input?.path !== "Cargo.toml") {
+      console.error(`unexpected streaming tool input: ${JSON.stringify(input)}`);
       process.exit(1);
     }
     if (!sawStopReason) {
@@ -424,6 +471,7 @@ const server = http.createServer(async (req, res) => {
   fs.appendFileSync(logFile, `${raw}\n`, "utf8");
   const body = JSON.parse(raw || "{}");
   const lastMessage = [...(body.messages || [])].reverse().find((message) => message.role !== "system");
+  const lastText = typeof lastMessage?.content === "string" ? lastMessage.content : "";
 
   if (body.stream) {
     res.writeHead(200, {
@@ -449,6 +497,25 @@ const server = http.createServer(async (req, res) => {
         }
       }],
       usage: { prompt_tokens: 8, completion_tokens: 3 }
+    });
+    return;
+  }
+
+  if (lastText.includes("MODELPORT_INVALID_ARGUMENTS_FIXTURE")) {
+    writeJson(res, {
+      id: "chatcmpl_invalid_arguments_fixture",
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call_invalid_arguments",
+            type: "function",
+            function: { name: "read_file", arguments: "[]" }
+          }]
+        }
+      }]
     });
     return;
   }
@@ -546,7 +613,8 @@ create_mock_provider() {
           supported: true,
           toolChoice: true,
           parallelToolCalls: true,
-          streamingArguments: "delta"
+          streamingArguments: "best_effort",
+          responseValidation: "strict"
         },
         disabled: false
       }));
@@ -607,6 +675,28 @@ run_tool_use_roundtrip() {
   ok "Anthropic tool_result converted to OpenAI role=tool"
 }
 
+run_strict_response_rejections() {
+  local status
+
+  status="$(post_message "$(strict_response_guard_request "$test_model" "safe_tool" "call safe_tool")")"
+  expect_status "$status" "502" "strict undeclared upstream tool rejection"
+  if ! grep -q 'undeclared tool `read_file`' "$body_file"; then
+    printf '[fail] strict response error did not identify the undeclared tool\n' >&2
+    sed -n '1,120p' "$body_file" >&2 || true
+    exit 1
+  fi
+  ok "strict response validation blocks undeclared upstream tool names"
+
+  status="$(post_message "$(strict_response_guard_request "$test_model" "read_file" "MODELPORT_INVALID_ARGUMENTS_FIXTURE")")"
+  expect_status "$status" "502" "strict non-object upstream arguments rejection"
+  if ! grep -q 'must be a JSON object' "$body_file"; then
+    printf '[fail] strict response error did not identify non-object arguments\n' >&2
+    sed -n '1,120p' "$body_file" >&2 || true
+    exit 1
+  fi
+  ok "strict response validation blocks non-object upstream arguments"
+}
+
 if [[ "$mode" == "mock" ]]; then
   start_mock_upstream
   login_admin
@@ -623,6 +713,7 @@ run_validation_rejections
 run_tool_use_roundtrip
 
 if [[ "$mode" == "mock" ]]; then
+  run_strict_response_rejections
   assert_mock_received_parallel_false
 fi
 

@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
+use crate::{error::AppError, pricing::ModelPricing};
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 64;
@@ -49,6 +49,10 @@ pub struct ProviderConfig {
     pub buffer_stream_text: bool,
     pub fidelity_mode: FidelityMode,
     pub tool_use: ToolUseConfig,
+    pub reasoning: ReasoningConfig,
+    pub sampling: SamplingConfig,
+    pub token_counting: TokenCountingConfig,
+    pub pricing: Option<ModelPricing>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -76,12 +80,79 @@ pub enum FidelityMode {
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ReasoningMode {
+    #[default]
+    None,
+    LlamaCpp,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReasoningConfig {
+    #[serde(default)]
+    pub mode: ReasoningMode,
+    pub default_budget_tokens: Option<u64>,
+    #[serde(default)]
+    pub model_budget_tokens: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SamplingMode {
+    #[default]
+    None,
+    LlamaCpp,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct SamplingProfile {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u64>,
+    pub min_p: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    pub repeat_penalty: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct SamplingConfig {
+    #[serde(default)]
+    pub mode: SamplingMode,
+    #[serde(default)]
+    pub profiles: HashMap<String, SamplingProfile>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenCountingMode {
+    #[default]
+    None,
+    Anthropic,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TokenCountingConfig {
+    #[serde(default)]
+    pub mode: TokenCountingMode,
+    pub context_tokens: Option<u64>,
+    pub recommended_reasoning_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolArgumentMode {
     Native,
     #[default]
     Delta,
     Cumulative,
     BestEffort,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResponseValidation {
+    #[default]
+    BestEffort,
+    Strict,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -95,6 +166,8 @@ pub struct ToolUseConfig {
     pub parallel_tool_calls: bool,
     #[serde(default, alias = "streaming_arguments")]
     pub streaming_arguments: ToolArgumentMode,
+    #[serde(default, alias = "response_validation")]
+    pub response_validation: ToolResponseValidation,
 }
 
 impl Default for ToolUseConfig {
@@ -104,6 +177,7 @@ impl Default for ToolUseConfig {
             tool_choice: true,
             parallel_tool_calls: true,
             streaming_arguments: ToolArgumentMode::Delta,
+            response_validation: ToolResponseValidation::BestEffort,
         }
     }
 }
@@ -163,6 +237,10 @@ impl fmt::Debug for ProviderConfig {
             .field("buffer_stream_text", &self.buffer_stream_text)
             .field("fidelity_mode", &self.fidelity_mode)
             .field("tool_use", &self.tool_use)
+            .field("reasoning", &self.reasoning)
+            .field("sampling", &self.sampling)
+            .field("token_counting", &self.token_counting)
+            .field("pricing", &self.pricing)
             .finish()
     }
 }
@@ -246,6 +324,10 @@ struct ProviderSection {
     buffer_stream_text: Option<bool>,
     fidelity_mode: Option<FidelityMode>,
     tool_use: Option<ToolUseConfig>,
+    reasoning: Option<ReasoningConfig>,
+    sampling: Option<SamplingConfig>,
+    token_counting: Option<TokenCountingConfig>,
+    pricing: Option<ModelPricing>,
 }
 
 struct ProviderSpec {
@@ -735,6 +817,10 @@ impl AppConfig {
                         default_fidelity_mode(&id, deduplicate_stream_text, buffer_stream_text)
                     }),
                     tool_use,
+                    reasoning: section.reasoning.unwrap_or_default(),
+                    sampling: section.sampling.unwrap_or_default(),
+                    token_counting: section.token_counting.unwrap_or_default(),
+                    pricing: section.pricing,
                 },
             );
         }
@@ -1392,6 +1478,10 @@ fn insert_spec(
                 buffer_stream_text,
             ),
             tool_use: default_tool_use_config(spec.id, spec.protocol, spec.deduplicate_stream_text),
+            reasoning: ReasoningConfig::default(),
+            sampling: SamplingConfig::default(),
+            token_counting: TokenCountingConfig::default(),
+            pricing: None,
         },
     );
 }
@@ -1437,6 +1527,7 @@ fn default_tool_use_config(
         tool_choice: true,
         parallel_tool_calls: !is_single_tool_runtime(provider_id),
         streaming_arguments,
+        response_validation: ToolResponseValidation::BestEffort,
     }
 }
 
@@ -1977,6 +2068,136 @@ fn validate_provider(
             "provider `{id}` uses Anthropic protocol; tool_use.streaming_arguments is normally native"
         )));
     }
+
+    if provider.reasoning.mode == ReasoningMode::LlamaCpp
+        && provider.protocol != ProviderProtocol::OpenaiCompat
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` reasoning.mode=llama_cpp requires protocol=openai-compat"
+        )));
+    }
+    if provider.reasoning.mode == ReasoningMode::None
+        && (provider.reasoning.default_budget_tokens.is_some()
+            || !provider.reasoning.model_budget_tokens.is_empty())
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` reasoning budgets require a non-none reasoning.mode"
+        )));
+    }
+    if provider.reasoning.default_budget_tokens == Some(0) {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` reasoning.default_budget_tokens must be positive"
+        )));
+    }
+    for (model, budget) in &provider.reasoning.model_budget_tokens {
+        if model.trim().is_empty() || *budget == 0 {
+            issues.push(ConfigIssue::error(format!(
+                "provider `{id}` reasoning.model_budget_tokens requires non-empty model names and positive budgets"
+            )));
+        }
+    }
+
+    if provider.sampling.mode == SamplingMode::LlamaCpp
+        && provider.protocol != ProviderProtocol::OpenaiCompat
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` sampling.mode=llama_cpp requires protocol=openai-compat"
+        )));
+    }
+    if provider.sampling.mode == SamplingMode::None && !provider.sampling.profiles.is_empty() {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` sampling profiles require a non-none sampling.mode"
+        )));
+    }
+    for (model, profile) in &provider.sampling.profiles {
+        if model.trim().is_empty() {
+            issues.push(ConfigIssue::error(format!(
+                "provider `{id}` sampling.profiles requires non-empty model names"
+            )));
+        }
+        if profile
+            .temperature
+            .is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
+        {
+            issues.push(ConfigIssue::error(format!(
+                "provider `{id}` sampling profile `{model}` temperature must be between 0 and 2"
+            )));
+        }
+        for (field, value) in [("top_p", profile.top_p), ("min_p", profile.min_p)] {
+            if value.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+                issues.push(ConfigIssue::error(format!(
+                    "provider `{id}` sampling profile `{model}` {field} must be between 0 and 1"
+                )));
+            }
+        }
+        if profile.top_k == Some(0) {
+            issues.push(ConfigIssue::error(format!(
+                "provider `{id}` sampling profile `{model}` top_k must be positive"
+            )));
+        }
+        if profile
+            .presence_penalty
+            .is_some_and(|value| !value.is_finite() || !(-2.0..=2.0).contains(&value))
+        {
+            issues.push(ConfigIssue::error(format!(
+                "provider `{id}` sampling profile `{model}` presence_penalty must be between -2 and 2"
+            )));
+        }
+        if profile
+            .repeat_penalty
+            .is_some_and(|value| !value.is_finite() || value <= 0.0)
+        {
+            issues.push(ConfigIssue::error(format!(
+                "provider `{id}` sampling profile `{model}` repeat_penalty must be positive"
+            )));
+        }
+    }
+
+    if provider.token_counting.mode == TokenCountingMode::None
+        && (provider.token_counting.context_tokens.is_some()
+            || provider
+                .token_counting
+                .recommended_reasoning_input_tokens
+                .is_some())
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` context admission requires token_counting.mode=anthropic"
+        )));
+    }
+    if provider.token_counting.context_tokens == Some(0) {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` token_counting.context_tokens must be positive"
+        )));
+    }
+    if provider.token_counting.recommended_reasoning_input_tokens == Some(0) {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` token_counting.recommended_reasoning_input_tokens must be positive"
+        )));
+    }
+    if let (Some(recommended), Some(context)) = (
+        provider.token_counting.recommended_reasoning_input_tokens,
+        provider.token_counting.context_tokens,
+    ) && recommended > context
+    {
+        issues.push(ConfigIssue::error(format!(
+            "provider `{id}` recommended reasoning input cannot exceed context_tokens"
+        )));
+    }
+
+    if let Some(pricing) = provider.pricing {
+        for (field, value) in [
+            ("input_per_million", pricing.input_per_million),
+            ("output_per_million", pricing.output_per_million),
+            ("cache_write_per_million", pricing.cache_write_per_million),
+            ("cache_read_per_million", pricing.cache_read_per_million),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                issues.push(ConfigIssue::error(format!(
+                    "provider `{id}` pricing.{field} must be a finite non-negative number"
+                )));
+            }
+        }
+    }
 }
 
 fn validate_provider_base_url_policy(
@@ -2191,6 +2412,10 @@ mod tests {
                 ProviderProtocol::OpenaiCompat,
                 true,
             ),
+            reasoning: ReasoningConfig::default(),
+            sampling: SamplingConfig::default(),
+            token_counting: TokenCountingConfig::default(),
+            pricing: None,
         };
         let openrouter = ProviderConfig {
             display_name: "OpenRouter".to_owned(),
@@ -2212,6 +2437,10 @@ mod tests {
                 ProviderProtocol::OpenaiCompat,
                 false,
             ),
+            reasoning: ReasoningConfig::default(),
+            sampling: SamplingConfig::default(),
+            token_counting: TokenCountingConfig::default(),
+            pricing: None,
         };
 
         AppConfig {
@@ -2274,6 +2503,33 @@ mod tests {
             [providers.local_vllm.tool_use]
             parallel_tool_calls = false
             streaming_arguments = "best_effort"
+
+            [providers.local_vllm.reasoning]
+            mode = "llama_cpp"
+            default_budget_tokens = 4096
+            model_budget_tokens = { "qwen-fast" = 512, "qwen-deep" = 16384 }
+
+            [providers.local_vllm.sampling]
+            mode = "llama_cpp"
+
+            [providers.local_vllm.sampling.profiles."qwen-fast"]
+            temperature = 0.7
+            top_p = 0.8
+            top_k = 20
+            min_p = 0.0
+            presence_penalty = 1.5
+            repeat_penalty = 1.0
+
+            [providers.local_vllm.token_counting]
+            mode = "anthropic"
+            context_tokens = 131072
+            recommended_reasoning_input_tokens = 94208
+
+            [providers.local_vllm.pricing]
+            input_per_million = 0
+            output_per_million = 0
+            cache_write_per_million = 0
+            cache_read_per_million = 0
             "#,
         )
         .unwrap();
@@ -2293,12 +2549,58 @@ mod tests {
         assert_eq!(provider.max_tokens_field, Some(MaxTokensField::MaxTokens));
         assert_eq!(provider.fidelity_mode, Some(FidelityMode::Strict));
         assert_eq!(
+            provider.token_counting,
+            Some(TokenCountingConfig {
+                mode: TokenCountingMode::Anthropic,
+                context_tokens: Some(131072),
+                recommended_reasoning_input_tokens: Some(94208),
+            })
+        );
+        assert_eq!(
+            provider.reasoning,
+            Some(ReasoningConfig {
+                mode: ReasoningMode::LlamaCpp,
+                default_budget_tokens: Some(4096),
+                model_budget_tokens: HashMap::from([
+                    ("qwen-fast".to_owned(), 512),
+                    ("qwen-deep".to_owned(), 16384),
+                ]),
+            })
+        );
+        assert_eq!(
+            provider.sampling,
+            Some(SamplingConfig {
+                mode: SamplingMode::LlamaCpp,
+                profiles: HashMap::from([(
+                    "qwen-fast".to_owned(),
+                    SamplingProfile {
+                        temperature: Some(0.7),
+                        top_p: Some(0.8),
+                        top_k: Some(20),
+                        min_p: Some(0.0),
+                        presence_penalty: Some(1.5),
+                        repeat_penalty: Some(1.0),
+                    },
+                )]),
+            })
+        );
+        assert_eq!(
+            provider.pricing,
+            Some(ModelPricing {
+                input_per_million: 0.0,
+                output_per_million: 0.0,
+                cache_write_per_million: 0.0,
+                cache_read_per_million: 0.0,
+            })
+        );
+        assert_eq!(
             provider.tool_use,
             Some(ToolUseConfig {
                 supported: true,
                 tool_choice: true,
                 parallel_tool_calls: false,
                 streaming_arguments: ToolArgumentMode::BestEffort,
+                response_validation: ToolResponseValidation::BestEffort,
             })
         );
     }
@@ -2490,6 +2792,31 @@ mod tests {
                 .all(|issue| issue.severity != ConfigIssueSeverity::Error),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_sampling_profile() {
+        let mut config = test_config();
+        config.auth_token = Some("long-local-client-token".to_owned());
+        config.providers.get_mut("mimo").unwrap().sampling = SamplingConfig {
+            mode: SamplingMode::LlamaCpp,
+            profiles: HashMap::from([(
+                "bad-profile".to_owned(),
+                SamplingProfile {
+                    temperature: Some(3.0),
+                    ..Default::default()
+                },
+            )]),
+        };
+
+        let issues = config.validation_issues();
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == ConfigIssueSeverity::Error
+                && issue
+                    .message
+                    .contains("temperature must be between 0 and 2")
+        }));
     }
 
     #[test]

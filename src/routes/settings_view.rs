@@ -242,6 +242,10 @@ mod tests {
             buffer_stream_text: false,
             fidelity_mode: FidelityMode::BestEffort,
             tool_use: Default::default(),
+            reasoning: Default::default(),
+            sampling: Default::default(),
+            token_counting: Default::default(),
+            pricing: None,
         };
         AppConfig {
             bind_addr: "127.0.0.1:17878".parse().unwrap(),

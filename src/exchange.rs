@@ -10,7 +10,10 @@ use crate::{
     error::AppError,
     pricing::{self, TokenUsageBreakdown},
     tool_use::validate_anthropic_tool_capabilities,
-    types::{AnthropicRequest, anthropic_request_value, anthropic_to_openai_request},
+    types::{
+        AnthropicCountTokensRequest, AnthropicRequest, anthropic_request_value,
+        anthropic_to_openai_request,
+    },
 };
 
 const DEFAULT_OPENAI_MAX_OUTPUT_TOKENS: u64 = 4_096;
@@ -156,6 +159,7 @@ impl ExchangeRequest {
                     key.as_str(),
                     "temperature"
                         | "top_p"
+                        | "top_k"
                         | "presence_penalty"
                         | "frequency_penalty"
                         | "seed"
@@ -270,6 +274,31 @@ impl ExchangeRequest {
 
     pub(crate) fn request_path(&self) -> &'static str {
         self.source.request_path()
+    }
+
+    pub(crate) fn anthropic_count_tokens_request(&self) -> Option<AnthropicCountTokensRequest> {
+        let ClientRequest::Anthropic(request) = &self.source else {
+            return None;
+        };
+        Some(AnthropicCountTokensRequest {
+            model: request.model.clone(),
+            messages: request.messages.clone(),
+            system: request.system.clone(),
+            extra: request.extra.clone(),
+        })
+    }
+
+    pub(crate) fn thinking_disabled(&self) -> bool {
+        let ClientRequest::Anthropic(request) = &self.source else {
+            return false;
+        };
+        request
+            .extra
+            .get("thinking")
+            .and_then(Value::as_object)
+            .and_then(|thinking| thinking.get("type"))
+            .and_then(Value::as_str)
+            == Some("disabled")
     }
 
     pub(crate) fn estimated_output_tokens(&self) -> u64 {
@@ -387,7 +416,7 @@ impl ExchangeRequest {
         Ok(())
     }
 
-    fn uses_tools(&self) -> bool {
+    pub(crate) fn uses_tools(&self) -> bool {
         !self.tools.is_empty()
             || self.tool_choice.is_some()
             || self.messages.iter().any(|message| {
@@ -541,7 +570,7 @@ impl ExchangeRequest {
                 Value::String(system_parts.join("\n\n")),
             );
         }
-        for key in ["temperature", "top_p"] {
+        for key in ["temperature", "top_p", "top_k"] {
             if let Some(value) = self.parameters.get(key).filter(|value| !value.is_null()) {
                 body.insert(key.to_owned(), value.clone());
             }

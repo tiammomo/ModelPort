@@ -297,6 +297,8 @@ pub struct ProviderOverrideRecord {
     pub fidelity_mode: String,
     #[serde(default)]
     pub tool_use: ToolUseConfig,
+    #[serde(default)]
+    pub pricing: Option<pricing::ModelPricing>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -819,6 +821,10 @@ struct UsageRecord {
     protocol: String,
     #[serde(default = "default_client_protocol")]
     client_protocol: String,
+    #[serde(default)]
+    tool_use_requested: bool,
+    #[serde(default = "default_tool_outcome")]
+    tool_outcome: String,
     stream: bool,
     status: String,
     status_code: u16,
@@ -831,6 +837,8 @@ struct UsageRecord {
     #[serde(default)]
     cache_read_tokens: u64,
     cost_estimate: f64,
+    #[serde(default)]
+    model_pricing: Option<pricing::ModelPricing>,
     #[serde(default = "default_billing_mode")]
     billing_mode: String,
     latency_ms: u64,
@@ -858,19 +866,6 @@ impl UsageCostRecord for UsageRecord {
 
     fn team_id(&self) -> Option<&str> {
         self.team_id.as_deref()
-    }
-
-    fn resolved_model(&self) -> &str {
-        &self.resolved_model
-    }
-
-    fn token_usage(&self) -> pricing::TokenUsageBreakdown {
-        pricing::TokenUsageBreakdown {
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cache_write_tokens: self.cache_write_tokens,
-            cache_read_tokens: self.cache_read_tokens,
-        }
     }
 
     fn cost_estimate(&self) -> f64 {
@@ -1045,12 +1040,18 @@ pub struct UsageEventInput {
     pub provider: String,
     pub protocol: String,
     pub client_protocol: String,
+    /// Whether the request declares tools, selects a tool, or continues an
+    /// existing tool call/result exchange. No tool arguments are persisted.
+    pub tool_use_requested: bool,
+    /// Aggregate-only Tool Use outcome. Never contains tool names or arguments.
+    pub tool_outcome: String,
     pub stream: bool,
     pub success: bool,
     pub timed_out: bool,
     pub status_code: u16,
     pub terminal_reason: String,
     pub estimate: UsageEstimate,
+    pub model_pricing: Option<pricing::ModelPricing>,
     pub billing_mode: String,
     /// Whether this request reached an upstream provider and can therefore
     /// consume quota or spend. Locally rejected requests are still logged,
@@ -2609,6 +2610,8 @@ impl ControlStore {
             provider: input.provider,
             protocol: input.protocol,
             client_protocol: input.client_protocol,
+            tool_use_requested: input.tool_use_requested,
+            tool_outcome: input.tool_outcome,
             stream: input.stream,
             status: usage_status(input.success, input.timed_out).to_owned(),
             status_code: input.status_code,
@@ -2618,6 +2621,7 @@ impl ControlStore {
             cache_write_tokens: input.estimate.cache_write_tokens,
             cache_read_tokens: input.estimate.cache_read_tokens,
             cost_estimate: input.estimate.cost_estimate,
+            model_pricing: input.model_pricing,
             billing_mode: input.billing_mode,
             latency_ms: duration_ms(input.latency),
             first_byte_latency_ms: input.first_byte_latency.map(duration_ms),
@@ -2650,7 +2654,9 @@ impl ControlStore {
             .iter()
             .rev()
             .map(|record| {
-                let pricing = pricing::pricing_for_model(&record.resolved_model);
+                let pricing = record
+                    .model_pricing
+                    .unwrap_or_else(|| pricing::pricing_for_model(&record.resolved_model));
                 let cost_estimate = usage_record_cost(record);
                 let input_cost =
                     pricing::cost_component(record.input_tokens, pricing.input_per_million);
@@ -2683,6 +2689,12 @@ impl ControlStore {
                     .request_path
                     .clone()
                     .unwrap_or_else(|| "/v1/messages".to_owned());
+                let tool_outcome =
+                    if record.tool_use_requested && record.tool_outcome == "not_requested" {
+                        "unknown_legacy"
+                    } else {
+                        record.tool_outcome.as_str()
+                    };
                 json!({
                     "id": record.id,
                     "requestId": record.request_id,
@@ -2704,6 +2716,8 @@ impl ControlStore {
                     "provider": record.provider,
                     "protocol": record.protocol,
                     "clientProtocol": record.client_protocol,
+                    "toolUseRequested": record.tool_use_requested,
+                    "toolOutcome": tool_outcome,
                     "requestType": if record.status == "success" { "consume" } else { "error" },
                     "stream": if record.stream { "stream" } else { "non-stream" },
                     "status": record.status,
@@ -3481,6 +3495,10 @@ fn default_terminal_reason() -> String {
     "legacy_record".to_owned()
 }
 
+fn default_tool_outcome() -> String {
+    "unknown_legacy".to_owned()
+}
+
 fn reset_expired_quotas_locked(inner: &mut ControlInner, now: u64) {
     for quota in inner.quotas.values_mut() {
         if quota.reset_at_ms > now {
@@ -3647,6 +3665,7 @@ mod tests {
             buffer_stream_text: false,
             fidelity_mode: "strict".to_owned(),
             tool_use: ToolUseConfig::default(),
+            pricing: None,
             created_at_ms: 0,
             updated_at_ms: 0,
         }
@@ -3863,6 +3882,8 @@ mod tests {
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 client_protocol: "anthropic-messages".to_owned(),
+                tool_use_requested: false,
+                tool_outcome: "not_requested".to_owned(),
                 stream: false,
                 success: false,
                 timed_out: false,
@@ -3874,6 +3895,7 @@ mod tests {
                     cost_estimate: 10.0,
                     ..UsageEstimate::default()
                 },
+                model_pricing: None,
                 billing_mode: "local-estimate".to_owned(),
                 chargeable: false,
                 latency: Duration::from_millis(1),
@@ -3907,12 +3929,15 @@ mod tests {
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 client_protocol: "anthropic-messages".to_owned(),
+                tool_use_requested: true,
+                tool_outcome: "completed".to_owned(),
                 stream: false,
                 success: true,
                 timed_out: false,
                 status_code: 200,
                 terminal_reason: "completed".to_owned(),
                 estimate: UsageEstimate::default(),
+                model_pricing: None,
                 billing_mode: "local-estimate".to_owned(),
                 chargeable: true,
                 latency: Duration::from_millis(10),
@@ -3926,6 +3951,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.usage_rows()[0]["requestId"], "req_test");
+        assert_eq!(store.usage_rows()[0]["toolUseRequested"], true);
 
         assert!(
             store
@@ -4014,6 +4040,8 @@ mod tests {
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 client_protocol: "anthropic-messages".to_owned(),
+                tool_use_requested: false,
+                tool_outcome: "not_requested".to_owned(),
                 stream: false,
                 success: true,
                 timed_out: false,
@@ -4023,6 +4051,7 @@ mod tests {
                     cost_estimate: 0.015,
                     ..UsageEstimate::default()
                 },
+                model_pricing: None,
                 billing_mode: "local-estimate".to_owned(),
                 chargeable: true,
                 latency: Duration::from_millis(10),
@@ -4086,6 +4115,8 @@ mod tests {
                     provider: "mimo".to_owned(),
                     protocol: "openai-compat".to_owned(),
                     client_protocol: "anthropic-messages".to_owned(),
+                    tool_use_requested: false,
+                    tool_outcome: "not_requested".to_owned(),
                     stream: false,
                     success: true,
                     timed_out: false,
@@ -4095,6 +4126,7 @@ mod tests {
                         cost_estimate: 0.015,
                         ..UsageEstimate::default()
                     },
+                    model_pricing: None,
                     billing_mode: "local-estimate".to_owned(),
                     chargeable: true,
                     latency: Duration::from_millis(10),
@@ -4265,6 +4297,8 @@ mod tests {
                 provider: "mimo".to_owned(),
                 protocol: "openai-compat".to_owned(),
                 client_protocol: "anthropic-messages".to_owned(),
+                tool_use_requested: false,
+                tool_outcome: "not_requested".to_owned(),
                 stream: false,
                 success: true,
                 timed_out: false,
@@ -4274,6 +4308,7 @@ mod tests {
                     cost_estimate: 0.015,
                     ..UsageEstimate::default()
                 },
+                model_pricing: None,
                 billing_mode: "local-estimate".to_owned(),
                 chargeable: true,
                 latency: Duration::from_millis(10),

@@ -105,6 +105,7 @@ impl ProviderRowAssembler {
             "bufferStreamText": provider.buffer_stream_text,
             "fidelityMode": fidelity_mode_value(provider.fidelity_mode),
             "toolUse": provider.tool_use,
+            "pricing": provider.pricing,
             "status": status,
             "runtimeStatus": runtime_status,
             "hasApiKey": has_api_key,

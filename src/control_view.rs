@@ -508,12 +508,6 @@ mod tests {
         fn team_id(&self) -> Option<&str> {
             self.team_id.as_deref()
         }
-        fn resolved_model(&self) -> &str {
-            "unknown"
-        }
-        fn token_usage(&self) -> TokenUsageBreakdown {
-            self.tokens
-        }
         fn cost_estimate(&self) -> f64 {
             self.cost_estimate
         }

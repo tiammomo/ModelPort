@@ -31,7 +31,8 @@ pub async fn chat_completions(
     client_headers: &HeaderMap,
     stream_lifecycle: StreamLifecycle,
 ) -> Result<Response, AppError> {
-    let body = request.to_anthropic_request(&resolved.model, request.stream)?;
+    let mut body = request.to_anthropic_request(&resolved.model, request.stream)?;
+    apply_provider_request_compatibility(&resolved.provider_id, &mut body);
     let headers = headers(&resolved.provider, client_headers)?;
     let url = resolved.provider.endpoint("/v1/messages");
 
@@ -58,10 +59,28 @@ pub async fn chat_completions(
         if let Some(usage) = usage {
             response.headers_mut().insert(
                 USAGE_HEADER,
-                pricing::usage_header_value(&resolved.model, usage)?,
+                pricing::usage_header_value(&resolved.model, usage, resolved.provider.pricing)?,
             );
         }
         Ok(response)
+    }
+}
+
+fn apply_provider_request_compatibility(provider_id: &str, body: &mut Value) {
+    if provider_id != "deepseek" || body.get("thinking").is_some() {
+        return;
+    }
+    if let Some(body) = body.as_object_mut() {
+        // This function is used only by the OpenAI Chat Completions -> Anthropic
+        // conversion path. DeepSeek's Anthropic endpoint enables thinking by
+        // default, but OpenAI messages cannot round-trip Anthropic thinking
+        // blocks. That breaks multi-turn tool conversations and forced tool
+        // choice. Disable thinking for this lossy protocol bridge; native
+        // /v1/messages requests bypass this compatibility rule entirely.
+        body.insert(
+            "thinking".to_owned(),
+            serde_json::json!({ "type": "disabled" }),
+        );
     }
 }
 
@@ -94,14 +113,14 @@ pub async fn messages(
         if let Some(usage) = usage {
             response.headers_mut().insert(
                 USAGE_HEADER,
-                pricing::usage_header_value(&resolved.model, usage)?,
+                pricing::usage_header_value(&resolved.model, usage, resolved.provider.pricing)?,
             );
         }
         Ok(response)
     }
 }
 
-fn headers(
+pub(crate) fn headers(
     provider: &crate::config::ProviderConfig,
     client_headers: &HeaderMap,
 ) -> Result<Vec<Header>, AppError> {
@@ -291,6 +310,23 @@ mod tests {
             comments: Vec::new(),
             data: data.to_owned(),
         }
+    }
+
+    #[test]
+    fn deepseek_openai_bridge_disables_default_thinking() {
+        for mut body in [
+            serde_json::json!({}),
+            serde_json::json!({ "tool_choice": { "type": "auto" } }),
+            serde_json::json!({ "tool_choice": { "type": "any" } }),
+            serde_json::json!({ "tool_choice": { "type": "tool" } }),
+        ] {
+            apply_provider_request_compatibility("deepseek", &mut body);
+            assert_eq!(body["thinking"]["type"], "disabled");
+        }
+
+        let mut anthropic = serde_json::json!({ "tool_choice": { "type": "tool" } });
+        apply_provider_request_compatibility("anthropic", &mut anthropic);
+        assert!(anthropic.get("thinking").is_none());
     }
 
     #[tokio::test]

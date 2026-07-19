@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use async_stream::try_stream;
 use axum::response::sse::Event;
@@ -12,6 +12,7 @@ use crate::{
     http::SseFrameStream,
     pricing,
     stream_lifecycle::StreamLifecycle,
+    tool_use::ToolResponsePolicy,
     types::{anthropic_error_event, anthropic_event},
 };
 
@@ -132,6 +133,7 @@ pub(crate) fn openai_stream_to_anthropic(
     deduplicate_stream_text: bool,
     deduplicate_tool_arguments: bool,
     stream_lifecycle: StreamLifecycle,
+    tool_policy: ToolResponsePolicy,
 ) -> impl Stream<Item = Result<Event, AppError>> + Send {
     try_stream! {
         let message_id = format!("msg_{}", Uuid::new_v4().simple());
@@ -141,6 +143,7 @@ pub(crate) fn openai_stream_to_anthropic(
         let mut text_seen = String::new();
         let mut tools = BTreeMap::<usize, ToolState>::new();
         let mut finish_reason = "end_turn".to_owned();
+        let mut upstream_finish_reason = None::<String>;
         let mut stream_done = false;
         let mut saw_finish_reason = false;
 
@@ -194,6 +197,7 @@ pub(crate) fn openai_stream_to_anthropic(
                 for choice in chunk.choices {
                     if let Some(reason) = choice.finish_reason {
                         finish_reason = map_finish_reason(&reason).to_owned();
+                        upstream_finish_reason = Some(reason);
                         saw_finish_reason = true;
                         stream_done = true;
                     }
@@ -263,7 +267,7 @@ pub(crate) fn openai_stream_to_anthropic(
                             }
 
                             if !state.started && state.name.is_some() {
-                                yield start_tool_state(state)?;
+                                yield start_tool_state(state, &tool_policy)?;
                                 if let Some(event) =
                                     pending_tool_arguments_event(state, deduplicate_tool_arguments)?
                                 {
@@ -297,7 +301,7 @@ pub(crate) fn openai_stream_to_anthropic(
                         }
 
                         if !state.started && state.name.is_some() {
-                            yield start_tool_state(state)?;
+                            yield start_tool_state(state, &tool_policy)?;
                             if let Some(event) =
                                 pending_tool_arguments_event(state, deduplicate_tool_arguments)?
                             {
@@ -335,6 +339,36 @@ pub(crate) fn openai_stream_to_anthropic(
             return;
         }
 
+        let validation = (|| -> Result<(), AppError> {
+            let mut upstream_ids = HashSet::new();
+            for state in tools.values() {
+                tool_policy.validate_name(state.name.as_deref())?;
+                if tool_policy.is_strict()
+                    && let Some(id) = &state.upstream_id
+                    && !upstream_ids.insert(id.clone())
+                {
+                    return Err(AppError::UpstreamProtocol(format!(
+                        "OpenAI-compatible upstream returned duplicate tool call id `{id}`"
+                    )));
+                }
+                let arguments = if deduplicate_tool_arguments {
+                    state.complete_arguments().unwrap_or_default()
+                } else {
+                    state.all_arguments.clone()
+                };
+                tool_policy.parse_arguments(&arguments)?;
+            }
+            tool_policy.validate_call_summary(
+                tools.len(),
+                upstream_finish_reason.as_deref(),
+            )
+        })();
+        if let Err(error) = validation {
+            stream_lifecycle.mark_failed(error.to_string());
+            yield anthropic_error_event(&error)?;
+            return;
+        }
+
         stream_lifecycle.mark_completed();
 
         if let Some(index) = text_index {
@@ -346,7 +380,7 @@ pub(crate) fn openai_stream_to_anthropic(
 
         for state in tools.values_mut() {
             if !state.started && (state.name.is_some() || state.has_argument_data()) {
-                yield start_tool_state(state)?;
+                yield start_tool_state(state, &tool_policy)?;
             }
 
             if state.started {
@@ -420,6 +454,7 @@ fn ingest_tool_arguments(state: &mut ToolState, arguments: String, deduplicate: 
         return;
     }
 
+    state.all_arguments.push_str(&arguments);
     if deduplicate {
         state.raw_arguments.push(arguments.clone());
         let arguments = text_delta(&mut state.arguments_seen, &arguments, true);
@@ -686,6 +721,7 @@ struct ToolState {
     arguments_seen: String,
     raw_arguments: Vec<String>,
     pending_arguments: String,
+    all_arguments: String,
 }
 
 impl ToolState {
@@ -698,6 +734,7 @@ impl ToolState {
             arguments_seen: String::new(),
             raw_arguments: Vec::new(),
             pending_arguments: String::new(),
+            all_arguments: String::new(),
         }
     }
 
@@ -761,13 +798,16 @@ struct OpenAiFunctionDelta {
     arguments: Option<String>,
 }
 
-fn start_tool_state(state: &mut ToolState) -> Result<Event, AppError> {
+fn start_tool_state(
+    state: &mut ToolState,
+    tool_policy: &ToolResponsePolicy,
+) -> Result<Event, AppError> {
     state.started = true;
     let id = state
         .upstream_id
         .clone()
         .unwrap_or_else(|| format!("toolu_{}", Uuid::new_v4().simple()));
-    let name = state.name.clone().unwrap_or_else(|| "tool".to_owned());
+    let name = tool_policy.validate_name(state.name.as_deref())?;
 
     anthropic_event(
         "content_block_start",
@@ -841,6 +881,7 @@ mod tests {
         error::AppError,
         http::{SseFrame, SseFrameStream},
         stream_lifecycle::{StreamLifecycle, UpstreamStreamState},
+        tool_use::ToolResponsePolicy,
     };
 
     use super::{
@@ -870,6 +911,7 @@ mod tests {
             false,
             false,
             lifecycle.clone(),
+            ToolResponsePolicy::best_effort(),
         ));
         let mut count = 0usize;
         while let Some(event) = events.next().await {

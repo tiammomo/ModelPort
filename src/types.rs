@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::{config::MaxTokensField, error::AppError};
+use crate::{config::MaxTokensField, error::AppError, tool_use::ToolResponsePolicy};
 
 pub use crate::fidelity::validate_anthropic_to_openai_fidelity;
 pub use crate::tool_use::validate_anthropic_tooling;
@@ -21,6 +21,39 @@ pub struct AnthropicRequest {
     pub stream: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AnthropicCountTokensRequest {
+    pub model: String,
+    #[serde(default)]
+    pub messages: Vec<Value>,
+    #[serde(default)]
+    pub system: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl AnthropicCountTokensRequest {
+    pub fn as_message_request(&self) -> AnthropicRequest {
+        AnthropicRequest {
+            model: self.model.clone(),
+            max_tokens: None,
+            messages: self.messages.clone(),
+            system: self.system.clone(),
+            stream: None,
+            extra: self.extra.clone(),
+        }
+    }
+}
+
+pub fn anthropic_count_tokens_request_value(
+    request: &AnthropicCountTokensRequest,
+    model: &str,
+) -> Result<Value, AppError> {
+    let mut value = serde_json::to_value(request)?;
+    value["model"] = Value::String(model.to_owned());
+    Ok(value)
 }
 
 pub fn anthropic_request_value(request: &AnthropicRequest, model: &str) -> Result<Value, AppError> {
@@ -74,6 +107,7 @@ pub fn anthropic_to_openai_request(
 
     copy_optional(&request.extra, &mut body, "temperature");
     copy_optional(&request.extra, &mut body, "top_p");
+    copy_optional(&request.extra, &mut body, "top_k");
     copy_optional(&request.extra, &mut body, "presence_penalty");
     copy_optional(&request.extra, &mut body, "frequency_penalty");
     copy_optional(&request.extra, &mut body, "seed");
@@ -102,6 +136,7 @@ pub fn anthropic_to_openai_request(
 pub fn openai_response_to_anthropic(
     response: &Value,
     requested_model: &str,
+    tool_policy: &ToolResponsePolicy,
 ) -> Result<Value, AppError> {
     let choice = response
         .get("choices")
@@ -124,25 +159,31 @@ pub fn openai_response_to_anthropic(
         }));
     }
 
+    let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
     let mut emitted_tool_call = false;
+    let mut emitted_tool_call_count = 0usize;
+    let mut emitted_tool_call_ids = std::collections::HashSet::new();
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in tool_calls {
             emitted_tool_call = true;
+            emitted_tool_call_count += 1;
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| format!("toolu_{}", Uuid::new_v4().simple()));
+            if tool_policy.is_strict() && !emitted_tool_call_ids.insert(id.clone()) {
+                return Err(AppError::UpstreamProtocol(format!(
+                    "OpenAI-compatible upstream returned duplicate tool call id `{id}`"
+                )));
+            }
             let function = call.get("function").unwrap_or(&Value::Null);
-            let name = function
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
+            let name = tool_policy.validate_name(function.get("name").and_then(Value::as_str))?;
             let arguments = function
                 .get("arguments")
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
-            let input = parse_tool_arguments(arguments);
+            let input = tool_policy.parse_arguments(arguments)?;
 
             content.push(json!({
                 "type": "tool_use",
@@ -153,10 +194,8 @@ pub fn openai_response_to_anthropic(
         }
     }
     if !emitted_tool_call && let Some(function_call) = message.get("function_call") {
-        let name = function_call
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
+        emitted_tool_call_count = 1;
+        let name = tool_policy.validate_name(function_call.get("name").and_then(Value::as_str))?;
         let arguments = function_call
             .get("arguments")
             .and_then(Value::as_str)
@@ -166,15 +205,13 @@ pub fn openai_response_to_anthropic(
             "type": "tool_use",
             "id": format!("toolu_{}", Uuid::new_v4().simple()),
             "name": name,
-            "input": parse_tool_arguments(arguments)
+            "input": tool_policy.parse_arguments(arguments)?
         }));
     }
 
-    let finish_reason = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .map(map_finish_reason)
-        .unwrap_or("end_turn");
+    tool_policy.validate_call_summary(emitted_tool_call_count, finish_reason)?;
+
+    let finish_reason = finish_reason.map(map_finish_reason).unwrap_or("end_turn");
 
     let usage = response.get("usage").unwrap_or(&Value::Null);
     let input_tokens = usage
@@ -338,7 +375,7 @@ fn convert_user_message(blocks: &[Value]) -> Vec<Value> {
                         .get("tool_use_id")
                         .and_then(Value::as_str)
                         .unwrap_or("toolu_missing"),
-                    "content": content_to_text(block.get("content").unwrap_or(&Value::Null))
+                    "content": tool_result_to_text(block)
                 }));
             }
             _ => {}
@@ -384,6 +421,19 @@ fn content_to_text(content: &Value) -> String {
     String::new()
 }
 
+fn tool_result_to_text(block: &Value) -> String {
+    let content = content_to_text(block.get("content").unwrap_or(&Value::Null));
+    if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+        if content.is_empty() {
+            "ModelPort tool execution error".to_owned()
+        } else {
+            format!("ModelPort tool execution error:\n{content}")
+        }
+    } else {
+        content
+    }
+}
+
 fn convert_tools(tools: &Value) -> Result<Value, AppError> {
     let tools = tools
         .as_array()
@@ -393,16 +443,20 @@ fn convert_tools(tools: &Value) -> Result<Value, AppError> {
         tools
             .iter()
             .map(|tool| {
+                let mut function = json!({
+                    "name": tool.get("name").cloned().unwrap_or(Value::String("tool".to_owned())),
+                    "description": tool.get("description").cloned().unwrap_or(Value::String(String::new())),
+                    "parameters": tool
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }))
+                });
+                if let Some(strict) = tool.get("strict") {
+                    function["strict"] = strict.clone();
+                }
                 json!({
                     "type": "function",
-                    "function": {
-                        "name": tool.get("name").cloned().unwrap_or(Value::String("tool".to_owned())),
-                        "description": tool.get("description").cloned().unwrap_or(Value::String(String::new())),
-                        "parameters": tool
-                            .get("input_schema")
-                            .cloned()
-                            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }))
-                    }
+                    "function": function
                 })
             })
             .collect(),
@@ -432,18 +486,6 @@ fn convert_tool_choice(tool_choice: &Value) -> Value {
     tool_choice.clone()
 }
 
-fn parse_tool_arguments(arguments: &str) -> Value {
-    if arguments.trim().is_empty() {
-        return json!({});
-    }
-
-    match serde_json::from_str::<Value>(arguments) {
-        Ok(value @ Value::Object(_)) => value,
-        Ok(value) => json!({ "_raw_arguments": value }),
-        Err(_) => json!({ "_raw_arguments": arguments }),
-    }
-}
-
 fn copy_optional(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
     if let Some(value) = source.get(key) {
         target.insert(key.to_owned(), value.clone());
@@ -462,6 +504,7 @@ fn map_finish_reason(reason: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ToolResponseValidation, ToolUseConfig};
 
     const STANDARD_MODEL: &str = "deepseek-v4-flash";
 
@@ -610,6 +653,31 @@ mod tests {
     }
 
     #[test]
+    fn preserves_strict_tool_schema_for_openai_compatible_upstreams() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": STANDARD_MODEL,
+            "max_tokens": 128,
+            "tools": [{
+                "name": "read_file",
+                "strict": true,
+                "input_schema": { "type": "object", "additionalProperties": false }
+            }],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+
+        let body = anthropic_to_openai_request(
+            &request,
+            STANDARD_MODEL,
+            false,
+            MaxTokensField::MaxCompletionTokens,
+        )
+        .unwrap();
+
+        assert_eq!(body["tools"][0]["function"]["strict"], true);
+    }
+
+    #[test]
     fn converts_disable_parallel_tool_use_to_openai_parallel_tool_calls() {
         let request: AnthropicRequest = serde_json::from_value(json!({
             "model": STANDARD_MODEL,
@@ -719,6 +787,23 @@ mod tests {
     }
 
     #[test]
+    fn preserves_anthropic_top_k_for_openai_compatible_runtimes() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": "qwen-plus",
+            "max_tokens": 128,
+            "top_k": 40,
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+
+        let body =
+            anthropic_to_openai_request(&request, "qwen-plus", false, MaxTokensField::MaxTokens)
+                .unwrap();
+
+        assert_eq!(body["top_k"], 40);
+    }
+
+    #[test]
     fn converts_openai_tool_response_to_anthropic_blocks() {
         let response = json!({
             "id": "chatcmpl-1",
@@ -743,10 +828,71 @@ mod tests {
             }
         });
 
-        let body = openai_response_to_anthropic(&response, STANDARD_MODEL).unwrap();
+        let body = openai_response_to_anthropic(
+            &response,
+            STANDARD_MODEL,
+            &ToolResponsePolicy::best_effort(),
+        )
+        .unwrap();
         assert_eq!(body["stop_reason"], "tool_use");
         assert_eq!(body["content"][0]["type"], "tool_use");
         assert_eq!(body["content"][0]["input"]["path"], "Cargo.toml");
+    }
+
+    #[test]
+    fn strict_response_policy_rejects_undeclared_tool_name() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": STANDARD_MODEL,
+            "tools": [{"name": "read_file", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+        let tool_use = ToolUseConfig {
+            response_validation: ToolResponseValidation::Strict,
+            ..ToolUseConfig::default()
+        };
+        let policy = ToolResponsePolicy::for_anthropic_request(&request, &tool_use);
+        let response = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "delete_file", "arguments": "{}"}
+                }]}
+            }]
+        });
+
+        let error = openai_response_to_anthropic(&response, STANDARD_MODEL, &policy).unwrap_err();
+
+        assert!(error.to_string().contains("undeclared tool `delete_file`"));
+    }
+
+    #[test]
+    fn strict_response_policy_rejects_non_object_arguments() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": STANDARD_MODEL,
+            "tools": [{"name": "read_file", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+        let tool_use = ToolUseConfig {
+            response_validation: ToolResponseValidation::Strict,
+            ..ToolUseConfig::default()
+        };
+        let policy = ToolResponsePolicy::for_anthropic_request(&request, &tool_use);
+        let response = json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "read_file", "arguments": "[\"Cargo.toml\"]"}
+                }]}
+            }]
+        });
+
+        let error = openai_response_to_anthropic(&response, STANDARD_MODEL, &policy).unwrap_err();
+
+        assert!(error.to_string().contains("must be a JSON object"));
     }
 
     #[test]
@@ -770,7 +916,12 @@ mod tests {
             }]
         });
 
-        let body = openai_response_to_anthropic(&response, STANDARD_MODEL).unwrap();
+        let body = openai_response_to_anthropic(
+            &response,
+            STANDARD_MODEL,
+            &ToolResponsePolicy::best_effort(),
+        )
+        .unwrap();
 
         assert_eq!(body["content"][0]["type"], "tool_use");
         assert_eq!(
@@ -796,7 +947,12 @@ mod tests {
             }]
         });
 
-        let body = openai_response_to_anthropic(&response, STANDARD_MODEL).unwrap();
+        let body = openai_response_to_anthropic(
+            &response,
+            STANDARD_MODEL,
+            &ToolResponsePolicy::best_effort(),
+        )
+        .unwrap();
 
         assert_eq!(body["stop_reason"], "tool_use");
         assert_eq!(body["content"][0]["type"], "tool_use");
@@ -893,6 +1049,47 @@ mod tests {
         let err = validate_anthropic_tooling(&request).unwrap_err();
 
         assert!(err.to_string().contains("has already been answered"));
+    }
+
+    #[test]
+    fn marks_anthropic_tool_errors_in_openai_tool_content() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": STANDARD_MODEL,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_read",
+                        "name": "read_file",
+                        "input": {"path": "missing"}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_read",
+                        "content": "file not found",
+                        "is_error": true
+                    }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let body = anthropic_to_openai_request(
+            &request,
+            STANDARD_MODEL,
+            false,
+            MaxTokensField::MaxCompletionTokens,
+        )
+        .unwrap();
+
+        assert_eq!(
+            body["messages"][1]["content"],
+            "ModelPort tool execution error:\nfile not found"
+        );
     }
 
     #[test]

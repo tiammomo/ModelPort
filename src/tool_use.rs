@@ -2,7 +2,167 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
-use crate::{config::ToolUseConfig, error::AppError, types::AnthropicRequest};
+use crate::{
+    config::{ToolResponseValidation, ToolUseConfig},
+    error::AppError,
+    types::AnthropicRequest,
+};
+
+#[derive(Debug, Clone)]
+pub struct ToolResponsePolicy {
+    validation: ToolResponseValidation,
+    allowed_names: Option<HashSet<String>>,
+    minimum_calls: usize,
+    maximum_calls: Option<usize>,
+}
+
+impl ToolResponsePolicy {
+    pub fn for_anthropic_request(request: &AnthropicRequest, tool_use: &ToolUseConfig) -> Self {
+        let mut allowed_names = Some(
+            request
+                .extra
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(|tools| {
+                    tools
+                        .iter()
+                        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+                        .map(ToOwned::to_owned)
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default(),
+        );
+        let mut minimum_calls = 0;
+        let mut maximum_calls = (!tool_use.parallel_tool_calls).then_some(1);
+
+        if let Some(tool_choice) = request.extra.get("tool_choice") {
+            match tool_choice.get("type").and_then(Value::as_str) {
+                Some("none") => maximum_calls = Some(0),
+                Some("any") => minimum_calls = 1,
+                Some("tool") => {
+                    minimum_calls = 1;
+                    if let Some(name) = tool_choice.get("name").and_then(Value::as_str) {
+                        allowed_names = Some(HashSet::from([name.to_owned()]));
+                    }
+                }
+                _ => {}
+            }
+            if tool_choice
+                .get("disable_parallel_tool_use")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                maximum_calls = Some(1);
+            }
+        }
+
+        Self {
+            validation: tool_use.response_validation,
+            allowed_names,
+            minimum_calls,
+            maximum_calls,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn best_effort() -> Self {
+        Self {
+            validation: ToolResponseValidation::BestEffort,
+            allowed_names: None,
+            minimum_calls: 0,
+            maximum_calls: None,
+        }
+    }
+
+    pub fn is_strict(&self) -> bool {
+        self.validation == ToolResponseValidation::Strict
+    }
+
+    pub fn validate_name(&self, name: Option<&str>) -> Result<String, AppError> {
+        if self.validation == ToolResponseValidation::BestEffort {
+            return Ok(name.unwrap_or("tool").to_owned());
+        }
+
+        let name = name.filter(|name| !name.trim().is_empty()).ok_or_else(|| {
+            AppError::UpstreamProtocol(
+                "OpenAI-compatible tool call is missing a function name".to_owned(),
+            )
+        })?;
+        if let Some(allowed_names) = &self.allowed_names
+            && !allowed_names.contains(name)
+        {
+            return Err(AppError::UpstreamProtocol(format!(
+                "OpenAI-compatible upstream returned undeclared tool `{name}`"
+            )));
+        }
+        Ok(name.to_owned())
+    }
+
+    pub fn parse_arguments(&self, arguments: &str) -> Result<Value, AppError> {
+        if arguments.trim().is_empty() {
+            return Ok(Value::Object(Map::new()));
+        }
+
+        match serde_json::from_str::<Value>(arguments) {
+            Ok(value @ Value::Object(_)) => Ok(value),
+            Ok(value) if self.validation == ToolResponseValidation::BestEffort => Ok(
+                Value::Object(Map::from_iter([("_raw_arguments".to_owned(), value)])),
+            ),
+            Err(_) if self.validation == ToolResponseValidation::BestEffort => {
+                Ok(Value::Object(Map::from_iter([(
+                    "_raw_arguments".to_owned(),
+                    Value::String(arguments.to_owned()),
+                )])))
+            }
+            Ok(_) => Err(AppError::UpstreamProtocol(
+                "OpenAI-compatible tool arguments must be a JSON object".to_owned(),
+            )),
+            Err(error) => Err(AppError::UpstreamProtocol(format!(
+                "OpenAI-compatible tool arguments are invalid JSON: {error}"
+            ))),
+        }
+    }
+
+    pub fn validate_call_summary(
+        &self,
+        call_count: usize,
+        finish_reason: Option<&str>,
+    ) -> Result<(), AppError> {
+        if self.validation == ToolResponseValidation::BestEffort {
+            return Ok(());
+        }
+        if call_count < self.minimum_calls {
+            return Err(AppError::UpstreamProtocol(format!(
+                "OpenAI-compatible upstream returned {call_count} tool calls, but tool_choice requires at least {}",
+                self.minimum_calls
+            )));
+        }
+        if self
+            .maximum_calls
+            .is_some_and(|maximum| call_count > maximum)
+        {
+            return Err(AppError::UpstreamProtocol(format!(
+                "OpenAI-compatible upstream returned {call_count} tool calls, exceeding the allowed maximum of {}",
+                self.maximum_calls.unwrap_or_default()
+            )));
+        }
+
+        let stopped_for_tools = matches!(finish_reason, Some("tool_calls" | "function_call"));
+        if call_count > 0 && !stopped_for_tools {
+            return Err(AppError::UpstreamProtocol(
+                "OpenAI-compatible upstream returned tool calls without a tool_calls finish reason"
+                    .to_owned(),
+            ));
+        }
+        if call_count == 0 && stopped_for_tools {
+            return Err(AppError::UpstreamProtocol(
+                "OpenAI-compatible upstream returned a tool_calls finish reason without a tool call"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 pub fn validate_anthropic_tooling(request: &AnthropicRequest) -> Result<(), AppError> {
     let tool_names = if let Some(tools) = request.extra.get("tools") {
@@ -92,18 +252,24 @@ fn validate_tool_definitions(tools: &Value) -> Result<HashSet<String>, AppError>
             )));
         }
 
-        if let Some(schema) = object.get("input_schema") {
-            let schema = schema.as_object().ok_or_else(|| {
+        let schema = object
+            .get("input_schema")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
                 AppError::InvalidRequest(format!("{path}.input_schema must be an object"))
             })?;
-            if schema
-                .get("type")
-                .is_some_and(|value| value.as_str() != Some("object"))
-            {
-                return Err(AppError::InvalidRequest(format!(
-                    "{path}.input_schema.type must be object"
-                )));
-            }
+        if schema.get("type").and_then(Value::as_str) != Some("object") {
+            return Err(AppError::InvalidRequest(format!(
+                "{path}.input_schema.type must be object"
+            )));
+        }
+        if object
+            .get("strict")
+            .is_some_and(|strict| !strict.is_boolean())
+        {
+            return Err(AppError::InvalidRequest(format!(
+                "{path}.strict must be a boolean"
+            )));
         }
     }
 
@@ -207,8 +373,20 @@ fn validate_tool_turn_references(
     for (message_index, message) in request.messages.iter().enumerate() {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("");
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+            if !pending_tool_use_ids.is_empty() {
+                return Err(AppError::InvalidRequest(format!(
+                    "messages[{message_index}] must immediately return all pending tool_result blocks"
+                )));
+            }
             continue;
         };
+
+        let resolving_pending = !pending_tool_use_ids.is_empty();
+        if resolving_pending && role != "user" {
+            return Err(AppError::InvalidRequest(format!(
+                "messages[{message_index}] must be a user message immediately returning pending tool results"
+            )));
+        }
 
         for (block_index, block) in blocks.iter().enumerate() {
             let path = format!("messages[{message_index}].content[{block_index}]");
@@ -248,6 +426,19 @@ fn validate_tool_turn_references(
                 _ => {}
             }
         }
+
+        if resolving_pending && !pending_tool_use_ids.is_empty() {
+            return Err(AppError::InvalidRequest(format!(
+                "messages[{message_index}] must return every pending tool_result in one user message"
+            )));
+        }
+    }
+
+    if !pending_tool_use_ids.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "the final assistant tool_use must be followed by a user tool_result message"
+                .to_owned(),
+        ));
     }
 
     Ok(())
@@ -262,6 +453,7 @@ fn validate_message_tool_blocks(message: &Value, message_index: usize) -> Result
         return Ok(());
     };
 
+    let mut saw_non_tool_result = false;
     for (block_index, block) in blocks.iter().enumerate() {
         let path = format!("messages[{message_index}].content[{block_index}]");
         let object = block
@@ -283,9 +475,22 @@ fn validate_message_tool_blocks(message: &Value, message_index: usize) -> Result
                     )));
                 }
             }
-            "tool_use" => validate_tool_use_block(role, object, &path)?,
-            "tool_result" => validate_tool_result_block(role, object, &path)?,
+            "tool_use" => {
+                saw_non_tool_result = true;
+                validate_tool_use_block(role, object, &path)?;
+            }
+            "tool_result" => {
+                if saw_non_tool_result {
+                    return Err(AppError::InvalidRequest(format!(
+                        "{path} tool_result blocks must come before other content"
+                    )));
+                }
+                validate_tool_result_block(role, object, &path)?;
+            }
             _ => {}
+        }
+        if block_type != "tool_result" {
+            saw_non_tool_result = true;
         }
     }
 
@@ -365,6 +570,15 @@ fn validate_tool_result_block(
                 }
             }
         }
+    }
+
+    if block
+        .get("is_error")
+        .is_some_and(|is_error| !is_error.is_boolean())
+    {
+        return Err(AppError::InvalidRequest(format!(
+            "{path}.is_error must be a boolean"
+        )));
     }
 
     Ok(())
@@ -448,5 +662,77 @@ mod tests {
             err.to_string()
                 .contains("does not support parallel tool calls")
         );
+    }
+
+    #[test]
+    fn rejects_tool_definition_without_required_object_schema() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": "test",
+            "tools": [{"name": "read_file"}],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+
+        let error = validate_anthropic_tooling(&request).unwrap_err();
+
+        assert!(error.to_string().contains("input_schema must be an object"));
+    }
+
+    #[test]
+    fn rejects_text_before_tool_result() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": "test",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_read",
+                        "name": "read_file",
+                        "input": {}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "result follows"},
+                        {"type": "tool_result", "tool_use_id": "toolu_read", "content": "ok"}
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let error = validate_anthropic_tooling(&request).unwrap_err();
+
+        assert!(error.to_string().contains("must come before other content"));
+    }
+
+    #[test]
+    fn rejects_intervening_message_before_tool_result() {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": "test",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_read",
+                        "name": "read_file",
+                        "input": {}
+                    }]
+                },
+                {"role": "user", "content": "wait"},
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_read", "content": "ok"}]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let error = validate_anthropic_tooling(&request).unwrap_err();
+
+        assert!(error.to_string().contains("must immediately return"));
     }
 }

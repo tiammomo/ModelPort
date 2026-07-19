@@ -30,6 +30,7 @@ pub(super) struct LogsQuery {
     username: Option<String>,
     group: Option<String>,
     stream: Option<String>,
+    tool_use: Option<String>,
 }
 
 impl LogsQuery {
@@ -43,6 +44,7 @@ impl LogsQuery {
             ("username", self.username.as_deref()),
             ("group", self.group.as_deref()),
             ("stream", self.stream.as_deref()),
+            ("toolUse", self.tool_use.as_deref()),
         ] {
             if value.is_some_and(|value| value.chars().count() > 256) {
                 return Err(AppError::InvalidRequest(format!(
@@ -75,6 +77,15 @@ impl LogsQuery {
         {
             return Err(AppError::InvalidRequest(
                 "stream must be stream or non-stream".to_owned(),
+            ));
+        }
+        if self
+            .tool_use
+            .as_deref()
+            .is_some_and(|tool_use| !matches!(tool_use, "requested" | "not-requested"))
+        {
+            return Err(AppError::InvalidRequest(
+                "toolUse must be requested or not-requested".to_owned(),
             ));
         }
         if self
@@ -153,6 +164,9 @@ fn log_matches(row: &Value, query: &LogsQuery) -> bool {
             .stream
             .as_deref()
             .is_some_and(|expected| !field_equals(row, "stream", expected))
+        || query.tool_use.as_deref().is_some_and(|expected| {
+            row.get("toolUseRequested").and_then(Value::as_bool) != Some(expected == "requested")
+        })
     {
         return false;
     }
@@ -250,6 +264,8 @@ fn timestamp_millis(row: &Value) -> Option<u64> {
 
 fn summarize_logs(logs: &[Value]) -> Value {
     let mut success_requests = 0usize;
+    let mut tool_use_requests = 0usize;
+    let mut tool_use_success_requests = 0usize;
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
     let mut total_cache_write_tokens = 0u64;
@@ -261,6 +277,16 @@ fn summarize_logs(logs: &[Value]) -> Value {
     for log in logs {
         if log.get("status").and_then(Value::as_str) == Some("success") {
             success_requests += 1;
+        }
+        if log
+            .get("toolUseRequested")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            tool_use_requests += 1;
+            if log.get("status").and_then(Value::as_str) == Some("success") {
+                tool_use_success_requests += 1;
+            }
         }
         total_input_tokens = total_input_tokens.saturating_add(field_u64(log, "inputTokens"));
         total_output_tokens = total_output_tokens.saturating_add(field_u64(log, "outputTokens"));
@@ -290,6 +316,8 @@ fn summarize_logs(logs: &[Value]) -> Value {
     json!({
         "totalRequests": logs.len(),
         "successRequests": success_requests,
+        "toolUseRequests": tool_use_requests,
+        "toolUseSuccessRequests": tool_use_success_requests,
         "totalInputTokens": total_input_tokens,
         "totalOutputTokens": total_output_tokens,
         "totalCacheWriteTokens": total_cache_write_tokens,
@@ -468,6 +496,8 @@ fn fallback_log_row(
         "provider": message.provider,
         "protocol": protocol,
         "clientProtocol": "anthropic-messages",
+        "toolUseRequested": false,
+        "toolOutcome": "not_requested",
         "requestType": if message.failures_total > 0 { "error" } else { "consume" },
         "stream": if message.stream { "stream" } else { "non-stream" },
         "status": if message.failures_total > 0 { "error" } else { "success" },
@@ -549,7 +579,7 @@ mod tests {
 
     #[test]
     fn logs_query_filters_all_supported_dimensions_and_epoch_millis() {
-        let rows = vec![
+        let mut rows = vec![
             test_log(
                 "log-one",
                 "req-one",
@@ -573,6 +603,7 @@ mod tests {
                 Some("Upstream exploded"),
             ),
         ];
+        rows[1]["toolUseRequested"] = json!(true);
         let query = LogsQuery {
             status: Some("error".to_owned()),
             provider: Some("provider-two".to_owned()),
@@ -582,6 +613,7 @@ mod tests {
             date_from: Some(2_000),
             date_to: Some(2_000),
             search: Some("UPSTREAM EXPLODED".to_owned()),
+            tool_use: Some("requested".to_owned()),
             ..LogsQuery::default()
         };
 
@@ -610,7 +642,7 @@ mod tests {
 
     #[test]
     fn logs_query_summarizes_filtered_rows_before_pagination() {
-        let rows = vec![
+        let mut rows = vec![
             test_log(
                 "log-one", "req-one", 0, "success", "provider", "model", "user", "key", None,
             ),
@@ -637,6 +669,8 @@ mod tests {
                 None,
             ),
         ];
+        rows[0]["toolUseRequested"] = json!(true);
+        rows[1]["toolUseRequested"] = json!(true);
         let query = LogsQuery {
             page: Some(2),
             page_size: Some(1),
@@ -650,6 +684,8 @@ mod tests {
         assert_eq!(body["total"], 3);
         assert_eq!(body["summary"]["totalRequests"], 3);
         assert_eq!(body["summary"]["successRequests"], 2);
+        assert_eq!(body["summary"]["toolUseRequests"], 2);
+        assert_eq!(body["summary"]["toolUseSuccessRequests"], 1);
         assert_eq!(body["summary"]["totalTokens"], 30);
         assert_eq!(body["summary"]["totalCostEstimate"], 0.75);
         assert_eq!(body["summary"]["rpm"], 1.5);
@@ -695,6 +731,10 @@ mod tests {
             },
             LogsQuery {
                 stream: Some("sometimes".to_owned()),
+                ..LogsQuery::default()
+            },
+            LogsQuery {
+                tool_use: Some("sometimes".to_owned()),
                 ..LogsQuery::default()
             },
             LogsQuery {
