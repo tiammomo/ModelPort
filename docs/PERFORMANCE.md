@@ -89,14 +89,16 @@ Current process-local series:
 Message metrics are labelled by provider, model, and stream. Arbitrary model
 passthrough can create high cardinality. Metrics reset on restart.
 
-For streams, current duration and success account for upstream connection and
-local stream acceptance, not guaranteed final completion. Final tokens/cost can
-be estimated from the request rather than reconciled provider usage. Do not
-build SLOs or invoices from those series without closing that lifecycle gap.
-Request logs expose `billingMode` to distinguish Provider-returned usage from a
-local estimate. Attempt-level preflight rows record zero usage; earlier ingress
-failures may return before persistence. Neither updates quota/spend, though both
-still incur local validation/metrics work.
+For streams, request logs are finalized when the downstream body completes,
+fails, times out, or is dropped. `firstByteLatencyMs` is recorded only for a
+stream's first deliverable text delta or tool-call event; non-stream requests
+leave it null instead of substituting full-response latency. Final tokens/cost
+still fall back to a request estimate when the Provider does not emit usage, so
+do not treat local estimates as invoices. Request logs expose `billingMode` to
+distinguish Provider-returned usage from a local estimate. Attempt-level
+preflight rows record zero usage; earlier ingress failures may return before
+persistence. Neither updates quota/spend, though both still incur local
+validation/metrics work.
 
 ## Tuning
 

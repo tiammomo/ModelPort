@@ -51,6 +51,12 @@ pub async fn chat_completions(
             apply_buffered_generation_defaults(&mut body);
             let upstream = state.transport.post_json(&url, &headers, &body).await?;
             let usage = pricing::openai_usage_if_present(&upstream);
+            stream_lifecycle.observe_openai_response(&upstream);
+            if stream_lifecycle.response_observation().tool_call_count > 0
+                || stream_lifecycle.response_observation().text_present
+            {
+                stream_lifecycle.mark_first_semantic_event();
+            }
             if let Some(usage) = usage {
                 stream_lifecycle.merge_usage(usage);
             }
@@ -90,6 +96,7 @@ pub async fn chat_completions(
         apply_tool_use_capabilities(&mut body, &resolved.provider.tool_use)?;
         let mut upstream = state.transport.post_json(&url, &headers, &body).await?;
         let usage = pricing::openai_usage_if_present(&upstream);
+        stream_lifecycle.observe_openai_response(&upstream);
         if let Some(object) = upstream.as_object_mut()
             && object.contains_key("model")
         {
@@ -128,7 +135,7 @@ pub async fn messages(
         validate_anthropic_to_openai_fidelity(&request)?;
     }
     let tool_policy =
-        ToolResponsePolicy::for_anthropic_request(&request, &resolved.provider.tool_use);
+        ToolResponsePolicy::for_anthropic_request(&request, &resolved.provider.tool_use)?;
 
     if request.stream.unwrap_or(false) {
         if resolved.provider.buffer_stream_text {
@@ -137,6 +144,12 @@ pub async fn messages(
             let upstream = state.transport.post_json(&url, &headers, &body).await?;
             let usage = pricing::openai_usage_if_present(&upstream);
             let message = openai_response_to_anthropic(&upstream, &request.model, &tool_policy)?;
+            stream_lifecycle.observe_anthropic_response(&message);
+            if stream_lifecycle.response_observation().tool_call_count > 0
+                || stream_lifecycle.response_observation().text_present
+            {
+                stream_lifecycle.mark_first_semantic_event();
+            }
             stream_lifecycle.mark_completed();
             let events = openai_complete_to_anthropic_stream(message, request.model.clone());
             let mut response = Sse::new(events)
@@ -173,12 +186,9 @@ pub async fn messages(
         let body = anthropic_request_body(&request, &resolved, false)?;
         let response = state.transport.post_json(&url, &headers, &body).await?;
         let usage = pricing::openai_usage_if_present(&response);
-        let mut response = Json(openai_response_to_anthropic(
-            &response,
-            &request.model,
-            &tool_policy,
-        )?)
-        .into_response();
+        let message = openai_response_to_anthropic(&response, &request.model, &tool_policy)?;
+        stream_lifecycle.observe_anthropic_response(&message);
+        let mut response = Json(message).into_response();
         if let Some(usage) = usage {
             response.headers_mut().insert(
                 USAGE_HEADER,

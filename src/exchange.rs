@@ -429,6 +429,15 @@ impl ExchangeRequest {
             })
     }
 
+    pub(crate) fn has_tool_results(&self) -> bool {
+        self.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|content| matches!(content, ExchangeContent::ToolResult { .. }))
+        })
+    }
+
     pub(crate) fn to_openai_request(
         &self,
         model: &str,

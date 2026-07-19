@@ -144,7 +144,10 @@ request_payload() {
   local model="$1"
   local stream="$2"
 
-  printf '{"model":"%s","max_tokens":256,"stream":%s,"messages":[{"role":"user","content":"只回复 OK。不要解释。"}]}' "$model" "$stream"
+  # This matrix probes transport/protocol compatibility. Reasoning is covered
+  # by a dedicated acceptance suite; disabling it here prevents a small probe
+  # budget from being consumed before the first final-answer token.
+  printf '{"model":"%s","max_tokens":256,"stream":%s,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":"只回复 OK。不要解释。"}]}' "$model" "$stream"
 }
 
 non_stream_has_text() {

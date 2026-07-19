@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use jsonschema::Validator;
 use serde_json::{Map, Value};
 
 use crate::{
@@ -12,17 +13,19 @@ use crate::{
 pub struct ToolResponsePolicy {
     validation: ToolResponseValidation,
     allowed_names: Option<HashSet<String>>,
+    input_validators: HashMap<String, Validator>,
     minimum_calls: usize,
     maximum_calls: Option<usize>,
 }
 
 impl ToolResponsePolicy {
-    pub fn for_anthropic_request(request: &AnthropicRequest, tool_use: &ToolUseConfig) -> Self {
+    pub fn for_anthropic_request(
+        request: &AnthropicRequest,
+        tool_use: &ToolUseConfig,
+    ) -> Result<Self, AppError> {
+        let tools = request.extra.get("tools").and_then(Value::as_array);
         let mut allowed_names = Some(
-            request
-                .extra
-                .get("tools")
-                .and_then(Value::as_array)
+            tools
                 .map(|tools| {
                     tools
                         .iter()
@@ -32,6 +35,23 @@ impl ToolResponsePolicy {
                 })
                 .unwrap_or_default(),
         );
+        let mut input_validators = HashMap::new();
+        if tool_use.response_validation == ToolResponseValidation::Strict {
+            for (index, tool) in tools.into_iter().flatten().enumerate() {
+                let name = tool.get("name").and_then(Value::as_str).ok_or_else(|| {
+                    AppError::InvalidRequest(format!("tools[{index}].name is required"))
+                })?;
+                let schema = tool.get("input_schema").ok_or_else(|| {
+                    AppError::InvalidRequest(format!(
+                        "tools[{index}].input_schema must be an object"
+                    ))
+                })?;
+                input_validators.insert(
+                    name.to_owned(),
+                    compile_tool_schema(schema, &format!("tools[{index}].input_schema"))?,
+                );
+            }
+        }
         let mut minimum_calls = 0;
         let mut maximum_calls = (!tool_use.parallel_tool_calls).then_some(1);
 
@@ -56,12 +76,13 @@ impl ToolResponsePolicy {
             }
         }
 
-        Self {
+        Ok(Self {
             validation: tool_use.response_validation,
             allowed_names,
+            input_validators,
             minimum_calls,
             maximum_calls,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -69,6 +90,7 @@ impl ToolResponsePolicy {
         Self {
             validation: ToolResponseValidation::BestEffort,
             allowed_names: None,
+            input_validators: HashMap::new(),
             minimum_calls: 0,
             maximum_calls: None,
         }
@@ -98,29 +120,50 @@ impl ToolResponsePolicy {
         Ok(name.to_owned())
     }
 
-    pub fn parse_arguments(&self, arguments: &str) -> Result<Value, AppError> {
-        if arguments.trim().is_empty() {
-            return Ok(Value::Object(Map::new()));
+    pub fn parse_arguments(&self, name: &str, arguments: &str) -> Result<Value, AppError> {
+        let value = if arguments.trim().is_empty() {
+            Value::Object(Map::new())
+        } else {
+            match serde_json::from_str::<Value>(arguments) {
+                Ok(value @ Value::Object(_)) => value,
+                Ok(value) if self.validation == ToolResponseValidation::BestEffort => {
+                    Value::Object(Map::from_iter([("_raw_arguments".to_owned(), value)]))
+                }
+                Err(_) if self.validation == ToolResponseValidation::BestEffort => {
+                    Value::Object(Map::from_iter([(
+                        "_raw_arguments".to_owned(),
+                        Value::String(arguments.to_owned()),
+                    )]))
+                }
+                Ok(_) => {
+                    return Err(AppError::UpstreamProtocol(
+                        "OpenAI-compatible tool arguments must be a JSON object".to_owned(),
+                    ));
+                }
+                Err(error) => {
+                    return Err(AppError::UpstreamProtocol(format!(
+                        "OpenAI-compatible tool arguments are invalid JSON: {error}"
+                    )));
+                }
+            }
+        };
+
+        if self.validation == ToolResponseValidation::Strict {
+            let validator = self.input_validators.get(name).ok_or_else(|| {
+                AppError::UpstreamProtocol(
+                    "OpenAI-compatible tool call has no compiled input schema".to_owned(),
+                )
+            })?;
+            if let Err(error) = validator.validate(&value) {
+                return Err(AppError::UpstreamProtocol(format!(
+                    "OpenAI-compatible tool arguments do not satisfy the declared input schema at {} (schema path {}; value [redacted])",
+                    error.instance_path(),
+                    error.schema_path()
+                )));
+            }
         }
 
-        match serde_json::from_str::<Value>(arguments) {
-            Ok(value @ Value::Object(_)) => Ok(value),
-            Ok(value) if self.validation == ToolResponseValidation::BestEffort => Ok(
-                Value::Object(Map::from_iter([("_raw_arguments".to_owned(), value)])),
-            ),
-            Err(_) if self.validation == ToolResponseValidation::BestEffort => {
-                Ok(Value::Object(Map::from_iter([(
-                    "_raw_arguments".to_owned(),
-                    Value::String(arguments.to_owned()),
-                )])))
-            }
-            Ok(_) => Err(AppError::UpstreamProtocol(
-                "OpenAI-compatible tool arguments must be a JSON object".to_owned(),
-            )),
-            Err(error) => Err(AppError::UpstreamProtocol(format!(
-                "OpenAI-compatible tool arguments are invalid JSON: {error}"
-            ))),
-        }
+        Ok(value)
     }
 
     pub fn validate_call_summary(
@@ -263,6 +306,10 @@ fn validate_tool_definitions(tools: &Value) -> Result<HashSet<String>, AppError>
                 "{path}.input_schema.type must be object"
             )));
         }
+        compile_tool_schema(
+            &Value::Object(schema.clone()),
+            &format!("{path}.input_schema"),
+        )?;
         if object
             .get("strict")
             .is_some_and(|strict| !strict.is_boolean())
@@ -274,6 +321,40 @@ fn validate_tool_definitions(tools: &Value) -> Result<HashSet<String>, AppError>
     }
 
     Ok(names)
+}
+
+fn compile_tool_schema(schema: &Value, path: &str) -> Result<Validator, AppError> {
+    reject_external_schema_references(schema, path)?;
+    jsonschema::validator_for(schema).map_err(|error| {
+        AppError::InvalidRequest(format!("{path} is not a valid JSON Schema: {error}"))
+    })
+}
+
+fn reject_external_schema_references(value: &Value, path: &str) -> Result<(), AppError> {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                let child_path = format!("{path}.{key}");
+                if matches!(key.as_str(), "$ref" | "$dynamicRef")
+                    && child
+                        .as_str()
+                        .is_some_and(|reference| !reference.starts_with('#'))
+                {
+                    return Err(AppError::InvalidRequest(format!(
+                        "{child_path} must be a local JSON Pointer; external schema references are disabled"
+                    )));
+                }
+                reject_external_schema_references(child, &child_path)?;
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                reject_external_schema_references(child, &format!("{path}[{index}]"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn request_uses_tools(request: &AnthropicRequest) -> bool {
@@ -610,6 +691,23 @@ mod tests {
 
     use super::*;
 
+    fn strict_policy(schema: Value) -> ToolResponsePolicy {
+        let request: AnthropicRequest = serde_json::from_value(json!({
+            "model": "test",
+            "tools": [{"name": "lookup", "input_schema": schema}],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+        ToolResponsePolicy::for_anthropic_request(
+            &request,
+            &ToolUseConfig {
+                response_validation: ToolResponseValidation::Strict,
+                ..ToolUseConfig::default()
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn skips_capability_gate_when_request_does_not_use_tools() {
         let request: AnthropicRequest = serde_json::from_value(json!({
@@ -676,6 +774,89 @@ mod tests {
         let error = validate_anthropic_tooling(&request).unwrap_err();
 
         assert!(error.to_string().contains("input_schema must be an object"));
+    }
+
+    #[test]
+    fn strict_response_validation_accepts_nested_schema_conformant_arguments() {
+        let policy = strict_policy(json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "filters": {
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer", "minimum": 1}},
+                    "required": ["limit"],
+                    "additionalProperties": false
+                }
+            },
+            "required": ["query", "filters"],
+            "additionalProperties": false
+        }));
+
+        let value = policy
+            .parse_arguments("lookup", r#"{"query":"rust","filters":{"limit":3}}"#)
+            .unwrap();
+
+        assert_eq!(value["filters"]["limit"], 3);
+    }
+
+    #[test]
+    fn strict_response_validation_rejects_missing_required_and_wrong_types() {
+        let policy = strict_policy(json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "mode": {"enum": ["fast", "deep"]}
+            },
+            "required": ["query", "mode"],
+            "additionalProperties": false
+        }));
+
+        for arguments in [
+            r#"{"query":"rust"}"#,
+            r#"{"query":7,"mode":"fast"}"#,
+            r#"{"query":"rust","mode":"unknown"}"#,
+            r#"{"query":"rust","mode":"fast","extra":true}"#,
+        ] {
+            let error = policy.parse_arguments("lookup", arguments).unwrap_err();
+            assert!(error.to_string().contains("declared input schema"));
+        }
+    }
+
+    #[test]
+    fn strict_response_validation_reports_location_without_leaking_values() {
+        let policy = strict_policy(json!({
+            "type": "object",
+            "properties": {"token": {"type": "integer"}},
+            "required": ["token"],
+            "additionalProperties": false
+        }));
+
+        let error = policy
+            .parse_arguments("lookup", r#"{"token":"secret-value"}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("/token"));
+        assert!(error.contains("[redacted]"));
+        assert!(!error.contains("secret-value"));
+    }
+
+    #[test]
+    fn rejects_invalid_or_external_tool_schemas_before_routing() {
+        for schema in [
+            json!({"type": "object", "properties": {"x": {"type": "not-a-type"}}}),
+            json!({"type": "object", "$ref": "https://example.com/schema.json"}),
+        ] {
+            let request: AnthropicRequest = serde_json::from_value(json!({
+                "model": "test",
+                "tools": [{"name": "lookup", "input_schema": schema}],
+                "messages": [{"role": "user", "content": "hello"}]
+            }))
+            .unwrap();
+
+            assert!(validate_anthropic_tooling(&request).is_err());
+        }
     }
 
     #[test]

@@ -299,6 +299,30 @@ strict_response_guard_request() {
   ' "$model" "$tool_name" "$prompt"
 }
 
+strict_schema_guard_request() {
+  local model="$1"
+  node -e '
+    process.stdout.write(JSON.stringify({
+      model: process.argv[1],
+      max_tokens: 64,
+      tools: [{
+        name: "read_file",
+        input_schema: {
+          type: "object",
+          properties: {
+            path: { type: "string", minLength: 1 },
+            encoding: { enum: ["utf8", "base64"] }
+          },
+          required: ["path", "encoding"],
+          additionalProperties: false
+        }
+      }],
+      tool_choice: { type: "tool", name: "read_file" },
+      messages: [{ role: "user", content: "MODELPORT_SCHEMA_MISMATCH_FIXTURE" }]
+    }));
+  ' "$model"
+}
+
 post_message() {
   local payload="$1"
   curl_local -sS -m "$timeout_secs" \
@@ -520,6 +544,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (lastText.includes("MODELPORT_SCHEMA_MISMATCH_FIXTURE")) {
+    writeJson(res, {
+      id: "chatcmpl_schema_mismatch_fixture",
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call_schema_mismatch",
+            type: "function",
+            function: {
+              name: "read_file",
+              arguments: "{\"path\":7,\"encoding\":\"unknown\",\"extra\":true}"
+            }
+          }]
+        }
+      }]
+    });
+    return;
+  }
+
   writeJson(res, {
     id: "chatcmpl_tool_acceptance",
     choices: [{
@@ -695,6 +741,15 @@ run_strict_response_rejections() {
     exit 1
   fi
   ok "strict response validation blocks non-object upstream arguments"
+
+  status="$(post_message "$(strict_schema_guard_request "$test_model")")"
+  expect_status "$status" "502" "strict JSON Schema mismatch rejection"
+  if ! grep -q 'declared input schema' "$body_file"; then
+    printf '[fail] strict response error did not identify a schema mismatch\n' >&2
+    sed -n '1,120p' "$body_file" >&2 || true
+    exit 1
+  fi
+  ok "strict response validation blocks wrong types, enums, required fields, and extras"
 }
 
 if [[ "$mode" == "mock" ]]; then

@@ -66,7 +66,8 @@ The gateway rejects malformed Tool Use before contacting a provider:
 - `tools` must be an array of objects with unique 1–64 character names using
   ASCII letters, digits, `_`, or `-`;
 - descriptions must be strings; `input_schema` is required and must declare an
-  object schema; optional `strict` must be boolean;
+  object schema; the schema must compile locally and may only use local JSON
+  Pointer `$ref`/`$dynamicRef` references; optional `strict` must be boolean;
 - `tool_choice` must be `auto`, `any`, `none`, or `tool`; a named choice must
   reference a declared tool when definitions are present;
 - `any` and named `tool` choices require a non-empty tool list;
@@ -110,7 +111,15 @@ native pass-through semantics.
 The stream can still end with an Anthropic error event or OpenAI error data
 after HTTP 200. A half-written JSON argument is not guaranteed recoverable.
 Strict response validation requires the delivered aggregate to be a JSON object
-and verifies the returned name and call count against the original request.
+and verifies the returned name, call count, and arguments against the selected
+tool's complete `input_schema` (including nested types, required properties,
+enums, numeric/string constraints, and `additionalProperties`). Response
+validation reports the failing JSON Pointer while masking instance values, so
+tool arguments are not copied into errors or logs.
+In live delta mode, `content_block_start` and argument deltas can precede this
+aggregate validation. A rejected call ends with an error event and no valid
+`content_block_stop`; clients must never execute a tool before that successful
+terminal block signal. Buffered stream mode validates before emitting blocks.
 
 The live handshake requires a non-204 2xx response with
 `text/event-stream`. Native Anthropic completion requires `message_stop`;
@@ -198,7 +207,6 @@ schema limits, tool-choice support, argument streaming, or account entitlement.
 
 - A provider-neutral Tool IR and provider-specific schema transformation.
 - Schema normalization beyond strict names, object arguments, call IDs, tool
-  choice, and parallel-count enforcement.
-- Final live-stream lifecycle accounting and fallback after response headers.
+- Cross-provider schema normalization for provider-specific dialects.
 - Provider-specific argument repair beyond the current bounded best effort.
 - A committed real-provider verification ledger.

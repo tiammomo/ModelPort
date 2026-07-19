@@ -59,7 +59,10 @@ The persisted usage log records:
 - request ID, time, identity, API-key/team labels;
 - requested and resolved model, provider, and protocol;
 - whether the request declares/selects tools or continues a Tool Use exchange;
-- stream flag, status/status code, latency, retry/fallback;
+- aggregate Tool Use outcome (`tool_called`, `continuation_tool_called`,
+  `final_answer`, `answered_without_tool`, unobserved completion, or failure);
+- stream flag, status/status code, lifecycle latency, stream-only first
+  semantic latency, retry/fallback;
 - input/output/cache tokens and estimated cost;
 - client IP, request path, and a bounded error message.
 
@@ -67,6 +70,14 @@ It intentionally does not store prompts, complete messages, raw request bodies,
 raw provider bodies, tool names/arguments/results, or plaintext keys. The
 dashboard's protocol JSON panels are reconstructed summaries unless explicitly
 labelled otherwise.
+
+An HTTP-successful request is not automatically counted as a model tool call.
+`tool_called` means a validated response contained at least one tool call;
+`final_answer` means a request containing prior tool results completed without
+another call. `answered_without_tool` is a successful initial tool-enabled turn
+that returned text instead. These are request-level observations; ModelPort
+does not execute business tools and therefore cannot by itself certify the
+application's end-to-end task result.
 
 `MODELPORT_USAGE_LOG_LIMIT` defaults to 5,000 records. Records contain personal
 and network metadata, so protect database dumps, CLI backups, and diagnostic
@@ -121,7 +132,10 @@ Token and cost values are operational estimates, not invoices. Inspect
 `billingMode` for provenance: `upstream-returned` means the completed adapter
 path exposed Provider-reported token counts, while `local-estimate` means
 ModelPort used its request heuristic. Both use ModelPort's local pricing table.
-Live-stream records use Provider usage when recognized Anthropic/OpenAI usage
+`firstByteLatencyMs` is null for non-stream requests. For live streams it starts
+at the upstream attempt and stops at the first non-empty text delta or tool-call
+event, not at an SSE keepalive or metadata-only frame. Live-stream records use
+Provider usage when recognized Anthropic/OpenAI usage
 appears in the event stream; otherwise they rely on the input estimate and
 requested maximum output. The `buffer_stream_text=true` compatibility path
 completes the non-stream upstream response before local SSE and can also use

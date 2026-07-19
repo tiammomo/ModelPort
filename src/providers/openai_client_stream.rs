@@ -81,6 +81,7 @@ pub(crate) fn openai_stream_passthrough(
                 if let Some(usage) = pricing::openai_usage_if_present(&chunk) {
                     stream_lifecycle.merge_usage(usage);
                 }
+                observe_openai_stream_chunk(&stream_lifecycle, &chunk);
                 if chunk
                     .get("choices")
                     .and_then(Value::as_array)
@@ -124,6 +125,7 @@ pub(crate) fn anthropic_stream_to_openai(
         let mut finish_emitted = false;
         let mut tool_indexes = BTreeMap::<usize, usize>::new();
         let mut next_tool_index = 0usize;
+        let mut text_present = false;
 
         while let Some(frame) = frames.next().await {
             let frame = match frame {
@@ -201,6 +203,11 @@ pub(crate) fn anthropic_stream_to_openai(
                             let tool_index = next_tool_index;
                             next_tool_index = next_tool_index.saturating_add(1);
                             tool_indexes.insert(block_index, tool_index);
+                            stream_lifecycle.observe_response_fragment(
+                                next_tool_index,
+                                text_present,
+                                None,
+                            );
                             yield openai_chunk_event(
                                 &completion_id,
                                 created,
@@ -224,6 +231,18 @@ pub(crate) fn anthropic_stream_to_openai(
                         let delta = event.get("delta").unwrap_or(&Value::Null);
                         match delta.get("type").and_then(Value::as_str) {
                             Some("text_delta") => {
+                                if delta
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| !text.is_empty())
+                                {
+                                    text_present = true;
+                                    stream_lifecycle.observe_response_fragment(
+                                        next_tool_index,
+                                        true,
+                                        None,
+                                    );
+                                }
                                 yield openai_chunk_event(
                                     &completion_id,
                                     created,
@@ -269,6 +288,11 @@ pub(crate) fn anthropic_stream_to_openai(
                             .and_then(Value::as_str)
                             .unwrap_or("end_turn");
                         finish_emitted = true;
+                        stream_lifecycle.observe_response_fragment(
+                            next_tool_index,
+                            text_present,
+                            Some(stop_reason),
+                        );
                         yield openai_chunk_event(
                             &completion_id,
                             created,
@@ -328,6 +352,42 @@ pub(crate) fn anthropic_stream_to_openai(
         stream_lifecycle.mark_failed(error.to_string());
         yield openai_error_event(&error);
     }
+}
+
+fn observe_openai_stream_chunk(stream_lifecycle: &StreamLifecycle, chunk: &Value) {
+    let mut tool_call_count = 0usize;
+    let mut text_present = false;
+    let mut stop_reason = None;
+    for choice in chunk
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if let Some(delta) = choice.get("delta") {
+            text_present |= delta
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty());
+            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                tool_call_count = tool_call_count.max(
+                    tool_calls
+                        .iter()
+                        .filter_map(|call| call.get("index").and_then(Value::as_u64))
+                        .max()
+                        .map_or(tool_calls.len(), |index| index as usize + 1),
+                );
+            }
+            if delta.get("function_call").is_some_and(Value::is_object) {
+                tool_call_count = tool_call_count.max(1);
+            }
+        }
+        stop_reason = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .or(stop_reason);
+    }
+    stream_lifecycle.observe_response_fragment(tool_call_count, text_present, stop_reason);
 }
 
 pub(crate) fn openai_complete_to_stream(

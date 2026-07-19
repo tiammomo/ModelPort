@@ -183,7 +183,7 @@ pub fn openai_response_to_anthropic(
                 .get("arguments")
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
-            let input = tool_policy.parse_arguments(arguments)?;
+            let input = tool_policy.parse_arguments(&name, arguments)?;
 
             content.push(json!({
                 "type": "tool_use",
@@ -205,7 +205,7 @@ pub fn openai_response_to_anthropic(
             "type": "tool_use",
             "id": format!("toolu_{}", Uuid::new_v4().simple()),
             "name": name,
-            "input": tool_policy.parse_arguments(arguments)?
+            "input": tool_policy.parse_arguments(&name, arguments)?
         }));
     }
 
@@ -851,7 +851,7 @@ mod tests {
             response_validation: ToolResponseValidation::Strict,
             ..ToolUseConfig::default()
         };
-        let policy = ToolResponsePolicy::for_anthropic_request(&request, &tool_use);
+        let policy = ToolResponsePolicy::for_anthropic_request(&request, &tool_use).unwrap();
         let response = json!({
             "choices": [{
                 "finish_reason": "tool_calls",
@@ -879,7 +879,7 @@ mod tests {
             response_validation: ToolResponseValidation::Strict,
             ..ToolUseConfig::default()
         };
-        let policy = ToolResponsePolicy::for_anthropic_request(&request, &tool_use);
+        let policy = ToolResponsePolicy::for_anthropic_request(&request, &tool_use).unwrap();
         let response = json!({
             "choices": [{
                 "finish_reason": "tool_calls",

@@ -1,16 +1,31 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use serde_json::Value;
 
 use crate::pricing::TokenUsageBreakdown;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct StreamLifecycle {
     inner: Arc<Mutex<StreamLifecycleInner>>,
+    started_at: Instant,
 }
 
 #[derive(Debug, Default)]
 struct StreamLifecycleInner {
     state: UpstreamStreamState,
     usage: Option<TokenUsageBreakdown>,
+    first_semantic_latency: Option<Duration>,
+    response: ResponseObservation,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ResponseObservation {
+    pub(crate) tool_call_count: usize,
+    pub(crate) text_present: bool,
+    pub(crate) stop_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -23,7 +38,107 @@ pub(crate) enum UpstreamStreamState {
 
 impl StreamLifecycle {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(Mutex::new(StreamLifecycleInner::default())),
+            started_at: Instant::now(),
+        }
+    }
+
+    pub(crate) fn mark_first_semantic_event(&self) {
+        let mut inner = self.inner.lock().expect("stream lifecycle lock poisoned");
+        inner
+            .first_semantic_latency
+            .get_or_insert_with(|| self.started_at.elapsed());
+    }
+
+    pub(crate) fn first_semantic_latency(&self) -> Option<Duration> {
+        self.inner
+            .lock()
+            .expect("stream lifecycle lock poisoned")
+            .first_semantic_latency
+    }
+
+    pub(crate) fn observe_response_fragment(
+        &self,
+        tool_call_count: usize,
+        text_present: bool,
+        stop_reason: Option<&str>,
+    ) {
+        if tool_call_count > 0 || text_present {
+            self.mark_first_semantic_event();
+        }
+        self.merge_response(tool_call_count, text_present, stop_reason);
+    }
+
+    fn merge_response(
+        &self,
+        tool_call_count: usize,
+        text_present: bool,
+        stop_reason: Option<&str>,
+    ) {
+        let mut inner = self.inner.lock().expect("stream lifecycle lock poisoned");
+        inner.response.tool_call_count = inner.response.tool_call_count.max(tool_call_count);
+        inner.response.text_present |= text_present;
+        if let Some(stop_reason) = stop_reason {
+            inner.response.stop_reason = Some(stop_reason.to_owned());
+        }
+    }
+
+    pub(crate) fn response_observation(&self) -> ResponseObservation {
+        self.inner
+            .lock()
+            .expect("stream lifecycle lock poisoned")
+            .response
+            .clone()
+    }
+
+    pub(crate) fn observe_openai_response(&self, response: &Value) {
+        let Some(choice) = response
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            return;
+        };
+        let message = choice.get("message").unwrap_or(&Value::Null);
+        let tool_call_count = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+            + usize::from(message.get("function_call").is_some_and(Value::is_object));
+        let text_present = message
+            .get("content")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty());
+        self.merge_response(
+            tool_call_count,
+            text_present,
+            choice.get("finish_reason").and_then(Value::as_str),
+        );
+    }
+
+    pub(crate) fn observe_anthropic_response(&self, response: &Value) {
+        let blocks = response
+            .get("content")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let tool_call_count = blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            .count();
+        let text_present = blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("text")
+                && block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+        });
+        self.merge_response(
+            tool_call_count,
+            text_present,
+            response.get("stop_reason").and_then(Value::as_str),
+        );
     }
 
     pub(crate) fn mark_completed(&self) {
@@ -62,6 +177,12 @@ impl StreamLifecycle {
             .lock()
             .expect("stream lifecycle lock poisoned")
             .usage
+    }
+}
+
+impl Default for StreamLifecycle {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -208,6 +329,24 @@ mod tests {
                 cache_read_tokens: 3,
                 ..TokenUsageBreakdown::default()
             })
+        );
+    }
+
+    #[test]
+    fn response_observation_merges_stream_fragments_and_captures_ttft_once() {
+        let lifecycle = StreamLifecycle::new();
+        lifecycle.observe_response_fragment(0, true, None);
+        let first = lifecycle.first_semantic_latency().unwrap();
+        lifecycle.observe_response_fragment(2, false, Some("tool_calls"));
+
+        assert_eq!(lifecycle.first_semantic_latency(), Some(first));
+        assert_eq!(
+            lifecycle.response_observation(),
+            ResponseObservation {
+                tool_call_count: 2,
+                text_present: true,
+                stop_reason: Some("tool_calls".to_owned()),
+            }
         );
     }
 }

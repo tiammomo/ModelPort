@@ -208,6 +208,11 @@ pub(crate) fn openai_stream_to_anthropic(
                         if content.is_empty() {
                             continue;
                         }
+                        stream_lifecycle.observe_response_fragment(
+                            tools.len(),
+                            true,
+                            upstream_finish_reason.as_deref(),
+                        );
 
                         let index = match text_index {
                             Some(index) => index,
@@ -239,6 +244,7 @@ pub(crate) fn openai_stream_to_anthropic(
 
                     if let Some(tool_calls) = choice.delta.tool_calls {
                         for tool_call in tool_calls {
+                            let observed_tool_count = tool_call.index.saturating_add(1);
                             let state = tools.entry(tool_call.index).or_insert_with(|| {
                                 let index = next_index;
                                 next_index += 1;
@@ -267,6 +273,11 @@ pub(crate) fn openai_stream_to_anthropic(
                             }
 
                             if !state.started && state.name.is_some() {
+                                stream_lifecycle.observe_response_fragment(
+                                    observed_tool_count,
+                                    !text_seen.is_empty(),
+                                    upstream_finish_reason.as_deref(),
+                                );
                                 yield start_tool_state(state, &tool_policy)?;
                                 if let Some(event) =
                                     pending_tool_arguments_event(state, deduplicate_tool_arguments)?
@@ -301,6 +312,11 @@ pub(crate) fn openai_stream_to_anthropic(
                         }
 
                         if !state.started && state.name.is_some() {
+                            stream_lifecycle.observe_response_fragment(
+                                1,
+                                !text_seen.is_empty(),
+                                upstream_finish_reason.as_deref(),
+                            );
                             yield start_tool_state(state, &tool_policy)?;
                             if let Some(event) =
                                 pending_tool_arguments_event(state, deduplicate_tool_arguments)?
@@ -356,7 +372,8 @@ pub(crate) fn openai_stream_to_anthropic(
                 } else {
                     state.all_arguments.clone()
                 };
-                tool_policy.parse_arguments(&arguments)?;
+                let name = tool_policy.validate_name(state.name.as_deref())?;
+                tool_policy.parse_arguments(&name, &arguments)?;
             }
             tool_policy.validate_call_summary(
                 tools.len(),
@@ -368,6 +385,12 @@ pub(crate) fn openai_stream_to_anthropic(
             yield anthropic_error_event(&error)?;
             return;
         }
+
+        stream_lifecycle.observe_response_fragment(
+            tools.len(),
+            !text_seen.is_empty(),
+            upstream_finish_reason.as_deref(),
+        );
 
         stream_lifecycle.mark_completed();
 

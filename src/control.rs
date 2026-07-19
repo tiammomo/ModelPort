@@ -2683,8 +2683,7 @@ impl ControlStore {
                 } else {
                     (cache_total as f64 / billed_input_tokens as f64) * 100.0
                 };
-                let first_byte_latency_ms =
-                    record.first_byte_latency_ms.unwrap_or(record.latency_ms);
+                let first_byte_latency_ms = record.first_byte_latency_ms;
                 let request_path = record
                     .request_path
                     .clone()

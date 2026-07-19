@@ -26,7 +26,8 @@ not a public multi-tenant model platform, a chat client, or a model runtime.
   `POST /v1/messages/count_tokens`, scoped OpenAI-compatible
   `POST /v1/chat/completions`, and `GET /v1/models`.
 - Anthropic pass-through and OpenAI Chat Completions conversion.
-- Anthropic-style SSE conversion, including common Tool Use deltas.
+- Anthropic-style SSE conversion, including common Tool Use deltas, complete
+  per-tool JSON Schema response validation, and semantic Tool outcome telemetry.
 - Model aliases, `provider:model`, exact-model and prefix routing.
 - Legacy local token and dashboard-issued API keys with model/provider/IP,
   rolling spend-window, and user-quota policy.
@@ -82,6 +83,8 @@ compatibility. Dated verification belongs in the
   preserve whether usage came from the upstream or a local estimate. Stream
   logs and health are finalized when the response body completes, fails, or is
   dropped rather than when the initial HTTP 200 is accepted.
+  Stream-only first-semantic latency is recorded at the first non-empty text or
+  Tool Call event; non-stream lifecycle latency is not mislabeled as TTFT.
 
 These mechanisms are implemented. PostgreSQL tenant budgets are distributed
 hard admission control, but Provider invoices remain authoritative and the

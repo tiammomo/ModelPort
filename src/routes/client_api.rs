@@ -19,7 +19,9 @@ use crate::{
     exchange::{ClientRequest, ExchangeRequest, OpenAiChatRequest},
     pricing::{self, ModelPricing, TokenUsageBreakdown},
     providers,
-    stream_lifecycle::{StreamLifecycle, StreamTerminalOutcome, UpstreamStreamState},
+    stream_lifecycle::{
+        ResponseObservation, StreamLifecycle, StreamTerminalOutcome, UpstreamStreamState,
+    },
     types::{AnthropicCountTokensRequest, AnthropicRequest, validate_anthropic_tooling},
 };
 
@@ -661,6 +663,11 @@ async fn handle_inference(
         "local-estimate"
     };
     let tool_use_requested = exchange.uses_tools();
+    let tool_continuation = exchange.has_tool_results();
+    let response_observation = last_sent
+        .as_ref()
+        .map(|sent| sent.stream_lifecycle.response_observation())
+        .unwrap_or_default();
     let terminal_reason = if success {
         "completed"
     } else if timed_out {
@@ -670,10 +677,12 @@ async fn handle_inference(
     };
     let tool_outcome = classify_tool_outcome(
         tool_use_requested,
+        tool_continuation,
         success,
         timed_out,
         terminal_reason,
         error_message.as_deref(),
+        &response_observation,
     );
 
     let usage = UsageEventInput {
@@ -697,7 +706,13 @@ async fn handle_inference(
         billing_mode: billing_mode.to_owned(),
         chargeable,
         latency: duration,
-        first_byte_latency: Some(duration),
+        first_byte_latency: stream
+            .then(|| {
+                last_sent
+                    .as_ref()
+                    .and_then(|sent| sent.stream_lifecycle.first_semantic_latency())
+            })
+            .flatten(),
         retry_count,
         fallback_from_provider,
         client_ip: request_client_ip,
@@ -715,6 +730,7 @@ async fn handle_inference(
             StreamFinalizationContext {
                 state,
                 usage,
+                tool_continuation,
                 credential_id: sent.credential_id,
                 pricing: sent.pricing,
                 lifecycle: sent.stream_lifecycle,
@@ -845,16 +861,32 @@ fn validate_context_budget(
 
 fn classify_tool_outcome(
     requested: bool,
+    continuation: bool,
     success: bool,
     timed_out: bool,
     terminal_reason: &str,
     error_message: Option<&str>,
+    response: &ResponseObservation,
 ) -> String {
     if !requested {
         return "not_requested".to_owned();
     }
     if success {
-        return "completed".to_owned();
+        if response.tool_call_count > 0 {
+            return if continuation {
+                "continuation_tool_called"
+            } else {
+                "tool_called"
+            }
+            .to_owned();
+        }
+        if continuation {
+            return "final_answer".to_owned();
+        }
+        if response.text_present {
+            return "answered_without_tool".to_owned();
+        }
+        return "completed_unobserved".to_owned();
     }
     if terminal_reason == "downstream_cancelled" {
         return "client_cancelled".to_owned();
@@ -907,6 +939,7 @@ fn request_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, AppErr
 struct StreamFinalizationContext {
     state: AppState,
     usage: UsageEventInput,
+    tool_continuation: bool,
     credential_id: Option<String>,
     pricing: Option<ModelPricing>,
     lifecycle: StreamLifecycle,
@@ -942,12 +975,15 @@ impl StreamFinalizationContext {
         self.usage.error_message = outcome.error_message().map(str::to_owned);
         self.usage.tool_outcome = classify_tool_outcome(
             self.usage.tool_use_requested,
+            self.tool_continuation,
             self.usage.success,
             self.usage.timed_out,
             &self.usage.terminal_reason,
             self.usage.error_message.as_deref(),
+            &self.lifecycle.response_observation(),
         );
         self.usage.latency = duration;
+        self.usage.first_byte_latency = self.lifecycle.first_semantic_latency();
 
         self.state
             .metrics
@@ -1453,7 +1489,7 @@ fn estimate_usage(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_tool_outcome, validate_context_budget};
+    use super::{ResponseObservation, classify_tool_outcome, validate_context_budget};
 
     #[test]
     fn context_budget_accepts_reasoning_within_recommended_limit() {
@@ -1485,20 +1521,55 @@ mod tests {
 
     #[test]
     fn tool_outcome_distinguishes_lifecycle_and_protocol_failures() {
+        let empty = ResponseObservation::default();
         assert_eq!(
-            classify_tool_outcome(false, true, false, "completed", None),
+            classify_tool_outcome(false, false, true, false, "completed", None, &empty),
             "not_requested"
         );
         assert_eq!(
-            classify_tool_outcome(true, true, false, "completed", None),
-            "completed"
+            classify_tool_outcome(
+                true,
+                false,
+                true,
+                false,
+                "completed",
+                None,
+                &ResponseObservation {
+                    tool_call_count: 1,
+                    ..ResponseObservation::default()
+                },
+            ),
+            "tool_called"
         );
         assert_eq!(
-            classify_tool_outcome(true, false, false, "downstream_cancelled", None),
+            classify_tool_outcome(
+                true,
+                true,
+                true,
+                false,
+                "completed",
+                None,
+                &ResponseObservation {
+                    text_present: true,
+                    ..ResponseObservation::default()
+                },
+            ),
+            "final_answer"
+        );
+        assert_eq!(
+            classify_tool_outcome(
+                true,
+                false,
+                false,
+                false,
+                "downstream_cancelled",
+                None,
+                &empty,
+            ),
             "client_cancelled"
         );
         assert_eq!(
-            classify_tool_outcome(true, false, true, "upstream_timeout", None),
+            classify_tool_outcome(true, false, false, true, "upstream_timeout", None, &empty,),
             "timeout"
         );
         assert_eq!(
@@ -1506,13 +1577,23 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
                 "upstream_protocol_error",
                 Some("tool_use input_json is invalid"),
+                &empty,
             ),
             "protocol_error"
         );
         assert_eq!(
-            classify_tool_outcome(true, false, false, "upstream_error", Some("HTTP 502")),
+            classify_tool_outcome(
+                true,
+                false,
+                false,
+                false,
+                "upstream_error",
+                Some("HTTP 502"),
+                &empty,
+            ),
             "upstream_or_delivery_error"
         );
     }

@@ -51,11 +51,9 @@ pub async fn chat_completions(
     } else {
         let upstream = state.transport.post_json(&url, &headers, &body).await?;
         let usage = pricing::anthropic_usage_if_present(&upstream);
-        let mut response = Json(anthropic_response_to_openai(
-            &upstream,
-            &request.requested_model,
-        )?)
-        .into_response();
+        let converted = anthropic_response_to_openai(&upstream, &request.requested_model)?;
+        stream_lifecycle.observe_openai_response(&converted);
+        let mut response = Json(converted).into_response();
         if let Some(usage) = usage {
             response.headers_mut().insert(
                 USAGE_HEADER,
@@ -109,6 +107,7 @@ pub async fn messages(
     } else {
         let response = state.transport.post_json(&url, &headers, &body).await?;
         let usage = pricing::anthropic_usage_if_present(&response);
+        stream_lifecycle.observe_anthropic_response(&response);
         let mut response = Json(response).into_response();
         if let Some(usage) = usage {
             response.headers_mut().insert(
@@ -162,6 +161,8 @@ fn normalize_anthropic_stream(
         let mut text_seen = BTreeMap::<usize, String>::new();
         let mut saw_event = false;
         let mut saw_message_stop = false;
+        let mut tool_call_count = 0usize;
+        let mut text_present = false;
 
         while let Some(result) = frames.next().await {
             let frame = match result {
@@ -234,6 +235,40 @@ fn normalize_anthropic_stream(
                     .and_then(Value::as_str)
             {
                 block_types.insert(index, block_type.to_owned());
+                if block_type == "tool_use" {
+                    tool_call_count = tool_call_count.saturating_add(1);
+                    stream_lifecycle.observe_response_fragment(
+                        tool_call_count,
+                        text_present,
+                        None,
+                    );
+                }
+            }
+
+            if event_type.as_deref() == Some("content_block_delta")
+                && data
+                    .get("delta")
+                    .and_then(|delta| delta.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("text_delta")
+                && data
+                    .get("delta")
+                    .and_then(|delta| delta.get("text"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+            {
+                text_present = true;
+                stream_lifecycle.observe_response_fragment(tool_call_count, true, None);
+            }
+
+            if event_type.as_deref() == Some("message_delta") {
+                stream_lifecycle.observe_response_fragment(
+                    tool_call_count,
+                    text_present,
+                    data.get("delta")
+                        .and_then(|delta| delta.get("stop_reason"))
+                        .and_then(Value::as_str),
+                );
             }
 
             if deduplicate_stream_text
