@@ -253,6 +253,22 @@ There are two different exports:
 2. The CLI backup contains password and API-key hashes and can restore state.
    Treat it like a credential database.
 
+For the recommended PostgreSQL Compose deployment, the complete single-host
+backup and non-destructive restore drill are:
+
+```bash
+scripts/backup-compose.sh create
+scripts/backup-compose.sh verify backups/modelport-<UTC>.tar.gz
+scripts/backup-compose.sh drill backups/modelport-<UTC>.tar.gz
+```
+
+This includes PostgreSQL, `config.toml`, and the Compose environment file. The
+archive therefore contains Provider and service credentials in plaintext, even
+though its directory/file permissions are restricted to `0700`/`0600`.
+Replicate it only to encrypted access-controlled storage. `drill` restores into
+an isolated temporary PostgreSQL container and verifies required application
+namespaces without stopping or modifying production.
+
 ```bash
 model-port backup export /secure/modelport-backup.json
 model-port backup validate /secure/modelport-backup.json
@@ -271,8 +287,9 @@ Stop writers before restore. The command saves the previous logical auth and
 control values next to the supplied backup path before replacing them. Auth and
 control are then replaced sequentially, not in one cross-document transaction;
 a second-write failure can require recovery from those saved values. For
-PostgreSQL deployments, also keep normal `pg_dump` backups; for JSON storage,
-back up the state directory with restrictive permissions.
+PostgreSQL deployments must keep the database-native dump produced by
+`backup-compose.sh`; the CLI export alone operates on file-backend documents.
+For JSON storage, back up the state directory with restrictive permissions.
 
 ## Provider Diagnosis
 

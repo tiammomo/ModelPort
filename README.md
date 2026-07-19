@@ -329,6 +329,18 @@ diagnostics are redacted before they reach durable telemetry.
 
 Read [SECURITY.md](SECURITY.md) for the threat model and reporting process.
 
+For a single-host PostgreSQL deployment, create and prove a complete backup
+before upgrades:
+
+```bash
+scripts/backup-compose.sh create
+scripts/backup-compose.sh drill backups/modelport-<UTC>.tar.gz
+```
+
+The archive contains the database and plaintext runtime credentials. It is
+ignored by Git and written with restrictive permissions, but still requires
+encrypted off-device storage for disk-loss recovery.
+
 ## Local Development
 
 ```bash

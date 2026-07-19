@@ -301,6 +301,16 @@ scripts/check-all.sh
 
 完整工具链和测试矩阵见[开发文档](docs/DEVELOPMENT.md)。
 
+单机 PostgreSQL 部署在升级前应生成完整备份并执行隔离恢复演练：
+
+```bash
+scripts/backup-compose.sh create
+scripts/backup-compose.sh drill backups/modelport-<UTC>.tar.gz
+```
+
+备份包含数据库和明文运行凭证，已被 Git 忽略并使用收敛权限，但要抵御磁盘损坏仍需
+复制到加密、受控的异机存储。
+
 ## 文档
 
 - [文档索引](docs/README.md)

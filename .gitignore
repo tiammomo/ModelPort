@@ -3,6 +3,7 @@
 .env.backup-*
 /config.toml
 .modelport/
+/backups/
 .claude/settings.json
 dashboard/playwright-report/
 dashboard/test-results/

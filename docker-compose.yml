@@ -15,6 +15,11 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${MODELPORT_LOG_MAX_SIZE:-10m}
+        max-file: "${MODELPORT_LOG_MAX_FILES:-5}"
 
   modelport:
     build:
@@ -60,6 +65,11 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${MODELPORT_LOG_MAX_SIZE:-10m}
+        max-file: "${MODELPORT_LOG_MAX_FILES:-5}"
 
   dashboard:
     build:
@@ -80,6 +90,11 @@ services:
     ports:
       - "${MODELPORT_DASHBOARD_PUBLISH:-127.0.0.1:33002}:8080"
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${MODELPORT_LOG_MAX_SIZE:-10m}
+        max-file: "${MODELPORT_LOG_MAX_FILES:-5}"
 
 volumes:
   modelport-data:
