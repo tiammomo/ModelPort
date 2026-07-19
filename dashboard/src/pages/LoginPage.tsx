@@ -121,7 +121,7 @@ export function LoginPage() {
       <Card className="relative grid h-auto min-h-[560px] w-full max-w-[1380px] overflow-hidden rounded-2xl border-slate-200/80 bg-[#f8fbfd] shadow-[0_32px_90px_rgba(15,23,42,0.16)] lg:min-h-[730px] lg:grid-cols-[1.42fr_0.88fr]">
         <div className="relative hidden min-h-[730px] overflow-hidden bg-[#f8f4ec] text-slate-950 lg:block">
           <img
-            src="/login-gateway-hero-v3.png"
+            src="/login-gateway-hero-v9.png"
             alt=""
             aria-hidden="true"
             fetchPriority="high"

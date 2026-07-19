@@ -7,9 +7,11 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute, RoleRoute } from '@/components/layout/ProtectedRoute'
 import { LoadingPage } from '@/components/shared/LoadingPage'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { isChunkLoadError, reloadWithFreshAssets } from '@/lib/chunk-recovery'
 
 const LoginPage = lazy(() => import('@/pages/LoginPage').then((module) => ({ default: module.LoginPage })))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage').then((module) => ({ default: module.DashboardPage })))
+const UsageGuidePage = lazy(() => import('@/pages/UsageGuidePage').then((module) => ({ default: module.UsageGuidePage })))
 const ApiKeysPage = lazy(() => import('@/pages/ApiKeysPage').then((module) => ({ default: module.ApiKeysPage })))
 const UsersPage = lazy(() => import('@/pages/UsersPage').then((module) => ({ default: module.UsersPage })))
 const QuotasPage = lazy(() => import('@/pages/QuotasPage').then((module) => ({ default: module.QuotasPage })))
@@ -41,12 +43,17 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 
   render() {
     if (this.state.hasError) {
+      const chunkLoadFailed = isChunkLoadError(this.state.error)
       return (
         <div className="flex h-64 items-center justify-center">
           <ErrorState
             title="页面加载出错"
-            message={this.state.error?.message || '发生了未知错误'}
-            onRetry={() => this.setState({ hasError: false, error: null })}
+            message={chunkLoadFailed
+              ? '检测到前端版本已更新，请刷新页面加载最新资源。'
+              : this.state.error?.message || '发生了未知错误'}
+            onRetry={chunkLoadFailed
+              ? reloadWithFreshAssets
+              : () => this.setState({ hasError: false, error: null })}
           />
         </div>
       )
@@ -78,6 +85,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'dashboard', element: lazyPage(<DashboardPage />) },
+      { path: 'guide', element: lazyPage(<UsageGuidePage />) },
       { path: 'api-keys', element: lazyPage(<ApiKeysPage />) },
       { path: 'users', element: <RoleRoute roles={['admin']}>{lazyPage(<UsersPage />)}</RoleRoute> },
       { path: 'quotas', element: <RoleRoute roles={['admin']}>{lazyPage(<QuotasPage />)}</RoleRoute> },

@@ -1,6 +1,7 @@
 export const ROUTES = {
   LOGIN: "/login",
   DASHBOARD: "/dashboard",
+  GUIDE: "/guide",
   API_KEYS: "/api-keys",
   USERS: "/users",
   QUOTAS: "/quotas",
@@ -19,9 +20,10 @@ export const NAV_ITEMS = [
   { path: ROUTES.USERS, label: "用户管理", icon: "Users", section: "治理", keywords: "用户 角色 权限 账号", adminOnly: true },
   { path: ROUTES.QUOTAS, label: "配额管理", icon: "Gauge", section: "治理", keywords: "配额 token 请求 费用 限额", adminOnly: true },
   { path: ROUTES.SETTINGS, label: "系统设置", icon: "Settings", section: "系统", keywords: "配置 运维 安全 备份", adminOnly: true },
+  { path: ROUTES.GUIDE, label: "用户使用说明", icon: "BookOpen", section: "帮助", keywords: "帮助 使用说明 接入 API Key Claude Code OpenAI Quant", adminOnly: false },
 ] as const
 
-export const NAV_SECTIONS = ["运行", "接入", "治理", "系统"] as const
+export const NAV_SECTIONS = ["运行", "接入", "治理", "系统", "帮助"] as const
 
 export function navItemsForRole(role?: string) {
   return NAV_ITEMS.filter((item) => !item.adminOnly || role === "admin")

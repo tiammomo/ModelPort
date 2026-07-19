@@ -13,6 +13,7 @@ import {
   ScrollText,
   Settings,
   ShieldCheck,
+  BookOpen,
   ChevronLeft,
   ChevronRight,
   Zap,
@@ -33,6 +34,7 @@ const iconMap: Record<string, React.ElementType> = {
   ScrollText,
   Settings,
   ShieldCheck,
+  BookOpen,
 }
 
 interface SidebarProps {

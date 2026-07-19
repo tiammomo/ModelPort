@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { navItemsForRole, ROUTES } from './constants'
+import { NAV_ITEMS, navItemsForRole, ROUTES } from './constants'
 
 describe('navItemsForRole', () => {
   it('does not expose administrator destinations to normal users', () => {
@@ -8,6 +8,7 @@ describe('navItemsForRole', () => {
     expect(paths).toContain(ROUTES.DASHBOARD)
     expect(paths).toContain(ROUTES.API_KEYS)
     expect(paths).toContain(ROUTES.LOGS)
+    expect(paths).toContain(ROUTES.GUIDE)
     expect(paths).not.toContain(ROUTES.USERS)
     expect(paths).not.toContain(ROUTES.QUOTAS)
     expect(paths).not.toContain(ROUTES.MODELS)
@@ -16,7 +17,8 @@ describe('navItemsForRole', () => {
   })
 
   it('keeps every destination available to administrators', () => {
-    expect(navItemsForRole('admin')).toHaveLength(8)
+    expect(navItemsForRole('admin')).toHaveLength(NAV_ITEMS.length)
     expect(navItemsForRole('admin').map((item) => item.path)).toContain(ROUTES.ENTERPRISE)
+    expect(navItemsForRole('admin').map((item) => item.path)).toContain(ROUTES.GUIDE)
   })
 })
