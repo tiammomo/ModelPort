@@ -1,6 +1,7 @@
 /target
 .env
 .env.backup-*
+/config.toml
 .modelport/
 .claude/settings.json
 dashboard/playwright-report/

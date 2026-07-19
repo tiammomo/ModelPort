@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/lib.sh"
 if [[ -f "$ENV_FILE" ]]; then
   load_env
 else
-  MODELPORT_BIND="${MODELPORT_BIND:-127.0.0.1:17878}"
+  MODELPORT_BIND="${MODELPORT_BIND:-127.0.0.1:38082}"
 fi
 
 log "bind: $MODELPORT_BIND"

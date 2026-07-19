@@ -29,7 +29,7 @@ esac
 
 load_env
 
-dashboard_url="${MODELPORT_DASHBOARD_URL:-http://127.0.0.1:5173}"
+dashboard_url="${MODELPORT_DASHBOARD_URL:-http://127.0.0.1:33002}"
 admin_username="${MODELPORT_ADMIN_USERNAME:-admin}"
 admin_password="${MODELPORT_ADMIN_PASSWORD:-}"
 acceptance_model="$(default_upstream_model)"

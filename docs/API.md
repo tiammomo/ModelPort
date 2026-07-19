@@ -2,7 +2,7 @@
 
 ModelPort exposes Anthropic Messages and a scoped OpenAI Chat Completions data
 plane plus a dashboard control plane. The default backend origin is
-`http://127.0.0.1:17878`.
+`http://127.0.0.1:38082`.
 
 ## Public Endpoints
 
@@ -16,6 +16,7 @@ plane plus a dashboard control plane. The default backend origin is
 | `GET /readyz` | router/API key | Auth/control and normalized-ledger readiness plus detailed diagnostics; Provider degradation does not fail it. |
 | `GET /v1/models` | router/API key | Configured, visible model and alias catalog. Visibility does not prove upstream health. |
 | `POST /v1/messages` | router/API key | Anthropic-compatible Messages request. |
+| `POST /v1/messages/count_tokens` | router/API key | Exact Provider tokenizer count when the selected Provider enables the capability. |
 | `POST /v1/chat/completions` | router/API key | Scoped OpenAI-compatible Chat Completions request. |
 | `GET /metrics` | router/API key | Prometheus text exposition. |
 
@@ -35,7 +36,7 @@ metrics. The legacy token represents one unrestricted local identity.
 ## Messages
 
 ```bash
-curl -sS http://127.0.0.1:17878/v1/messages \
+curl -sS http://127.0.0.1:38082/v1/messages \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
   -H 'content-type: application/json' \
   -d '{
@@ -57,10 +58,32 @@ features that cannot be represented safely by an OpenAI-compatible provider.
 Request-size and Tool Use limits are documented in
 [Configuration](CONFIGURATION.md#rate-limits-and-request-guardrails).
 
+## Count Tokens
+
+```bash
+curl -sS http://127.0.0.1:38082/v1/messages/count_tokens \
+  -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3.5-code",
+    "messages": [{"role":"user","content":"你好，world"}]
+  }'
+```
+
+The response is `{"input_tokens":N}`. ModelPort validates the same Anthropic
+input and Tool Use guardrails as Messages, resolves aliases, applies API-key and
+team model/Provider/IP policy with zero estimated usage, selects the active
+Provider credential, and forwards the body only when that Provider explicitly
+configures `token_counting.mode="anthropic"`. The count comes from the selected
+upstream tokenizer and chat template; ModelPort does not use its characters/4
+usage estimate here. There is deliberately no cross-provider fallback because
+a count from another tokenizer would be misleading.
+
 ## Chat Completions
 
 ```bash
-curl -sS http://127.0.0.1:17878/v1/chat/completions \
+curl -sS http://127.0.0.1:38082/v1/chat/completions \
   -H "Authorization: Bearer $MODELPORT_AUTH_TOKEN" \
   -H 'content-type: application/json' \
   -d '{
@@ -100,6 +123,14 @@ Resolution is deterministic:
 An entry in `/v1/models` means it is configured and passes the local credential
 visibility check. Keyless local/custom providers can appear even when their
 runtime is offline; use provider testing or a real request for health evidence.
+
+Configured provider models are advertised in both forms, with the stable
+provider-qualified ID first (for example
+`local_qwen:qwen3.5-9b-q5km`) and the legacy unqualified model ID second (for
+example `qwen3.5-9b-q5km`). Long-lived clients should persist the qualified ID
+because it remains unambiguous when two providers expose the same upstream
+model name. Aliases remain separate catalog entries and resolve through the
+same deterministic routing rules.
 
 ## Streaming
 
@@ -272,7 +303,7 @@ Route groups include:
 - `/admin/users`, `/admin/api-keys`, `/admin/teams`, `/admin/quotas`: identity
   and policy.
 - `/admin/providers`, `/admin/aliases`: provider lifecycle, credentials, model
-  inventory, and routes.
+  inventory, routes, and the administrator-only live DeepSeek balance check.
 - `/admin/settings`, `/admin/settings/reload-config`: runtime view, default
   provider/order updates, and base-config reload.
 - `GET /admin/audit`, `POST /admin/backup`: audit events and a redacted,
@@ -397,6 +428,17 @@ current environment-variable name. Send `clearApiKeyEnv: true` to clear it;
 do not combine that flag with a non-empty `apiKeyEnv`, which returns HTTP 400.
 An empty dashboard field is serialized as the explicit clear flag.
 
+`POST /admin/providers/deepseek/balance` performs an administrator-only,
+CSRF-protected live read against DeepSeek's official `GET /user/balance`
+endpoint using the active server-side provider credential. The response
+contains `isAvailable`, CNY/USD `balanceInfos`, `checkedAt`,
+`managementScope=read-monitor-alert`, and
+`billingAuthority=deepseek-console`. It never returns the upstream API key.
+ModelPort may display and alert on the balance, but recharge, refunds, invoices,
+and authoritative settlement remain in the DeepSeek console. Local token-cost
+and transactional-budget ledgers remain independent estimates/evidence and do
+not overwrite the provider invoice.
+
 Non-local/non-custom Provider URLs must use HTTPS unless the process starts
 with `MODELPORT_ALLOW_INSECURE_PROVIDER_HTTP=1`. The override is intended only
 for a trusted internal upstream because HTTP exposes the referenced Provider
@@ -449,6 +491,7 @@ are camelCase:
 | `search` | Case-insensitive substring across log/request/attempt IDs, provider/channel, model, user/key/group/team labels, terminal reason, error/detail, and request path. |
 | `username`, `group` | Case-insensitive substring; `group` checks both group fields. |
 | `stream` | Exact `stream` or `non-stream`. |
+| `toolUse` | Exact `requested` or `not-requested`; classifies the workflow without retaining tool arguments. |
 
 Each textual filter other than `search` is limited to 256 characters;
 `search` is limited to 512. Oversized values return `invalid_request`.
@@ -458,6 +501,9 @@ Results are ordered by timestamp descending. The response is
 and `summary` is calculated over that complete filtered set rather than the
 current page. Summary fields are `totalRequests`, `successRequests`, the four
 token classes, `totalTokens`, `totalCostEstimate`, `rpm`, and `tpm`.
+`toolUseRequests` and `toolUseSuccessRequests` provide the corresponding
+workflow counts. Rows recorded before this field was introduced deserialize as
+`toolUseRequested=false`; use a deployment timestamp when calculating coverage.
 
 Each row's `billingMode` records usage provenance. `upstream-returned` means a
 completed adapter path exposed Provider-reported token usage; `local-estimate`
@@ -471,6 +517,18 @@ and buffered-stream paths can also be `upstream-returned` when the Provider
 supplies usage. `clientProtocol` records `anthropic-messages` or
 `openai-chat-completions` independently from the selected Provider `protocol`,
 and `requestPath` records the public edge used.
+
+`toolUseRequested` is true when the request declares or selects tools, or
+continues an existing tool call/result exchange. It does not prove that the
+model emitted a new call, and ModelPort still does not retain tool names,
+arguments, results, messages, or Provider bodies in the usage log.
+
+`toolOutcome` is an aggregate-only workflow classification:
+`unknown_legacy`, `not_requested`, `completed`, `client_cancelled`, `timeout`,
+`protocol_error`, or `upstream_or_delivery_error`. It is derived from the protocol terminal state
+and sanitized error category; it never contains tool names, arguments, results,
+or raw Provider content. Older rows deserialize as `unknown_legacy` so they do
+not falsely imply that the historical request omitted tools.
 
 Persisted `status` is `success` only after a non-stream response succeeds or a
 stream reaches its protocol terminal signal and downstream body EOF. `timeout`
@@ -488,8 +546,9 @@ to 502, upstream timeouts to 504, and downstream cancellation to 499. Provider
 health uses the upstream outcome, so a downstream cancellation after known
 upstream completion does not incorrectly penalize the Provider.
 
-Malformed/negative numeric queries return HTTP 400. Unsupported `status` or
-`stream`, and `dateFrom > dateTo`, return the normal `invalid_request` envelope.
+Malformed/negative numeric queries return HTTP 400. Unsupported `status`,
+`stream`, or `toolUse`, and `dateFrom > dateTo`, return the normal
+`invalid_request` envelope.
 `GET /admin/logs/{id}` returns one log object directly; an unknown ID returns
 the standard HTTP 404 envelope with `error.code="not_found"`.
 

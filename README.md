@@ -22,7 +22,8 @@ not a public multi-tenant model platform, a chat client, or a model runtime.
 
 ## Implemented Surface
 
-- Anthropic-compatible `POST /v1/messages`, scoped OpenAI-compatible
+- Anthropic-compatible `POST /v1/messages`, opt-in exact
+  `POST /v1/messages/count_tokens`, scoped OpenAI-compatible
   `POST /v1/chat/completions`, and `GET /v1/models`.
 - Anthropic pass-through and OpenAI Chat Completions conversion.
 - Anthropic-style SSE conversion, including common Tool Use deltas.
@@ -32,8 +33,9 @@ not a public multi-tenant model platform, a chat client, or a model runtime.
 - Provider credential pools, cooldown state, bounded fallback, diagnostics,
   request logs, and Prometheus metrics.
 - React dashboard for users, keys, teams, quotas, providers, models, aliases,
-  logs, health, audit, enterprise request/attempt evidence, and redacted
-  diagnostic snapshots.
+  logs, health, audit, enterprise request/attempt evidence, redacted diagnostic
+  snapshots, and an administrator-only live read of the official DeepSeek
+  balance. Recharge and authoritative billing remain in the DeepSeek console.
 - Versioned PostgreSQL request/attempt ledger with tenant foreign keys, SQLx
   pooling, rustls, transactional budget reservation/settlement, and immutable
   evidence events; compatibility JSON-file/PostgreSQL control state; Docker
@@ -94,11 +96,25 @@ boundaries](docs/ARCHITECTURE.md#technical-core).
 
 Requirements: Docker with Compose v2 and credentials for at least one provider.
 
+Choose the upstream topology before copying a template:
+
+| Topology | Default provider | Required upstream secret | Notes |
+| --- | --- | --- | --- |
+| DeepSeek only | `deepseek` | `DEEPSEEK_ANTHROPIC_AUTH_TOKEN` | Uses the official Anthropic-compatible endpoint; supports the administrator balance read. |
+| Local Qwen only | `local_qwen` | none when the runtime has no auth | Requires a TOML `local_qwen` provider and `QWEN_LOCAL_BASE_URL`; omit all DeepSeek variables. |
+| Qwen + DeepSeek | either explicit choice | DeepSeek key plus reachable Qwen runtime | Recommended for QuantPilot: Qwen default, DeepSeek selected with `deepseek:<model>`. |
+
+The upstream Provider key stays in ModelPort. Applications receive a separate
+legacy router token or, preferably, a dashboard-issued scoped client API key.
+See [Configuration: provider topology recipes](docs/CONFIGURATION.md#provider-topology-recipes)
+for complete Qwen-only and combined TOML examples.
+
 ```bash
 cp deploy/docker/modelport.env.example .env
 ```
 
-Edit `.env` and replace at least these values:
+For the DeepSeek-only sample, edit `.env` and replace these values. For
+Qwen-only, use the topology recipe instead and omit the DeepSeek block:
 
 ```env
 MODELPORT_AUTH_TOKEN=replace-with-a-long-random-local-token
@@ -117,6 +133,11 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 model is available to every account. Use the exact model ID enabled by your
 provider.
 
+For the maintained QuantPilot integration, configure `local_qwen` and
+`deepseek` in ModelPort, issue a client key scoped to the required providers and
+models, and put only that client key in QuantPilot as `MODELPORT_API_KEY`.
+QuantPilot must never receive `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`.
+
 Start and inspect the stack:
 
 ```bash
@@ -133,10 +154,10 @@ is process-memory only.
 
 Open:
 
-- Dashboard: `http://127.0.0.1:5173`
-- Liveness: `http://127.0.0.1:17878/livez`
-- Messages: `http://127.0.0.1:17878/v1/messages`
-- Chat Completions: `http://127.0.0.1:17878/v1/chat/completions`
+- Dashboard: `http://127.0.0.1:33002`
+- Liveness: `http://127.0.0.1:38082/livez`
+- Messages: `http://127.0.0.1:38082/v1/messages`
+- Chat Completions: `http://127.0.0.1:38082/v1/chat/completions`
 
 Log in with `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`.
 
@@ -145,7 +166,7 @@ Log in with `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`.
 Configure the client with the published API origin and the same router token:
 
 ```env
-ANTHROPIC_BASE_URL=http://127.0.0.1:17878
+ANTHROPIC_BASE_URL=http://127.0.0.1:38082
 ANTHROPIC_AUTH_TOKEN=replace-with-the-same-local-router-token
 ANTHROPIC_MODEL=deepseek-v4-flash
 ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-flash
@@ -165,7 +186,7 @@ Point an SDK that supports a custom base URL at ModelPort and use the same
 client key:
 
 ```env
-OPENAI_BASE_URL=http://127.0.0.1:17878/v1
+OPENAI_BASE_URL=http://127.0.0.1:38082/v1
 OPENAI_API_KEY=replace-with-the-same-local-router-token
 OPENAI_MODEL=deepseek-v4-flash
 ```
@@ -179,7 +200,7 @@ MODELPORT_OPENAI_API_KEY=replace-with-an-openai-platform-api-key
 MODELPORT_OPENAI_MODEL=gpt-5.5
 ```
 
-Do not copy the client `OPENAI_BASE_URL=http://127.0.0.1:17878/v1` into the
+Do not copy the client `OPENAI_BASE_URL=http://127.0.0.1:38082/v1` into the
 ModelPort service environment: that points the OpenAI Provider back at the
 gateway. Legacy server-side `OPENAI_*` names still work as fallbacks and emit a
 configuration warning so existing deployments can migrate safely.
@@ -193,16 +214,16 @@ reference](docs/API.md#chat-completions) before enabling an application.
 ```bash
 source .env
 
-curl -fsS http://127.0.0.1:17878/livez
+curl -fsS http://127.0.0.1:38082/livez
 
 curl -fsS \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  http://127.0.0.1:17878/v1/models
+  http://127.0.0.1:38082/v1/models
 
 curl -fsS \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
   -H 'content-type: application/json' \
-  http://127.0.0.1:17878/v1/messages \
+  http://127.0.0.1:38082/v1/messages \
   -d '{
     "model":"deepseek-v4-flash",
     "max_tokens":96,
@@ -212,7 +233,7 @@ curl -fsS \
 curl -fsS \
   -H "Authorization: Bearer $MODELPORT_AUTH_TOKEN" \
   -H 'content-type: application/json' \
-  http://127.0.0.1:17878/v1/chat/completions \
+  http://127.0.0.1:38082/v1/chat/completions \
   -d '{
     "model":"deepseek-v4-flash",
     "messages":[{"role":"user","content":"Reply exactly: OK"}]

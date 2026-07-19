@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
-const backendTarget = process.env.MODELPORT_VITE_PROXY_TARGET || 'http://127.0.0.1:17878'
+const backendTarget = process.env.MODELPORT_VITE_PROXY_TARGET || 'http://127.0.0.1:38082'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -39,7 +39,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 33002,
     proxy: {
       '/v1': backendTarget,
       '/livez': backendTarget,

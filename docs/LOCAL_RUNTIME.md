@@ -12,11 +12,12 @@ The runtime should expose:
 - `POST /v1/chat/completions`
 
 Use the exact served model ID returned by the runtime, including any fine-tuned
-alias. Example TOML:
+alias. Name the Provider after the deployed model/channel rather than the
+replaceable inference engine. Example TOML:
 
 ```toml
-[providers.local_vllm]
-display_name = "Local vLLM"
+[providers.local_qwen]
+display_name = "Qwen2.5 Coder FT（本地）"
 protocol = "openai-compat"
 base_url = "http://127.0.0.1:8000/v1"
 api_key_required = false
@@ -26,17 +27,56 @@ passthrough_unknown_models = true
 max_tokens_field = "max_tokens"
 fidelity_mode = "best_effort"
 
+[providers.local_qwen.reasoning]
+mode = "llama_cpp"
+default_budget_tokens = 4096
+model_budget_tokens = { "local-fast" = 512, "local-code" = 4096, "local-deep" = 16384 }
+
+[providers.local_qwen.sampling]
+mode = "llama_cpp"
+
+[providers.local_qwen.sampling.profiles."local-code"]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+[providers.local_qwen.token_counting]
+mode = "anthropic"
+
+[providers.local_qwen.pricing]
+input_per_million = 0.05
+output_per_million = 1.50
+cache_write_per_million = 0.05
+cache_read_per_million = 0.01
+
 [aliases]
-local = "local_vllm:qwen2.5-coder-ft"
+local = "local_qwen:qwen2.5-coder-ft"
+"local-fast" = "local_qwen:qwen2.5-coder-ft"
+"local-code" = "local_qwen:qwen2.5-coder-ft"
+"local-deep" = "local_qwen:qwen2.5-coder-ft"
 ```
+
+The example rate card is an internal chargeback in USD per million tokens, not
+an upstream API invoice. It recovers local hardware, electricity, maintenance,
+and utilization cost. Set all four values to zero only when the deployment does
+not charge local inference usage. ModelPort snapshots the effective values on
+each usage record, so changing the card does not reprice historical requests.
 
 Then select:
 
 ```env
-ANTHROPIC_BASE_URL=http://127.0.0.1:17878
+ANTHROPIC_BASE_URL=http://127.0.0.1:38082
 ANTHROPIC_AUTH_TOKEN=<MODELPORT_AUTH_TOKEN>
-ANTHROPIC_MODEL=local_vllm:qwen2.5-coder-ft
+ANTHROPIC_MODEL=local_qwen:qwen2.5-coder-ft
 ```
+
+The runtime owns model loading, context capacity, generation limits, and the
+tokenizer. ModelPort owns the Provider ID, display name, routing, pricing, and
+stored usage. The integration contract is only the endpoint, exact model ID,
+OpenAI-compatible request/response schema, and upstream usage fields.
 
 ## Built-In Templates
 
@@ -122,7 +162,49 @@ scripts/provider-matrix.sh --model local_vllm:qwen2.5-coder-ft
 scripts/tool-use-acceptance.sh --upstream
 ```
 
+For a locally certified runtime, add `response_validation="strict"`. This
+fails closed on undeclared or missing tool names, invalid/non-object arguments,
+duplicate call IDs, and tool-choice or parallel-call violations before a
+completed call is handed to the client. Pairing strict validation with
+`streaming_arguments="best_effort"` deliberately trades live argument-fragment
+latency for a validated complete argument object; text and lifecycle events
+remain streamed.
+
+For the maintained Qwen deployment, the companion infrastructure project can
+produce a privacy-preserving report from retained request rows:
+
+```bash
+cd /home/tiammomo/projects/infra/local-inference-stack
+scripts/operations-report.sh --hours 24
+```
+
+The report aggregates model/provider success, latency, tokens, Tool Use
+workflow success, terminal reasons, llama.cpp metrics, and GPU state. It does
+not export individual request rows or raw errors.
+
 These are real inference calls.
+For a local reasoning model that exhausts the default acceptance output budget
+before returning final text, rerun Tool Use acceptance with `--max-tokens 512`.
+
+For llama.cpp runtimes, the optional `reasoning` block maps Anthropic Messages
+`thinking` controls to `chat_template_kwargs.enable_thinking` and
+`thinking_budget_tokens`. Logical model aliases can carry different default
+budgets while resolving to the same upstream model. An explicit client
+`thinking.budget_tokens` overrides the alias and provider defaults; explicit
+`thinking.type="disabled"` disables thinking for that request.
+
+The optional `sampling` block makes logical aliases carry task-specific sampler
+defaults without loading another model. ModelPort applies only the profile whose
+name matches the client-requested alias. Explicit `temperature`, `top_p`,
+`top_k`, or `presence_penalty` values win over profile defaults; providers and
+models without a matching profile are unaffected.
+
+If the runtime exposes Anthropic-compatible `POST /v1/messages/count_tokens`,
+the optional `token_counting` block makes that exact tokenizer available
+through ModelPort. Current llama.cpp builds expose this alongside the OpenAI
+Chat Completions endpoint. Keep the capability disabled for runtimes that do
+not implement it; ModelPort intentionally does not fall back to a character
+heuristic or another Provider's tokenizer.
 
 ## Troubleshooting
 

@@ -74,9 +74,9 @@ Logs and health:
 
 ```bash
 sudo journalctl -u modelport -f
-curl -fsS http://127.0.0.1:17878/livez
+curl -fsS http://127.0.0.1:38082/livez
 curl -fsS -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  http://127.0.0.1:17878/readyz
+  http://127.0.0.1:38082/readyz
 ```
 
 `readyz` checks auth/control storage plus the normalized request/attempt ledger
@@ -85,7 +85,7 @@ and returns authenticated diagnostics; it does not gate on every Provider. See
 
 ## Reverse Proxy And Dashboard
 
-Keep `MODELPORT_BIND=127.0.0.1:17878` when Nginx/Caddy runs on the same host.
+Keep `MODELPORT_BIND=127.0.0.1:38082` when Nginx/Caddy runs on the same host.
 Expose one HTTPS origin that serves the dashboard and proxies `/admin`, `/v1`,
 `/livez`, `/readyz`, `/health`, and `/metrics` to the backend.
 

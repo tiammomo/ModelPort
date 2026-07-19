@@ -75,7 +75,7 @@ includes provider behavior and a persistence write.
 ```bash
 curl -sS \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  http://127.0.0.1:17878/metrics
+  http://127.0.0.1:38082/metrics
 ```
 
 Current process-local series:

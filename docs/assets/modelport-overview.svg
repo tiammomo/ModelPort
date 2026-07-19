@@ -50,7 +50,7 @@
   <text class="small" x="140" y="506">Chat Completions API</text>
 
   <rect x="114" y="558" width="292" height="54" rx="8" fill="#ecf8f6" stroke="#b8ddd7" stroke-width="1.5"/>
-  <text class="code" x="136" y="592">127.0.0.1:17878</text>
+  <text class="code" x="136" y="592">127.0.0.1:38082</text>
 
   <line x1="456" y1="426" x2="514" y2="426" stroke="#0f766e" stroke-width="4" marker-end="url(#arrow)"/>
   <text class="arrow-label" x="474" y="396">API</text>

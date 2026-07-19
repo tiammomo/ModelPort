@@ -39,11 +39,11 @@ cd dashboard
 npm run dev
 ```
 
-The default URL is `http://127.0.0.1:5173`. Vite proxies `/admin`, `/v1`,
-`/livez`, `/readyz`, `/health`, and `/metrics` to the backend on port 17878.
+The default URL is `http://127.0.0.1:33002`. Vite proxies `/admin`, `/v1`,
+`/livez`, `/readyz`, `/health`, and `/metrics` to the backend on port 38082.
 Set `MODELPORT_VITE_PROXY_TARGET` to another backend origin when isolating E2E
 runs or developing against multiple local instances; the default is
-`http://127.0.0.1:17878`.
+`http://127.0.0.1:38082`.
 
 Login uses `MODELPORT_ADMIN_USERNAME` and `MODELPORT_ADMIN_PASSWORD`. The router
 token is for data-plane clients and metrics, not normal dashboard login.

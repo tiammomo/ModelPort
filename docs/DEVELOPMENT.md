@@ -55,8 +55,8 @@ npm ci
 npm run dev
 ```
 
-The Vite development server listens on `127.0.0.1:5173` and proxies backend
-paths to `127.0.0.1:17878`. For browser development, prefer this same-origin
+The Vite development server listens on `127.0.0.1:33002` and proxies backend
+paths to `127.0.0.1:38082`. For browser development, prefer this same-origin
 proxy. Mock mode is UI-only and must not be used as evidence of backend behavior:
 
 ```bash

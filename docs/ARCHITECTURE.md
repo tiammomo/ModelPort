@@ -150,6 +150,13 @@ protocol failures, HTTP 429, and HTTP 5xx, and only to a configured provider
 that can accept the requested or resolved model. It is not a semantic guarantee
 that the fallback model behaves identically.
 
+`POST /v1/messages/count_tokens` is a smaller authenticated data-plane path:
+it reuses Anthropic input guardrails, model resolution, Provider credential
+selection, API-key/team model/Provider/IP policy, URL policy, and rate limits,
+then calls only the resolved Provider's explicit token-counting capability. It
+has no fallback, inference ledger row, or usage charge because tokenizer
+identity must remain exact and no generation occurs.
+
 Completed paths that expose Provider usage are labelled
 `billingMode="upstream-returned"`; paths that use the request heuristic are
 `billingMode="local-estimate"`. This is provenance, not an invoice guarantee:

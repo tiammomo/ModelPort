@@ -58,13 +58,15 @@ The persisted usage log records:
 
 - request ID, time, identity, API-key/team labels;
 - requested and resolved model, provider, and protocol;
+- whether the request declares/selects tools or continues a Tool Use exchange;
 - stream flag, status/status code, latency, retry/fallback;
 - input/output/cache tokens and estimated cost;
 - client IP, request path, and a bounded error message.
 
 It intentionally does not store prompts, complete messages, raw request bodies,
-raw provider bodies, or plaintext keys. The dashboard's protocol JSON panels
-are reconstructed summaries unless explicitly labelled otherwise.
+raw provider bodies, tool names/arguments/results, or plaintext keys. The
+dashboard's protocol JSON panels are reconstructed summaries unless explicitly
+labelled otherwise.
 
 `MODELPORT_USAGE_LOG_LIMIT` defaults to 5,000 records. Records contain personal
 and network metadata, so protect database dumps, CLI backups, and diagnostic
@@ -174,7 +176,7 @@ checks are conservative and may include almost one extra hour.
 ```bash
 curl -sS \
   -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  http://127.0.0.1:17878/metrics
+  http://127.0.0.1:38082/metrics
 ```
 
 Metrics are process-local and reset on restart:
@@ -260,7 +262,9 @@ Use this order:
 3. `scripts/provider-matrix.sh --model provider:model`
 4. `scripts/tool-use-acceptance.sh --upstream` only when Tool Use should work
 5. backend request log and SSE event body
-6. upstream account status, permission, and balance
+6. upstream account status, permission, and balance; for the official
+   `deepseek` provider, use the dashboard's live balance action or
+   `POST /admin/providers/deepseek/balance`
 
 Provider testing and matrix scripts can make paid calls. A configured model or
 HTTP 200 at stream start is not evidence of a completed generation.

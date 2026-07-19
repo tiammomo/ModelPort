@@ -64,15 +64,15 @@ deployment with its sample credentials.
 
 Open:
 
-- Dashboard: `http://127.0.0.1:5173`
-- Messages API: `http://127.0.0.1:17878/v1/messages`
-- Chat Completions API: `http://127.0.0.1:17878/v1/chat/completions`
-- Liveness: `http://127.0.0.1:17878/livez`
+- Dashboard: `http://127.0.0.1:33002`
+- Messages API: `http://127.0.0.1:38082/v1/messages`
+- Chat Completions API: `http://127.0.0.1:38082/v1/chat/completions`
+- Liveness: `http://127.0.0.1:38082/livez`
 
 Claude Code uses the host-published backend:
 
 ```env
-ANTHROPIC_BASE_URL=http://127.0.0.1:17878
+ANTHROPIC_BASE_URL=http://127.0.0.1:38082
 ANTHROPIC_AUTH_TOKEN=<same-as-MODELPORT_AUTH_TOKEN>
 ANTHROPIC_MODEL=<configured-model-id>
 ```
@@ -229,8 +229,8 @@ See the exact [reload matrix](CONFIGURATION.md#reload-versus-restart).
 Default publishing is loopback-only:
 
 ```env
-MODELPORT_API_PUBLISH=127.0.0.1:17878
-MODELPORT_DASHBOARD_PUBLISH=127.0.0.1:5173
+MODELPORT_API_PUBLISH=127.0.0.1:38082
+MODELPORT_DASHBOARD_PUBLISH=127.0.0.1:33002
 ```
 
 For a trusted LAN, bind deliberately and enforce a host firewall. For remote or
@@ -273,7 +273,7 @@ covered by `MODELPORT_TRUSTED_PROXIES`. If another reverse proxy is added in
 front, list only its exact addresses/subnets and verify the complete hop chain.
 
 Nginx also forwards `Host $http_host`, not `$host`. `$http_host` preserves the
-published port (for example `127.0.0.1:5173`), which keeps the browser Origin
+published port (for example `127.0.0.1:33002`), which keeps the browser Origin
 and backend Host authorities aligned for CSRF write checks. A custom proxy on a
 non-default port must likewise preserve the original Host including its port;
 otherwise same-origin dashboard writes can be rejected.

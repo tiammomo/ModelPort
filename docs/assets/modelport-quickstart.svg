@@ -60,7 +60,7 @@
   <text class="body" x="176" y="574">Run ModelPort on the local Anthropic-compatible port.</text>
   <rect class="code-bg" x="112" y="606" width="616" height="72" rx="8"/>
   <text class="code" x="138" y="636">scripts/start.sh</text>
-  <text class="code-dim" x="138" y="664">http://127.0.0.1:17878</text>
+  <text class="code-dim" x="138" y="664">http://127.0.0.1:38082</text>
 
   <rect class="card" x="840" y="476" width="680" height="232" rx="8"/>
   <circle cx="888" cy="524" r="25" fill="#0f766e"/>
@@ -69,7 +69,7 @@
   <text class="body" x="936" y="574">VS Code Claude points to ModelPort and selects DeepSeek.</text>
   <rect class="code-bg" x="872" y="606" width="616" height="72" rx="8"/>
   <text class="code" x="898" y="636">ANTHROPIC_MODEL=deepseek-v4-flash</text>
-  <text class="code-dim" x="898" y="664">ANTHROPIC_BASE_URL=http://127.0.0.1:17878</text>
+  <text class="code-dim" x="898" y="664">ANTHROPIC_BASE_URL=http://127.0.0.1:38082</text>
 
   <rect class="band" x="80" y="756" width="1440" height="88" rx="8"/>
   <text class="band-title" x="114" y="792">Expected result</text>

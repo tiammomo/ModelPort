@@ -29,7 +29,7 @@ container is created.
 Control-plane overrides are applied after the base configuration for provider
 records, model inventory, aliases, default provider, and provider order.
 
-## Required Minimum
+## Required Minimum: DeepSeek-Only Example
 
 ```env
 MODELPORT_AUTH_TOKEN=replace-with-a-long-random-local-token
@@ -46,6 +46,11 @@ The client must send the effective router token. `ANTHROPIC_AUTH_TOKEN` is also
 accepted as the router-token fallback when `MODELPORT_AUTH_TOKEN` is absent,
 but deployments should set one unambiguous server token and make the client
 match it.
+
+This minimum is one supported topology, not a requirement that every ModelPort
+deployment install DeepSeek. At least one enabled Provider and a valid
+`MODELPORT_DEFAULT_PROVIDER` are required; a Qwen-only deployment can omit all
+DeepSeek values.
 
 Validate before startup:
 
@@ -79,6 +84,115 @@ files, and it permits only `verify-full`. This is a local syntax and policy
 check: it does not connect to PostgreSQL, run migrations, or verify the live
 certificate chain. Startup and authenticated `/readyz` provide those runtime
 checks.
+
+## Provider Topology Recipes
+
+Provider topology is defined by TOML records plus the environment values those
+records reference. Keep runtime endpoints and secrets in `.env`/the process;
+keep provider names, protocol, model inventory, aliases, and order in TOML.
+
+### Local Qwen only
+
+Environment:
+
+```env
+MODELPORT_CONFIG=config.toml
+MODELPORT_AUTH_TOKEN=replace-with-a-long-random-router-token
+MODELPORT_DEFAULT_PROVIDER=local_qwen
+QWEN_LOCAL_BASE_URL=http://qwen-runtime:8080/v1
+```
+
+Omit `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_API_KEY`, and every other
+unused upstream credential. For a host process, replace the Docker DNS address
+with the Qwen runtime's reachable loopback URL.
+
+```toml
+default_provider = "local_qwen"
+provider_order = ["local_qwen"]
+
+[auth]
+token_env = "MODELPORT_AUTH_TOKEN"
+
+[providers.local_qwen]
+display_name = "Qwen3.5-9B Q5_K_M (local)"
+protocol = "openai-compat"
+base_url_env = "QWEN_LOCAL_BASE_URL"
+base_url = "http://qwen-runtime:8080/v1"
+api_key_required = false
+default_model = "qwen3.5-9b-q5km"
+models = ["qwen3.5-9b-q5km"]
+passthrough_unknown_models = false
+max_tokens_field = "max_tokens"
+fidelity_mode = "best_effort"
+
+[providers.local_qwen.tool_use]
+supported = true
+tool_choice = true
+parallel_tool_calls = true
+streaming_arguments = "best_effort"
+response_validation = "strict"
+
+[aliases]
+qwen3_5_local = "local_qwen:qwen3.5-9b-q5km"
+```
+
+Use an environment-backed API key field if the local runtime itself requires
+authentication; do not reuse ModelPort's client/router token as an upstream key
+unless the runtime was deliberately configured that way.
+
+### DeepSeek official Anthropic only
+
+Use the required-minimum environment above and the shipped
+[`config.example.toml`](../config.example.toml). The Provider protocol must be
+`anthropic`, its Base URL must be `https://api.deepseek.com/anthropic`, and its
+server-side secret is `DEEPSEEK_ANTHROPIC_AUTH_TOKEN`.
+
+The dashboard's administrator-only balance action calls the official balance
+endpoint from the server with that credential. It can display availability and
+CNY/USD balances; it cannot recharge, refund, invoice, or replace the DeepSeek
+console's authoritative billing. ModelPort usage/cost records are local
+governance evidence and must not be presented as the upstream invoice.
+
+### Local Qwen plus DeepSeek
+
+Combine the two Provider records and make the default explicit:
+
+```toml
+default_provider = "local_qwen"
+provider_order = ["local_qwen", "deepseek"]
+```
+
+Keep both endpoint values in the ModelPort environment:
+
+```env
+QWEN_LOCAL_BASE_URL=http://qwen-runtime:8080/v1
+DEEPSEEK_ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+DEEPSEEK_ANTHROPIC_AUTH_TOKEN=replace-with-a-real-provider-key
+```
+
+Unqualified Qwen aliases can remain the default, while clients can select
+DeepSeek deterministically with `deepseek:deepseek-v4-flash`. Provider fallback
+does not mean arbitrary model substitution: the requested model must be
+eligible for the fallback Provider and the failure must be retryable.
+
+### QuantPilot client boundary
+
+For QuantPilot, issue a dashboard API key scoped only to the providers/models it
+needs, commonly:
+
+- `local_qwen:qwen3.5-9b-q5km`
+- `deepseek:deepseek-v4-flash`
+- `GET /v1/models` and `POST /v1/chat/completions`
+
+Store that client key in QuantPilot as `MODELPORT_API_KEY`. Never copy
+`DEEPSEEK_ANTHROPIC_AUTH_TOKEN`, a Qwen upstream key, the complete ModelPort
+`.env`, or provider credential-pool material into QuantPilot. A Qwen-only client
+key may omit every DeepSeek scope; ModelPort itself may also run Qwen-only.
+
+QuantPilot's official-direct `deepseek-v4-flash` profile bypasses ModelPort and
+uses its own `DEEPSEEK_API_KEY`; it is a separate path from the namespaced
+`deepseek:deepseek-v4-flash` ModelPort model. ModelPort is not involved in the
+direct path and cannot govern its usage or balance.
 
 ## Server, Authentication, And State
 
@@ -420,7 +534,50 @@ supported = true
 tool_choice = true
 parallel_tool_calls = true
 streaming_arguments = "delta"
+response_validation = "best_effort"
+
+# Optional llama.cpp request-level thinking mapping. This is valid only for an
+# OpenAI-compatible provider; omit it for providers without this extension.
+[providers.example.reasoning]
+mode = "llama_cpp"
+default_budget_tokens = 4096
+model_budget_tokens = { "example-fast" = 512, "example-deep" = 16384 }
+
+[providers.example.sampling]
+mode = "llama_cpp"
+
+[providers.example.sampling.profiles."example-code"]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+# Optional exact Anthropic Count Tokens forwarding. The upstream must expose
+# the corresponding endpoint; unsupported providers should leave this absent.
+[providers.example.token_counting]
+mode = "anthropic"
+context_tokens = 131072
+recommended_reasoning_input_tokens = 94208
+
+[providers.example.pricing]
+input_per_million = 1.0
+output_per_million = 4.0
+cache_write_per_million = 1.0
+cache_read_per_million = 0.1
 ```
+
+`pricing` is an optional provider-level USD rate per million tokens and takes
+precedence over the built-in model-family estimate. It may represent either an
+upstream API price or an explicitly agreed internal chargeback for a local
+runtime. `input_per_million` and `output_per_million` apply to ordinary prompt
+and generated tokens; `cache_write_per_million` and `cache_read_per_million`
+apply only when the upstream reports those token classes. Set all four values
+to zero when local inference is intentionally uncharged. ModelPort stores the
+applied pricing snapshot with each usage record, so later rate changes do not
+rewrite historical spend. Internal rates are operational estimates rather than
+Provider invoices and should be versioned in deployment documentation.
 
 `fidelity_mode="stability"` is a label for a provider configured with stream
 rewriting; it does not enable deduplication by itself. Set
@@ -434,16 +591,59 @@ normal Anthropic pass-through mode. These settings cannot prove that an
 upstream implements the advertised behavior; certify each provider/model with
 real acceptance calls.
 
+`tool_use.response_validation` defaults to `best_effort`. Set it to `strict`
+for a trusted local or certified OpenAI-compatible runtime: ModelPort then
+rejects missing or undeclared function names, non-object or invalid JSON
+arguments, duplicate call IDs, `tool_choice`/parallel-count violations, and
+inconsistent tool-call finish reasons. In a live stream, a violation is
+reported as an Anthropic `error` event after the SSE handshake.
+
 [`config.example.toml`](../config.example.toml) is intentionally minimal and
 self-contained around DeepSeek. When extending it, keep aliases limited to
 enabled providers: an alias targeting a provider filtered out for a missing key
 is a validation error.
 
+`reasoning.mode="llama_cpp"` translates Anthropic Messages `thinking` into the
+llama.cpp OpenAI-compatible extensions. `thinking.type="disabled"` sends
+`chat_template_kwargs.enable_thinking=false`; `enabled` or `adaptive` enables
+thinking and sends `thinking_budget_tokens`. Budget precedence is the explicit
+request value, then the requested ModelPort alias in `model_budget_tokens`, then
+`default_budget_tokens`. The resolved upstream model ID is unchanged, so these
+logical aliases share one loaded runtime and do not add model memory. Providers
+without this explicitly configured mode retain their existing native behavior.
+
+`sampling.mode="llama_cpp"` applies a profile selected by the originally
+requested ModelPort model or alias. Supported profile defaults are
+`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, and
+`repeat_penalty`. Explicit client values already present in the converted
+request take precedence; unlisted models are unchanged. Profiles are valid only
+for OpenAI-compatible providers because `min_p` and `repeat_penalty` are
+llama.cpp extensions. Validation rejects empty profile names, non-finite values,
+and unsafe ranges before reload.
+
+`token_counting.mode="anthropic"` enables authenticated
+`POST /v1/messages/count_tokens` for that Provider. ModelPort rewrites aliases
+to the resolved upstream model and forwards the Anthropic Count Tokens body to
+the Provider's native endpoint. It returns only the Provider-reported integer
+`input_tokens`; it never substitutes the local characters/4 usage heuristic.
+The mode is opt-in because many OpenAI-compatible runtimes do not implement
+this endpoint. Token counting is rate-limited but does not create an inference
+ledger/usage charge and does not fall back to a different tokenizer.
+
+When `context_tokens` is set, Anthropic Messages inference performs an exact
+upstream count before generation and rejects `input_tokens + max_tokens` above
+that limit with an actionable error; input is never silently truncated.
+`recommended_reasoning_input_tokens` adds a stricter input ceiling while
+thinking is enabled so the model retains room for reasoning and final text.
+Explicit `thinking.type="disabled"` bypasses only the recommendation, never the
+hard context limit. OpenAI Chat Completions remains unchanged because converting
+it to an Anthropic count body would not be lossless.
+
 ## Reload Versus Restart
 
 | Change | Reload | Restart/recreate |
 | --- | --- | --- |
-| Base provider URL/key/model list | Yes for TOML or an env-file value not shadowed by the process | Recreate when changing an existing process variable |
+| Base provider URL/key/model list/pricing | Yes for TOML or an env-file value not shadowed by the process | Recreate when changing an existing process variable |
 | TOML aliases and provider order | Yes | — |
 | Dashboard provider/model/alias/default/order overrides | Applied immediately | — |
 | New credential-profile environment variable | No | Yes |
@@ -476,7 +676,7 @@ These names are consumed outside the backend configuration loader:
 | `MODELPORT_DASHBOARD_URL` | acceptance | Dashboard origin to check. |
 | `MODELPORT_TOOL_USE_MOCK_HOST` | Tool Use acceptance | Hostname reachable by the backend for the temporary mock. |
 | `MODELPORT_CHECK_NPM_CI` | aggregate checks | Force a clean locked dashboard install. |
-| `MODELPORT_VITE_PROXY_TARGET` | Vite dev/E2E | Backend origin for Vite's same-origin proxy; defaults to `http://127.0.0.1:17878`. |
+| `MODELPORT_VITE_PROXY_TARGET` | Vite dev/E2E | Backend origin for Vite's same-origin proxy; defaults to `http://127.0.0.1:38082`. |
 | `VITE_MODELPORT_MOCK` | dashboard build/dev | UI mock mode; never enable for production. |
 | `VITE_API_BASE_URL` | dashboard build | Browser API prefix/origin. Cross-origin use requires a separately designed CORS proxy. |
 | `PLAYWRIGHT_BASE_URL`, `PLAYWRIGHT_SKIP_WEBSERVER` | Playwright | E2E target and dev-server control. |

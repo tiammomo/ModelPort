@@ -10,7 +10,8 @@ the source of truth for behavior and operations.
   [technical core](ARCHITECTURE.md#technical-core), trust boundaries, and known
   design limits.
 - [Configuration](CONFIGURATION.md): environment variables, TOML, precedence,
-  provider activation, validation, and reload scope.
+  provider activation, Qwen-only/DeepSeek/combined recipes, QuantPilot client
+  secret boundaries, validation, and reload scope.
 - [API](API.md): public endpoints, authentication, model resolution, errors,
   streaming, and control-plane route groups.
 - [OIDC console sign-in](OIDC.md): optional single-host SSO preview,
@@ -56,7 +57,6 @@ these limits are part of the design contract rather than optional caveats.
 - [Project guide](PROJECT_GUIDE.md)
 - [Architecture Decision Records](adr/README.md)
 - [Repository and release setup](GITHUB_SETUP.md)
-- [GPT Image 2 proposal](GPT_IMAGE_2_GUIDE.md) — proposed, not implemented
 - [Learning and interview material](learning/README.md) — non-normative
 
 ## Documentation Contract
