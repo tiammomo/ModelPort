@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
         with:
           persist-credentials: false
 
@@ -35,7 +35,7 @@ jobs:
           cargo --version
 
       - name: Install Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.3.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.3.0
         with:
           node-version: 24
           cache: npm
@@ -45,7 +45,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes shellcheck
 
       - name: Cache Cargo
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5.0.4
         with:
           path: |
             ~/.cargo/registry
@@ -154,19 +154,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
         with:
           persist-credentials: false
 
       - name: Install Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.3.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.3.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
 
       - name: Cache Cargo
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5.0.4
         with:
           path: |
             ~/.cargo/registry
@@ -222,7 +222,7 @@ jobs:
 
       - name: Upload E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: postgres-dashboard-e2e-diagnostics
           path: |
