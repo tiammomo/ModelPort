@@ -15,7 +15,7 @@ use crate::{
     },
     error::AppError,
     exchange::ExchangeRequest,
-    http::Header,
+    http::{Header, SseTimeouts},
     model_catalog::{ReasoningDialect, ReasoningEffort},
     pricing::{self, USAGE_HEADER},
     providers::{
@@ -118,8 +118,10 @@ pub async fn chat_completions(
                 url,
                 headers,
                 body,
-                resolved.provider.request_timeout(),
-                resolved.provider.stream_idle_timeout(),
+                SseTimeouts::new(
+                    resolved.provider.request_timeout(),
+                    resolved.provider.stream_idle_timeout(),
+                ),
             )
             .await?;
         let events =
@@ -248,8 +250,10 @@ pub async fn messages(
                 url,
                 headers,
                 body,
-                resolved.provider.request_timeout(),
-                resolved.provider.stream_idle_timeout(),
+                SseTimeouts::new(
+                    resolved.provider.request_timeout(),
+                    resolved.provider.stream_idle_timeout(),
+                ),
             )
             .await?;
         let events = openai_stream_to_anthropic(
@@ -444,12 +448,14 @@ pub(crate) fn apply_resolved_reasoning_config(
     };
     apply_reasoning_dialect(
         &request.model,
-        effort,
-        enabled,
-        explicit_budget,
         config,
-        dialect,
-        &profile.reasoning_effort_map,
+        ReasoningDialectOptions {
+            effort,
+            enabled,
+            explicit_budget,
+            dialect,
+            effort_map: &profile.reasoning_effort_map,
+        },
         body,
     )
 }
@@ -516,12 +522,14 @@ fn apply_exchange_reasoning_config(
     };
     apply_reasoning_dialect(
         &request.requested_model,
-        effort,
-        enabled,
-        None,
         config,
-        dialect,
-        &profile.reasoning_effort_map,
+        ReasoningDialectOptions {
+            effort,
+            enabled,
+            explicit_budget: None,
+            dialect,
+            effort_map: &profile.reasoning_effort_map,
+        },
         body,
     )
 }
@@ -543,16 +551,27 @@ fn apply_default_reasoning_config(
     apply_llama_cpp_reasoning(requested_model, enabled, None, config, body)
 }
 
-fn apply_reasoning_dialect(
-    requested_model: &str,
+struct ReasoningDialectOptions<'a> {
     effort: Option<ReasoningEffort>,
     enabled: Option<bool>,
     explicit_budget: Option<u64>,
-    config: &ReasoningConfig,
     dialect: ReasoningDialect,
-    effort_map: &std::collections::BTreeMap<ReasoningEffort, String>,
+    effort_map: &'a std::collections::BTreeMap<ReasoningEffort, String>,
+}
+
+fn apply_reasoning_dialect(
+    requested_model: &str,
+    config: &ReasoningConfig,
+    options: ReasoningDialectOptions<'_>,
     body: &mut Value,
 ) -> Result<(), AppError> {
+    let ReasoningDialectOptions {
+        effort,
+        enabled,
+        explicit_budget,
+        dialect,
+        effort_map,
+    } = options;
     if dialect == ReasoningDialect::None {
         if config.mode == ReasoningMode::LlamaCpp {
             return apply_llama_cpp_reasoning(
@@ -974,12 +993,14 @@ mod tests {
             let mut body = json!({});
             apply_reasoning_dialect(
                 "logical-model",
-                Some(ReasoningEffort::High),
-                Some(true),
-                None,
                 &config,
-                dialect,
-                &Default::default(),
+                ReasoningDialectOptions {
+                    effort: Some(ReasoningEffort::High),
+                    enabled: Some(true),
+                    explicit_budget: None,
+                    dialect,
+                    effort_map: &Default::default(),
+                },
                 &mut body,
             )
             .unwrap();

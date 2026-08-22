@@ -22,6 +22,21 @@ use crate::error::AppError;
 pub type Header = (String, String);
 pub type SseFrameStream = Pin<Box<dyn Stream<Item = Result<SseFrame, AppError>> + Send>>;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SseTimeouts {
+    pub request: Option<Duration>,
+    pub stream_idle: Option<Duration>,
+}
+
+impl SseTimeouts {
+    pub fn new(request: Option<Duration>, stream_idle: Option<Duration>) -> Self {
+        Self {
+            request,
+            stream_idle,
+        }
+    }
+}
+
 const MAX_ERROR_BODY_CHARS: usize = 8192;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
@@ -224,8 +239,7 @@ impl HttpTransport {
             url,
             headers,
             body,
-            None,
-            None,
+            SseTimeouts::default(),
         )
         .await
     }
@@ -237,13 +251,13 @@ impl HttpTransport {
         url: String,
         headers: Vec<Header>,
         body: serde_json::Value,
-        request_timeout: Option<Duration>,
-        stream_idle_timeout: Option<Duration>,
+        timeouts: SseTimeouts,
     ) -> Result<SseFrameStream, AppError> {
         let mut transport = self.clone();
-        transport.request_timeout = request_timeout.unwrap_or(transport.request_timeout);
-        transport.stream_idle_timeout =
-            stream_idle_timeout.unwrap_or(transport.stream_idle_timeout);
+        transport.request_timeout = timeouts.request.unwrap_or(transport.request_timeout);
+        transport.stream_idle_timeout = timeouts
+            .stream_idle
+            .unwrap_or(transport.stream_idle_timeout);
         let started = Instant::now();
         let client = transport
             .client_for_provider(provider_id, &url, allow_private_provider_urls)

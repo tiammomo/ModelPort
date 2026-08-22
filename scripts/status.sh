@@ -47,6 +47,8 @@ if health_ok; then
       -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
       "$(base_url)/readyz" > "$readyz_file" 2>/dev/null; then
       recharge_summary="$(
+        # JavaScript template literals must not be expanded by the shell.
+        # shellcheck disable=SC2016
         node -e '
 const fs = require("node:fs")
 const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))

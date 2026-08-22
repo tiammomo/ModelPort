@@ -178,7 +178,8 @@ sanitize_env_example() {
 
 validate_env_example() {
   local source_file="$1"
-  local sanitized_file="$CHECK_TMP_DIR/$(relative_path "$source_file" | tr '/' '_')"
+  local sanitized_file
+  sanitized_file="$CHECK_TMP_DIR/$(relative_path "$source_file" | tr '/' '_')"
 
   run_check "checking environment example syntax: $(relative_path "$source_file")" \
     bash -n "$source_file"

@@ -206,6 +206,8 @@ expect_status "$models_status" "200" "authenticated /v1/models"
 suffix="$(date +%s)"
 username="acceptance_$suffix"
 create_user_payload="$(
+  # JavaScript template literals must not be expanded by the shell.
+  # shellcheck disable=SC2016
   node -e '
     const username = process.argv[1];
     process.stdout.write(JSON.stringify({
@@ -222,6 +224,8 @@ expect_status "$status" "200" "create acceptance user"
 created_user_id="$(json_get "$body_file" "id")"
 
 create_team_payload="$(
+  # JavaScript template literals must not be expanded by the shell.
+  # shellcheck disable=SC2016
   node -e '
     const suffix = process.argv[1];
     process.stdout.write(JSON.stringify({

@@ -132,7 +132,7 @@ run_series() {
   output_file="$(mktemp)"
   tmp_files+=("$output_file")
 
-  for i in $(seq 1 "$iterations"); do
+  for ((i = 0; i < iterations; i += 1)); do
     "$fn" >> "$output_file"
   done
 

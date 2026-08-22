@@ -140,6 +140,8 @@ fetch_model_catalog() {
       models+=("$model")
     fi
   done < <(
+    # JavaScript template literals must not be expanded by the shell.
+    # shellcheck disable=SC2016
     node -e '
       const fs = require("fs");
       const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -336,7 +338,7 @@ for model in "${models[@]}"; do
     fi
   fi
 
-  printf '| `%s` | %s | %s | %s |\n' "$model" "$provider" "$non_stream_result" "$stream_result"
+  printf "| \`%s\` | %s | %s | %s |\n" "$model" "$provider" "$non_stream_result" "$stream_result"
   safe_model="${model//$'\t'/ }"
   safe_model="${safe_model//$'\n'/ }"
   safe_provider="${provider//$'\t'/ }"

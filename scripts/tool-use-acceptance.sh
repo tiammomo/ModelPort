@@ -389,6 +389,8 @@ post_message_stream() {
 }
 
 assert_tool_response() {
+  # JavaScript template literals must not be expanded by the shell.
+  # shellcheck disable=SC2016
   node -e '
     const fs = require("fs");
     const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -413,6 +415,8 @@ assert_tool_response() {
 }
 
 assert_tool_stream() {
+  # JavaScript template literals must not be expanded by the shell.
+  # shellcheck disable=SC2016
   node -e '
     const fs = require("fs");
     const raw = fs.readFileSync(process.argv[1], "utf8");
@@ -467,6 +471,8 @@ assert_tool_stream() {
 }
 
 assert_parallel_tool_response() {
+  # JavaScript template literals must not be expanded by the shell.
+  # shellcheck disable=SC2016
   node -e '
     const fs = require("fs");
     const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -496,6 +502,8 @@ assert_parallel_tool_response() {
 }
 
 assert_parallel_tool_stream() {
+  # JavaScript template literals must not be expanded by the shell.
+  # shellcheck disable=SC2016
   node -e '
     const fs = require("fs");
     const raw = fs.readFileSync(process.argv[1], "utf8");
@@ -909,7 +917,7 @@ run_strict_response_rejections() {
 
   status="$(post_message "$(strict_response_guard_request "$test_model" "safe_tool" "call safe_tool")")"
   expect_status "$status" "502" "strict undeclared upstream tool rejection"
-  if ! grep -q 'undeclared tool `read_file`' "$body_file"; then
+  if ! grep -q "undeclared tool \`read_file\`" "$body_file"; then
     printf '[fail] strict response error did not identify the undeclared tool\n' >&2
     sed -n '1,120p' "$body_file" >&2 || true
     exit 1

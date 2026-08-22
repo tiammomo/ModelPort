@@ -16,7 +16,7 @@ use crate::{
     config::ResolvedProvider,
     error::AppError,
     exchange::{ExchangeRequest, anthropic_response_to_openai},
-    http::{Header, SseFrame, SseFrameStream},
+    http::{Header, SseFrame, SseFrameStream, SseTimeouts},
     model_catalog::{ReasoningDialect, ReasoningEffort},
     pricing::{self, USAGE_HEADER},
     providers::{openai_client_stream::anthropic_stream_to_openai, openai_stream::text_delta},
@@ -48,8 +48,10 @@ pub async fn chat_completions(
                 url,
                 headers,
                 body,
-                resolved.provider.request_timeout(),
-                resolved.provider.stream_idle_timeout(),
+                SseTimeouts::new(
+                    resolved.provider.request_timeout(),
+                    resolved.provider.stream_idle_timeout(),
+                ),
             )
             .await?;
         let events = anthropic_stream_to_openai(
@@ -180,8 +182,10 @@ pub async fn messages(
                 url,
                 headers,
                 body,
-                resolved.provider.request_timeout(),
-                resolved.provider.stream_idle_timeout(),
+                SseTimeouts::new(
+                    resolved.provider.request_timeout(),
+                    resolved.provider.stream_idle_timeout(),
+                ),
             )
             .await?;
         let events: Pin<Box<dyn Stream<Item = Result<Event, AppError>> + Send>> =

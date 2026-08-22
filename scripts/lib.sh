@@ -5,8 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${MODELPORT_ENV_FILE:-$ROOT_DIR/.env}"
 RUNTIME_DIR="${MODELPORT_RUNTIME_DIR:-$ROOT_DIR/.modelport}"
 PID_FILE="${MODELPORT_PID_FILE:-$RUNTIME_DIR/model-port.pid}"
+# Used by lifecycle scripts that source this library.
+# shellcheck disable=SC2034
 LOG_FILE="${MODELPORT_LOG_FILE:-$RUNTIME_DIR/model-port.log}"
 RELEASE_BIN="$ROOT_DIR/target/release/model-port"
+# Used by lifecycle scripts that source this library.
+# shellcheck disable=SC2034
 DEBUG_BIN="$ROOT_DIR/target/debug/model-port"
 
 log() {

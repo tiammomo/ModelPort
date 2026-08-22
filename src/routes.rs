@@ -7206,7 +7206,8 @@ data: [DONE]
         let provider = ProviderConfig {
             display_name: "Anthropic".to_owned(),
             protocol: ProviderProtocol::Anthropic,
-            base_url: "https://api.anthropic.com".to_owned(),
+            // Keep the missing-secret assertion independent of external DNS.
+            base_url: "http://127.0.0.1:1".to_owned(),
             api_key_env: Some("ANTHROPIC_API_KEY".to_owned()),
             api_key: None,
             api_key_required: true,
