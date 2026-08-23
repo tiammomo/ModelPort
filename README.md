@@ -14,6 +14,13 @@ endpoint for authentication, logical-model routing, quotas, usage, Provider
 health, and request evidence. The Small-Team Beta experience is Chinese-first;
 the API and maintained operator documentation remain available in English.
 
+The approved product direction is an independent hybrid model and GPU control
+plane. That direction keeps hosted API Providers first-class, treats local
+Qwen as one replaceable Runtime Adapter example, and does not claim that the
+target Compute or Deployment APIs ship in v0.1.x. See
+[Architecture](docs/ARCHITECTURE.md) and
+[ADR-0007](docs/adr/0007-independent-model-and-gpu-control-plane.md).
+
 ![ModelPort architecture overview](docs/assets/modelport-overview.svg)
 
 ## What You Get
@@ -174,8 +181,9 @@ set:
   request, and common startup failures.
 - [Learning Path](docs/LEARNING_PATH.md) — role-based 30–60 minute operator,
   client-integration, operations, and contributor tracks.
-- [Local inference joint quickstart](docs/LOCAL_INFERENCE_STACK.md) — a
-  Linux/WSL2 contract-first path for ModelPort plus local-inference-stack.
+- [Local Qwen reference adapter](docs/LOCAL_INFERENCE_STACK.md) — an optional
+  Linux/WSL2 compatibility walkthrough for the original integration; it is not
+  a ModelPort architecture dependency.
 - [Configuration](docs/CONFIGURATION.md) — environment and TOML reference.
 - [API](docs/API.md) — client and control-plane contracts.
 - [Providers](docs/PROVIDERS.md) — hosted Providers, local runtimes, and

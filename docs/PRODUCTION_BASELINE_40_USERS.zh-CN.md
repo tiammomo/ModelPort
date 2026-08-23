@@ -1,7 +1,9 @@
 # 40 人团队生产基线（第一阶段）
 
-本页是普通运维人员的执行入口。架构约束以
-[ADR-0005](adr/0005-forty-user-hybrid-routing-baseline.md) 为准。
+本页是普通运维人员的执行入口。路由与 40 人基线以
+[ADR-0005](adr/0005-forty-user-hybrid-routing-baseline.md) 为准；独立的模型、
+Runtime Adapter、Compute Node/GPU 与 Deployment 所有权以
+[ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md) 为准。
 
 本页生产基线假定启用 `MODELPORT_ENTERPRISE_MODE=1`，因此高风险写入强制双人
 审批。默认 Small-Team 模式未启用 Enterprise 或
@@ -98,7 +100,8 @@ archive="$(./scripts/backup-compose.sh create)"
 - [ ] 确认托管 PostgreSQL `verify-full`、PITR、RPO 5 分钟、RTO 30 分钟。
 - [ ] 使用固定 Digest 的 ModelPort 与 Dashboard 镜像。
 - [ ] 运行 `scripts/check-all.sh`，并确保 CI 的 ShellCheck 门禁通过。
-- [ ] 运行 ModelPort Provider/Tool Use 验收和 `local-inference-stack standard`。
+- [ ] 运行 ModelPort Provider/Tool Use 验收及每个已配置 Runtime Adapter 的验收；
+  现有 Qwen 参考部署可继续使用可选的 `local-inference-stack standard` 兼容套件。
 - [x] 运行 `scripts/capacity-acceptance.sh`，确认 40 人准入不变量。
 - [ ] 保存不含 Prompt、回复、工具参数和密钥的验收证据。
 

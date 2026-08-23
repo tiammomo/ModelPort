@@ -1,6 +1,7 @@
 # ADR-0005: Forty-User Hybrid Routing Production Baseline
 
-- Status: Accepted, staged implementation
+- Status: Accepted, staged implementation; local model, artifact, runtime, and
+  GPU ownership superseded by ADR-0007
 - Date: 2026-07-31
 
 ## Context
@@ -24,9 +25,11 @@ or rate-limit state.
 - Production state moves to an operator-managed high-availability PostgreSQL
   service. The PostgreSQL service in the root Compose file remains a local
   development and migration-drill dependency.
-- `local-inference-stack` owns each local model node, artifact integrity,
-  runtime configuration, and host-bound acceptance evidence. It does not own
-  user identity, routing, budget, or tool execution.
+- ModelPort owns the desired state, inventory, policy, and evidence for local
+  models, Runtime Adapters, Compute Nodes/GPUs, and Deployments. External
+  inference runtimes own execution mechanics. The independent boundary and
+  migration from the original `local-inference-stack` integration are defined
+  by [ADR-0007](0007-independent-model-and-gpu-control-plane.md).
 - A later phase may run two stateless ModelPort instances. That phase requires
   distributed sessions, limits, health, and failover evidence before it can be
   described as available.

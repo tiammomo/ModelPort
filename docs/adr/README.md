@@ -19,3 +19,4 @@ superseded so migrations and compatibility choices have an audit trail.
 - [ADR-0004: ModelPort gateway and CPA Provider boundary](0004-modelport-gateway-and-cpa-provider-boundary.md)
 - [ADR-0005: Forty-user hybrid routing production baseline](0005-forty-user-hybrid-routing-baseline.md)
 - [ADR-0006: Read-only operations agent](0006-read-only-operations-agent.md)
+- [ADR-0007: Independent model and GPU control plane](0007-independent-model-and-gpu-control-plane.md)

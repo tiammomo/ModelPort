@@ -71,7 +71,9 @@ database, and do not reuse the source database credentials.
    `modelport_provider_attempts`, budget/evidence tables, and incomplete
    leases. Compare aggregates, not Prompt or response content.
 6. Run authenticated readiness, dashboard, backup restore, protocol, Tool Use,
-   and the `local-inference-stack` standard acceptance suite.
+   and the acceptance suite for each configured local Runtime Adapter. Existing
+   Qwen reference deployments may still use the optional compatibility suite
+   documented in [Local Qwen reference adapter](LOCAL_INFERENCE_STACK.md).
 7. Destroy the rehearsal target only after saving secret-free evidence.
 
 ## Single-instance cutover

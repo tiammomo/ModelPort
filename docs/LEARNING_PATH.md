@@ -20,9 +20,10 @@ Claude Code / SDK
 ModelPort is an authentication, routing, protocol, policy, and evidence
 gateway. The dashboard is an operations console, not a chat application.
 
-For local Qwen, use the
-[local inference joint quickstart](LOCAL_INFERENCE_STACK.md) to keep static
-contract checks, GPU runtime activation, and gateway verification separate.
+For the optional local Qwen reference path, use the
+[local Qwen reference adapter guide](LOCAL_INFERENCE_STACK.md). It keeps static
+contract checks, external GPU runtime activation, and gateway verification
+separate; ModelPort does not require that integration or its repository.
 
 ## Track A: Run It In 30 Minutes
 

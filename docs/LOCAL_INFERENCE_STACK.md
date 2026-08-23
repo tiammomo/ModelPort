@@ -1,8 +1,15 @@
-# ModelPort + local-inference-stack 联合上手
+# 本地 Qwen 参考适配（兼容性文档）
 
-这是一条面向第一次接触本地模型的 Linux/WSL2 路线。先验证配置契约，再分别
-启动两个项目，最后才做真实生成。两个仓库可以放在任意目录；所有联合命令都
-显式传路径，不依赖相邻 checkout。
+本文只保留原始 `local-inference-stack` 集成的可选 Linux/WSL2 复现路径，供
+现有部署迁移和兼容性回归使用。它不是 ModelPort 的安装前提、模型/GPU
+事实来源或架构依赖。新的本地运行时必须遵循
+[ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md) 定义的通用
+Runtime Adapter 边界，不能依赖本文中的仓库目录、脚本或环境变量。
+
+当前 v0.1.x 仍只把本地 Qwen 暴露为一个 OpenAI-compatible Provider；尚未交付
+Compute Inventory 或 Deployment 生命周期 API。下面的兼容性命令先验证配置
+契约，再分别启动两个项目，最后才做真实生成。两个仓库可以放在任意目录；所有
+命令都显式传路径，不依赖相邻 checkout。
 
 ## 先分清职责
 
@@ -16,14 +23,16 @@ Claude Code / SDK
         |
         | Docker DNS: qwen-runtime:8080/v1
         v
- local-inference-stack
-        | 模型制品、llama.cpp、GPU、Profile、验收证据
+ external Qwen runtime integration
+        | 当前参考实现：模型制品、llama.cpp、GPU、Profile、验收证据
         v
    Qwen3.5 GGUF
 ```
 
-ModelPort 不下载或运行模型，local-inference-stack 不签发客户端密钥、不执行
-业务工具。宿主机 `127.0.0.1:18080` 只用于直接诊断；容器间调用不经过这个端口。
+ModelPort v0.1.x 不下载或运行模型；参考 Runtime 不签发客户端密钥、不执行业务
+工具。未来 ModelPort 将通过 Runtime Adapter 管理 desired state、observed
+inventory 和执行证据，实际推理仍由外部 Runtime 完成。宿主机
+`127.0.0.1:18080` 只用于直接诊断；容器间调用不经过这个端口。
 
 ## 第 1 阶段：5 分钟只读检查
 
@@ -157,6 +166,7 @@ Token 计数；超出逻辑档位或 131,072 硬上下文时返回可操作的 4
 4. `18080/health` 成功但 `38082/livez` 失败：问题在 ModelPort 进程或 Compose。
 5. `/livez` 成功但请求被拒：检查 ModelPort Key、逻辑模型和返回的 Token 准入信息。
 
-local-inference-stack 的契约文件是跨仓库事实来源；接口、模型、Reasoning、Token
-限制或 Tool Use 变化时，必须在同一批变更中更新双方配置、兼容测试和 `standard`
-验收。
+在这个历史参考流程中，`local-inference-stack` 的契约文件只用于验证该适配
+Fixture，不是 ModelPort 的跨仓库事实来源。通用 Runtime Adapter 落地前，影响
+该 Fixture 的接口、模型、Reasoning、Token 限制或 Tool Use 变化仍需同步更新
+兼容测试和 `standard` 验收；新的核心功能不得读取该仓库的内部文件。

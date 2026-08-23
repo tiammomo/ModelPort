@@ -10,8 +10,9 @@ read every document: choose the path that matches your task.
    [Chinese edition](LEARNING_PATH.zh-CN.md) is also maintained.
 2. [Getting Started](GETTING_STARTED.md) — go from a clean clone to the first
    authenticated request.
-3. [Local inference joint quickstart](LOCAL_INFERENCE_STACK.md) — pair
-   ModelPort with local-inference-stack on Linux/WSL2.
+3. [Local Qwen reference adapter](LOCAL_INFERENCE_STACK.md) — optionally
+   reproduce the original Linux/WSL2 integration without treating the external
+   repository as a ModelPort dependency.
 4. [Deployment](DEPLOYMENT.md) — choose Docker Compose or systemd.
 5. [Production](PRODUCTION.md) — harden and accept a shared deployment.
 6. [Operations](OPERATIONS.md) — monitor, back up, troubleshoot, and upgrade it.
@@ -61,8 +62,10 @@ read every document: choose the path that matches your task.
 
 ## Project Direction
 
-[Roadmap](ROADMAP.md) defines the Small-Team Beta productization freeze and its
-deliberate deferrals. Deferred work must not be described as shipped.
+[Roadmap](ROADMAP.md) defines the Small-Team Beta productization freeze and the
+staged control-plane direction. [ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md)
+defines independent model, Runtime Adapter, Compute Node/GPU, and Deployment
+ownership. Deferred work must not be described as shipped.
 
 ## Documentation Rules
 
@@ -77,4 +80,4 @@ deliberate deferrals. Deferred work must not be described as shipped.
 6. Run `node scripts/check-doc-links.mjs` and the relevant checks from
    [Development](DEVELOPMENT.md) before merging.
 
-Last reviewed: 2026-08-09.
+Last reviewed: 2026-08-23.

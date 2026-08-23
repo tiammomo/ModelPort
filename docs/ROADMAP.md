@@ -1,8 +1,9 @@
 # Roadmap
 
-Status: accepted Small-Team Beta direction.
+Status: accepted Small-Team Beta release contract with an approved
+post-Beta control-plane direction.
 
-Last reviewed: 2026-08-09.
+Last reviewed: 2026-08-23.
 
 ## Product Contract
 
@@ -22,6 +23,51 @@ Success is the first governed request within 30 minutes and sustained weekly
 team use without policy bypass—not Provider count, raw request volume, GitHub
 stars, or revenue. ModelPort has no paid edition, hosted service, or feature
 tier.
+
+This is the current release contract, not the ceiling of the product. The
+approved long-term direction is an independent hybrid model and GPU control
+plane that manages hosted API Providers and replaceable local Runtime Adapters
+through one governed resource model. The current local Qwen path is a reference
+adapter, not a dependency on another product repository. See
+[ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md).
+
+## Control-Plane Delivery Sequence
+
+Control-plane work is staged so the shipped gateway remains useful and honest
+at every step:
+
+1. **Architecture contract:** define Client/Harness, Provider, Model, Runtime
+   Adapter, Compute Node/GPU, Deployment, and Route ownership; align the eight
+   backend and Dashboard domains without claiming unimplemented APIs.
+2. **Independent adapter boundary:** remove normative
+   `local-inference-stack` assumptions and publish a versioned, read-only
+   Runtime Adapter capability contract. Keep local Qwen as a reference fixture
+   and keep hosted Providers unchanged.
+3. **Compute inventory:** persist authenticated, read-only Compute Node/GPU
+   observations with freshness, provenance, stable identifiers, and explicit
+   unavailable/stale states. Inventory must not start a runtime or download a
+   model.
+4. **Deployment lifecycle:** add desired and observed Deployment state with
+   idempotent reconciliation, bounded mutation, rollback evidence, and a
+   manual placement choice.
+5. **Policy-bounded placement:** consider automated placement only after
+   inventory and lifecycle behavior have concurrency, recovery, and design-
+   partner evidence. Scheduling must never bypass egress, model, budget, or
+   tenant policy.
+
+These are sequential product boundaries, not one large implementation PR.
+Hosted-only installations remain supported throughout.
+
+The next focused Issues after the architecture contract are:
+
+- replace repository-specific local checks with a generic Runtime Adapter
+  capability and reference-Qwen fixture;
+- expose a read-only Compute Node/GPU inventory API with freshness and
+  provenance;
+- introduce a Deployment resource and manual lifecycle reconciliation;
+- realign Dashboard navigation to Models, Providers, Compute, Deployments,
+  Routing, Governance, Observability, and Operations without duplicating
+  backend state.
 
 ## v0.1.x Small-Team Beta Freeze
 
@@ -75,6 +121,9 @@ Beta exit evidence:
   exposed router tuning, or silent capability downgrade.
 - Dashboard storage of plaintext Provider secrets, full English UI
   internationalization, a chat workspace, and maintainer-operated telemetry.
+- Automatic GPU placement, model downloads, runtime mutation, and multi-node
+  scheduling before the adapter, inventory, reconciliation, and rollback
+  contracts above are accepted.
 
 Experimental compatibility work may continue behind explicit flags, but it
 cannot enter the default route or support matrix without the evidence required
@@ -87,6 +136,8 @@ Only measured design-partner needs can reorder these candidates:
 - append-only Provider invoice reconciliation and bounded remaining-budget
   metrics;
 - PostgreSQL pool, active-stream, and per-Provider latency telemetry;
+- authenticated Compute Node/GPU inventory and Deployment lifecycle slices
+  that follow ADR-0007;
 - resource-level policy and additional identity/secret-manager integrations;
 - a typed protocol extension whose fidelity and Tool Use contract fails closed;
 - arm64 promotion after equivalent install/upgrade/restore evidence.

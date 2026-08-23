@@ -33,6 +33,79 @@ PostgreSQL -> request, attempt, usage, quota/spend, budget, and audit facts
 JSON/PostgreSQL document -> low-frequency auth and control configuration
 ```
 
+## Product Boundary: Current Gateway And Target Control Plane
+
+The diagram above is the implemented v0.1.x data plane. ModelPort is evolving
+from that governed gateway into an independent hybrid model and GPU control
+plane, but documentation and APIs must not present target resources as shipped
+behavior. [ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md)
+defines the boundary and delivery order.
+
+The target keeps inference engines outside ModelPort:
+
+```text
+Client/Harness
+      |
+      v
+ModelPort protocol, policy, routing, ledger, and control APIs
+      |
+      +---------------- Hosted Provider API
+      |
+      +-- Deployment -- Runtime Adapter -- external inference runtime
+                             |
+                       Compute Node / GPU
+```
+
+ModelPort owns desired state, observed inventory, governance, reconciliation,
+and durable evidence. An external runtime owns device-specific execution and
+runtime-native caches. The Dashboard calls ModelPort control APIs; it never
+talks directly to a runtime or becomes another source of desired state.
+
+### Stable resource model
+
+| Resource | Owner and relationship |
+| --- | --- |
+| Client/Harness | Calls a supported ModelPort protocol edge. Claude, Codex, DeepSeek tooling, SDKs, and internal applications are clients, not Provider types. |
+| Provider | Governs an upstream connectivity, credential, trust, and commercial boundary. It can reference a hosted API or a Deployment-backed endpoint. |
+| Model | Describes a catalog identity, capabilities, limits, compatibility, and optional pricing. Catalog presence does not imply deployment or route eligibility. |
+| Runtime Adapter | Implements a versioned contract for inventory and bounded lifecycle operations against an external inference runtime. |
+| Compute Node/GPU | Records host and device capacity, health, freshness, labels, and provenance without treating observations as desired state. |
+| Deployment | Binds a Model, Runtime Adapter, compute allocation, endpoint, and desired/observed lifecycle. |
+| Route | Selects eligible Provider/model or Deployment-backed candidates and persists the policy and decision evidence. |
+
+Hosted and local execution share Model, Provider, Route, policy, health, and
+evidence concepts, but keep distinct operational facts. Hosted APIs have
+remote credentials, rate limits, regions, and Provider-reported usage. Local
+Deployments have artifacts, runtime versions, GPU allocation, endpoint
+lifecycle, and locally observed capacity. ModelPort remains useful without a
+managed GPU.
+
+The current local Qwen path is a reference compatibility example only.
+`local-inference-stack` is not a required repository, inventory authority, or
+release dependency. Core behavior must not depend on its checkout layout,
+scripts, environment variables, or file formats. Existing integration helpers
+remain temporary until the generic Runtime Adapter follow-up replaces them.
+
+### Product domains and console information architecture
+
+Backend ownership and Dashboard navigation converge on the same eight domains:
+
+| Domain | Backend responsibility | Dashboard surface | v0.1.x status |
+| --- | --- | --- | --- |
+| Models | Catalog identities, capabilities, limits, compatibility, and rate cards | Models | Partial: Provider-scoped inventory and logical catalog ship today |
+| Providers | Hosted/local connectivity, credentials, account pools, health, and trust policy | Providers | Implemented under Settings and model views |
+| Compute | Compute Nodes, GPUs, capacity observations, labels, freshness, and provenance | Compute | Target; no first-class inventory yet |
+| Deployments | Model/runtime/compute binding, endpoint, desired state, observed state, and reconciliation | Deployments | Target; local endpoints are currently configured as Providers |
+| Routing | Logical models, aliases, eligibility, fallback, smart decisions, and evidence | Routing | Implemented, with some controls under Settings and Governance |
+| Governance | Users, teams, keys, policies, quotas, budgets, and approvals | Governance | Implemented |
+| Observability | Requests, attempts, usage, cost, latency, GPU/runtime telemetry, and retained evidence | Observability | Partial: request and Provider evidence ship; compute telemetry is target |
+| Operations | Readiness, incidents, backup, retention, upgrades, diagnostics, and reconciliation | Operations | Implemented for gateway operations; deployment operations are target |
+
+This mapping is an information architecture contract, not a requirement to
+create eight services. The backend remains a modular monolith until a separate
+ADR proves a deployment boundary. UI migrations should preserve deep links and
+API compatibility or document an explicit replacement.
+
 CLIProxyAPI (CPA) can be inserted only as an internal Provider boundary:
 
 ```text
@@ -420,6 +493,8 @@ See [Security Policy](../SECURITY.md) and [Operations](OPERATIONS.md).
 ## Deliberate Non-Goals
 
 - Model inference inside the gateway.
+- Treating one local runtime repository, engine, or Harness as the ModelPort
+  product model.
 - A chat client or prompt-history product.
 - Complete enterprise IAM (SCIM, service accounts, organization lifecycle,
   resource-level RBAC, and distributed SSO/session coordination), public

@@ -1,5 +1,6 @@
-# Maintained ModelPort side of contracts/local-qwen-provider-v1.json in
-# local-inference-stack. Copy this file to config.toml; do not edit it in place.
+# Reference Qwen Runtime Adapter fixture for the original compatibility path.
+# It is not a dependency on local-inference-stack or a general deployment
+# contract. Copy this file to config.toml; do not edit it in place.
 default_provider = "local_qwen"
 provider_order = ["local_qwen"]
 

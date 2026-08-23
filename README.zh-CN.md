@@ -13,6 +13,12 @@ ModelPort v0.1.x 是面向 20–50 人内部研发团队的免费 MIT 开源、�
 健康和请求证据。Small-Team Beta 以中文产品体验为优先，同时维护英文 API 与
 运维文档。
 
+已经批准的长期方向是独立的混合模型与 GPU 控制平面：托管 API Provider
+保持一等能力，本地 Qwen 只是可替换的 Runtime Adapter 示例；v0.1.x 尚未实现的
+Compute 和 Deployment API 不会被描述成已交付。边界见
+[架构](docs/ARCHITECTURE.md)与
+[ADR-0007](docs/adr/0007-independent-model-and-gpu-control-plane.md)。
+
 ![ModelPort architecture overview](docs/assets/modelport-overview.svg)
 
 ## 主要能力
@@ -161,8 +167,8 @@ ModelPort 服务端，不能复制到客户端应用。
 - [上手指南](docs/GETTING_STARTED.md)：安装、首次登录、首次请求和启动排障。
 - [快速学习路径](docs/LEARNING_PATH.zh-CN.md)：面向使用者、接入人员、运维和
   贡献者的 30–60 分钟分层课程。
-- [本地推理联合上手](docs/LOCAL_INFERENCE_STACK.md)：在 Linux/WSL2 中配合
-  local-inference-stack 完成只读检查、受控启动和联合验收。
+- [本地 Qwen 参考适配](docs/LOCAL_INFERENCE_STACK.md)：原始集成的可选
+  Linux/WSL2 兼容性流程，不构成 ModelPort 架构依赖。
 - [配置参考](docs/CONFIGURATION.md)：环境变量和 TOML。
 - [API 参考](docs/API.md)：客户端和控制面接口契约。
 - [Provider](docs/PROVIDERS.md)：托管 Provider、本地运行时和兼容性证据。

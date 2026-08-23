@@ -26,8 +26,9 @@ Claude Code / SDK
 Dashboard 是 ModelPort 的管理界面，不是聊天应用。ModelPort 负责鉴权、路由、
 策略、协议转换和证据记录，不负责运行模型。
 
-如果目标是本机 Qwen，请先走[本地推理联合上手](LOCAL_INFERENCE_STACK.md)；
-它把静态契约检查、GPU Runtime 和 ModelPort 分成可独立验证的阶段。
+如果要复现可选的本机 Qwen 参考路径，请阅读
+[本地 Qwen 参考适配](LOCAL_INFERENCE_STACK.md)。它把静态契约检查、外部 GPU
+Runtime 和 ModelPort 分成可独立验证的阶段；ModelPort 不依赖该集成或其仓库。
 
 ## 路线 A：30 分钟启动服务
 
