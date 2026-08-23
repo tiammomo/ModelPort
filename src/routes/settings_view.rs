@@ -276,6 +276,7 @@ mod tests {
             max_request_body_bytes: 1024 * 1024,
             max_concurrent_requests: 64,
             smart_routing: Default::default(),
+            runtime_adapters: Default::default(),
         }
     }
 }

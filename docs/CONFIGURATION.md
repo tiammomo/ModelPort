@@ -29,6 +29,40 @@ container is created.
 Control-plane overrides are applied after the base configuration for provider
 records, model inventory, aliases, default provider, and provider order.
 
+## Runtime Adapter Registry
+
+TOML may declare up to 64 trusted Runtime Adapter origins. Runtime Adapters are
+provider-neutral control-plane discovery implementations: they do not execute
+inference requests and their IDs are independent from Provider IDs, Codex or
+Claude development harnesses, and external implementations such as the Qwen
+reference adapter.
+
+```toml
+[runtime_adapters.gpu_fleet]
+enabled = true
+base_url = "https://runtime-adapter.internal.example"
+bearer_token_env = "MODELPORT_RUNTIME_ADAPTER_GPU_FLEET_TOKEN"
+poll_interval_seconds = 30
+stale_after_seconds = 90
+```
+
+Each enabled entry requires a v1alpha1 adapter ID, an HTTPS origin (or plain
+HTTP on a literal loopback address), and the name of an environment variable
+containing an RFC 6750 Bearer token. Inline credentials and unknown fields are
+rejected. The environment-variable name must contain only ASCII letters,
+digits, and underscores and must not begin with a digit. ModelPort resolves and
+validates the token at startup; debug output and errors redact it, and the token
+is never part of the TOML document or a serializable configuration type.
+
+`poll_interval_seconds` defaults to 30 and is bounded from 5 through 3,600.
+`stale_after_seconds` defaults to 90, is bounded from 5 through 86,400, and
+must cover at least one polling interval. Disabled declarations are inert:
+their endpoint and credential are neither required nor resolved. Duplicate
+TOML adapter tables, invalid enabled declarations, missing credentials, and a
+registry over 64 entries fail configuration loading closed. This registry does
+not start polling; background collection and admin inventory APIs remain
+separate reviewed work.
+
 ## Required Minimum: DeepSeek-Only Example
 
 ```env

@@ -870,6 +870,7 @@ mod tests {
                     },
                 )]),
             },
+            runtime_adapters: Default::default(),
         }
     }
 

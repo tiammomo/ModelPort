@@ -3048,6 +3048,7 @@ mod tests {
                 ),
             ]),
             smart_routing: Default::default(),
+            runtime_adapters: Default::default(),
         };
 
         let rows = client_api::public_model_rows(&config);
@@ -3109,6 +3110,7 @@ mod tests {
             providers: HashMap::from([("mimo".to_owned(), provider)]),
             aliases: HashMap::new(),
             smart_routing: Default::default(),
+            runtime_adapters: Default::default(),
         };
 
         let rows = client_api::public_model_rows(&config);
@@ -8551,6 +8553,7 @@ data: {"type":"message_stop"}
                 providers: HashMap::from([("mimo".to_owned(), provider)]),
                 aliases: HashMap::new(),
                 smart_routing: Default::default(),
+                runtime_adapters: Default::default(),
             })),
             auth: Arc::new(AuthStore::for_tests()),
             oidc: Arc::new(OidcService::disabled()),
@@ -8656,6 +8659,7 @@ data: {"type":"message_stop"}
                 providers: HashMap::from([("anthropic".to_owned(), provider)]),
                 aliases: HashMap::new(),
                 smart_routing: Default::default(),
+                runtime_adapters: Default::default(),
             })),
             auth: Arc::new(AuthStore::for_tests()),
             oidc: Arc::new(OidcService::disabled()),

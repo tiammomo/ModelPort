@@ -16,6 +16,15 @@ max_concurrent_requests = 64
 [auth]
 token_env = "MODELPORT_AUTH_TOKEN"
 
+# Runtime Adapters are control-plane discovery endpoints, not inference
+# Providers. Disabled declarations are inert and do not resolve credentials.
+[runtime_adapters.example]
+enabled = false
+base_url = "https://runtime-adapter.example"
+bearer_token_env = "MODELPORT_RUNTIME_ADAPTER_EXAMPLE_TOKEN"
+poll_interval_seconds = 30
+stale_after_seconds = 90
+
 # DeepSeek's Anthropic-compatible endpoint keeps the client contract intact.
 [providers.deepseek]
 display_name = "DeepSeek Official Anthropic"

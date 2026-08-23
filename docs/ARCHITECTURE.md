@@ -272,6 +272,13 @@ plane can overlay provider records, model inventory, aliases, default provider,
 and provider order. See [Configuration](CONFIGURATION.md) for the exact source
 and reload rules.
 
+The TOML-only Runtime Adapter registry is a separate trusted control-plane
+boundary. Its adapter identities, discovery origins, credentials, and
+collection/freshness policy do not participate in inference Provider routing
+or inherit development-harness metadata. Enabled entries are validated and
+their environment-backed credentials resolved at configuration load; polling
+and inventory presentation are separate lifecycle slices.
+
 Dashboard changes to control-plane records are persisted. They do not rewrite
 `.env` or `config.toml`.
 

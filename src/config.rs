@@ -19,11 +19,18 @@ use crate::{
         validate_model_profile_override,
     },
     pricing::{ModelPricing, ModelPricingCard, PricingServiceTier, PricingSource},
+    runtime_adapter::RuntimeAdapterClientConfig,
 };
 
 const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 64;
 const MAX_PROVIDER_TIMER_MS: u64 = 2_147_483_647;
+const MAX_RUNTIME_ADAPTERS: usize = 64;
+const DEFAULT_RUNTIME_ADAPTER_POLL_INTERVAL_SECONDS: u64 = 30;
+const DEFAULT_RUNTIME_ADAPTER_STALE_AFTER_SECONDS: u64 = 90;
+const MIN_RUNTIME_ADAPTER_INTERVAL_SECONDS: u64 = 5;
+const MAX_RUNTIME_ADAPTER_POLL_INTERVAL_SECONDS: u64 = 3_600;
+const MAX_RUNTIME_ADAPTER_STALE_AFTER_SECONDS: u64 = 86_400;
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -36,6 +43,27 @@ pub struct AppConfig {
     pub providers: HashMap<String, ProviderConfig>,
     pub aliases: HashMap<String, String>,
     pub smart_routing: SmartRoutingConfig,
+    pub runtime_adapters: BTreeMap<String, RuntimeAdapterConfig>,
+}
+
+#[derive(Clone)]
+pub struct RuntimeAdapterConfig {
+    pub client_config: RuntimeAdapterClientConfig,
+    pub credential_env: String,
+    pub poll_interval: Duration,
+    pub stale_after: Duration,
+}
+
+impl fmt::Debug for RuntimeAdapterConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeAdapterConfig")
+            .field("client_config", &self.client_config)
+            .field("credential_env", &self.credential_env)
+            .field("poll_interval", &self.poll_interval)
+            .field("stale_after", &self.stale_after)
+            .finish()
+    }
 }
 
 pub struct RuntimeConfig {
@@ -612,6 +640,7 @@ impl fmt::Debug for AppConfig {
                 &self.smart_routing.groups.keys().collect::<Vec<_>>(),
             )
             .field("providers", &self.providers)
+            .field("runtime_adapters", &self.runtime_adapters)
             .field("aliases", &self.aliases)
             .finish()
     }
@@ -789,6 +818,18 @@ struct FileConfig {
     providers: Option<HashMap<String, ProviderSection>>,
     aliases: Option<HashMap<String, String>>,
     routing: Option<SmartRoutingConfig>,
+    runtime_adapters: Option<BTreeMap<String, RuntimeAdapterSection>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeAdapterSection {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    base_url: Option<String>,
+    bearer_token_env: Option<String>,
+    poll_interval_seconds: Option<u64>,
+    stale_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1380,6 +1421,7 @@ impl AppConfig {
             .ok_or_else(|| AppError::Config("at least one provider is required".to_owned()))?;
         let mut smart_routing = file.routing.unwrap_or_default();
         apply_smart_routing_env_override(&mut smart_routing)?;
+        let runtime_adapters = load_runtime_adapters(file.runtime_adapters.unwrap_or_default())?;
 
         Ok(Self {
             bind_addr,
@@ -1391,6 +1433,7 @@ impl AppConfig {
             providers,
             aliases: file.aliases.unwrap_or_default(),
             smart_routing,
+            runtime_adapters,
         })
     }
 
@@ -1441,8 +1484,95 @@ impl AppConfig {
             providers,
             aliases,
             smart_routing,
+            runtime_adapters: BTreeMap::new(),
         })
     }
+}
+
+fn load_runtime_adapters(
+    sections: BTreeMap<String, RuntimeAdapterSection>,
+) -> Result<BTreeMap<String, RuntimeAdapterConfig>, AppError> {
+    if sections.len() > MAX_RUNTIME_ADAPTERS {
+        return Err(AppError::Config(format!(
+            "runtime_adapters supports at most {MAX_RUNTIME_ADAPTERS} entries"
+        )));
+    }
+
+    let mut adapters = BTreeMap::new();
+    for (adapter_id, section) in sections {
+        if !section.enabled {
+            continue;
+        }
+        let base_url = section.base_url.ok_or_else(|| {
+            AppError::Config(format!(
+                "enabled Runtime Adapter `{adapter_id}` requires base_url"
+            ))
+        })?;
+        let credential_env = section.bearer_token_env.ok_or_else(|| {
+            AppError::Config(format!(
+                "enabled Runtime Adapter `{adapter_id}` requires bearer_token_env"
+            ))
+        })?;
+        validate_secret_env_name(&credential_env).map_err(|message| {
+            AppError::Config(format!("Runtime Adapter `{adapter_id}` {message}"))
+        })?;
+        let bearer_token = env_value(&credential_env).ok_or_else(|| {
+            AppError::Config(format!(
+                "enabled Runtime Adapter `{adapter_id}` Bearer credential environment variable is unset or empty"
+            ))
+        })?;
+        let poll_seconds = section
+            .poll_interval_seconds
+            .unwrap_or(DEFAULT_RUNTIME_ADAPTER_POLL_INTERVAL_SECONDS);
+        let stale_seconds = section
+            .stale_after_seconds
+            .unwrap_or(DEFAULT_RUNTIME_ADAPTER_STALE_AFTER_SECONDS);
+        if !(MIN_RUNTIME_ADAPTER_INTERVAL_SECONDS..=MAX_RUNTIME_ADAPTER_POLL_INTERVAL_SECONDS)
+            .contains(&poll_seconds)
+        {
+            return Err(AppError::Config(format!(
+                "Runtime Adapter `{adapter_id}` poll_interval_seconds must be from {MIN_RUNTIME_ADAPTER_INTERVAL_SECONDS} to {MAX_RUNTIME_ADAPTER_POLL_INTERVAL_SECONDS}"
+            )));
+        }
+        if !(MIN_RUNTIME_ADAPTER_INTERVAL_SECONDS..=MAX_RUNTIME_ADAPTER_STALE_AFTER_SECONDS)
+            .contains(&stale_seconds)
+            || stale_seconds < poll_seconds
+        {
+            return Err(AppError::Config(format!(
+                "Runtime Adapter `{adapter_id}` stale_after_seconds must be from {MIN_RUNTIME_ADAPTER_INTERVAL_SECONDS} to {MAX_RUNTIME_ADAPTER_STALE_AFTER_SECONDS} and cover at least one polling interval"
+            )));
+        }
+        let client = RuntimeAdapterClientConfig::new(adapter_id.clone(), base_url, bearer_token)
+            .map_err(|error| {
+                AppError::Config(format!(
+                    "Runtime Adapter `{adapter_id}` configuration is invalid: {error}"
+                ))
+            })?;
+        adapters.insert(
+            adapter_id,
+            RuntimeAdapterConfig {
+                client_config: client,
+                credential_env,
+                poll_interval: Duration::from_secs(poll_seconds),
+                stale_after: Duration::from_secs(stale_seconds),
+            },
+        );
+    }
+    Ok(adapters)
+}
+
+fn validate_secret_env_name(name: &str) -> Result<(), &'static str> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 128
+        || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+        || !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Err("bearer_token_env must be a valid environment-variable name");
+    }
+    Ok(())
 }
 
 impl RuntimeConfig {
@@ -3505,7 +3635,86 @@ mod tests {
                 "openrouter:anthropic/claude-sonnet-4".to_owned(),
             )]),
             smart_routing: SmartRoutingConfig::default(),
+            runtime_adapters: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn runtime_adapter_registry_loads_env_secret_with_defaults_and_redacts_debug() {
+        const CREDENTIAL_ENV: &str = "MODELPORT_TEST_RUNTIME_ADAPTER_TOKEN_27";
+        // SAFETY: this test owns a unique process variable that no other test reads.
+        unsafe { env::set_var(CREDENTIAL_ENV, "adapter-secret-never-log") };
+        let file: FileConfig = toml::from_str(&format!(
+            r#"
+            [runtime_adapters.edge_1]
+            base_url = "http://127.0.0.1:19090"
+            bearer_token_env = "{CREDENTIAL_ENV}"
+            "#
+        ))
+        .unwrap();
+
+        let registry = load_runtime_adapters(file.runtime_adapters.unwrap()).unwrap();
+        // SAFETY: remove the unique variable after the synchronous load boundary.
+        unsafe { env::remove_var(CREDENTIAL_ENV) };
+        let adapter = &registry["edge_1"];
+        assert_eq!(adapter.client_config.adapter_id(), "edge_1");
+        assert_eq!(adapter.credential_env, CREDENTIAL_ENV);
+        assert_eq!(adapter.poll_interval, Duration::from_secs(30));
+        assert_eq!(adapter.stale_after, Duration::from_secs(90));
+        let debug = format!("{registry:?}");
+        assert!(!debug.contains("adapter-secret-never-log"));
+        assert!(debug.contains("[redacted]"));
+    }
+
+    #[test]
+    fn disabled_runtime_adapter_is_inert_without_endpoint_or_secret() {
+        let file: FileConfig = toml::from_str(
+            r#"
+            [runtime_adapters.future]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+
+        assert!(
+            load_runtime_adapters(file.runtime_adapters.unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn runtime_adapter_registry_rejects_inline_secret_and_invalid_policy() {
+        let inline = toml::from_str::<FileConfig>(
+            r#"
+            [runtime_adapters.edge]
+            base_url = "https://adapter.example"
+            bearer_token = "must-not-be-accepted"
+            "#,
+        );
+        assert!(inline.is_err());
+
+        const CREDENTIAL_ENV: &str = "MODELPORT_TEST_RUNTIME_ADAPTER_POLICY_TOKEN_27";
+        // SAFETY: this test owns a unique process variable that no other test reads.
+        unsafe { env::set_var(CREDENTIAL_ENV, "valid-test-token") };
+        let file: FileConfig = toml::from_str(&format!(
+            r#"
+            [runtime_adapters.edge]
+            base_url = "https://adapter.example"
+            bearer_token_env = "{CREDENTIAL_ENV}"
+            poll_interval_seconds = 60
+            stale_after_seconds = 30
+            "#
+        ))
+        .unwrap();
+        let error = load_runtime_adapters(file.runtime_adapters.unwrap()).unwrap_err();
+        unsafe { env::remove_var(CREDENTIAL_ENV) };
+        assert!(
+            error
+                .to_string()
+                .contains("cover at least one polling interval")
+        );
+        assert!(!error.to_string().contains("valid-test-token"));
     }
 
     fn test_cpa_provider(provider_id: &str) -> ProviderConfig {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add a bounded, provider-neutral Runtime Adapter registry with validated
+  origins, environment-only Bearer credentials, collection policy, and
+  fail-closed startup loading.
+
 All notable ModelPort changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) once a version is published.
 
