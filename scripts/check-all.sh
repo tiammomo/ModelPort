@@ -256,11 +256,16 @@ validate_config_examples() {
 }
 
 validate_runtime_adapter_examples() {
-  local fixture="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+  local capabilities="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+  local compute_inventory="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json"
   local invalid="$CHECK_TMP_DIR/invalid-runtime-adapter-capabilities.json"
+  local invalid_compute="$CHECK_TMP_DIR/invalid-runtime-adapter-compute-inventory.json"
 
   run_check "validating the reference Runtime Adapter capabilities" \
-    "$ROOT_DIR/target/debug/model-port" runtime-adapter validate "$fixture"
+    "$ROOT_DIR/target/debug/model-port" runtime-adapter validate "$capabilities"
+
+  run_check "validating the reference Runtime Adapter compute inventory" \
+    "$ROOT_DIR/target/debug/model-port" runtime-adapter validate "$compute_inventory"
 
   printf '%s\n' \
     '{"apiVersion":"runtime.modelport.io/v1alpha1","kind":"RuntimeAdapterCapabilities","metadata":{},"spec":{"operations":[{"operationId":"capabilities.get","method":"POST","path":"/runtime-adapter/v1alpha1/capabilities","sideEffectFree":false}]}}' \
@@ -269,6 +274,14 @@ validate_runtime_adapter_examples() {
     die "the Runtime Adapter validator accepted a mutating invalid document"
   fi
   log "invalid Runtime Adapter capability document rejected"
+
+  printf '%s\n' \
+    '{"apiVersion":"runtime.modelport.io/v1alpha1","kind":"RuntimeAdapterComputeInventory","metadata":{"adapterId":"fixture","snapshotId":"snapshot:invalid","observedAt":"not-rfc3339","source":{"collectorId":"fixture","collectorVersion":"0.1.0"}},"nodes":[]}' \
+    > "$invalid_compute"
+  if "$ROOT_DIR/target/debug/model-port" runtime-adapter validate "$invalid_compute" >/dev/null 2>&1; then
+    die "the Runtime Adapter validator accepted an invalid observation timestamp"
+  fi
+  log "invalid Runtime Adapter compute inventory rejected"
 }
 
 main() {

@@ -1,0 +1,19 @@
+{
+  "apiVersion": "runtime.modelport.io/v1alpha1", "kind": "RuntimeAdapterComputeInventory",
+  "metadata": {
+    "adapterId": "qwen-llama-cpp-reference", "snapshotId": "snapshot:qwen-local-20260823t040000z", "observedAt": "2026-08-23T04:00:00Z",
+    "source": { "collectorId": "qwen-llama-cpp-reference", "collectorVersion": "0.1.0", "sourceRevision": "fixture" },
+    "extensions": { "referenceOnly": true }
+  },
+  "nodes": [{
+    "nodeId": "host:qwen-local-01", "idSource": "operator_assigned", "hostName": "qwen-gpu-01",
+    "architecture": "amd64", "operatingSystem": "linux", "health": "available",
+    "gpus": [{
+      "gpuId": "nvidia:GPU-00000000-0000-0000-0000-000000000001", "idSource": "vendor_uuid", "deviceClass": "physical",
+      "vendor": "nvidia", "model": "NVIDIA GeForce RTX 4090", "health": "available",
+      "memory": { "totalBytes": 25769803776, "availableBytes": 21474836480 },
+      "driverVersion": "fixture", "pciAddress": "0000:01:00.0"
+    }],
+    "extensions": { "referenceOnly": true, "modelFamily": "qwen" }
+  }]
+}

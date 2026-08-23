@@ -136,23 +136,51 @@ fn validate_config() -> Result<(), AppError> {
 
 fn validate_runtime_adapter(path: &str, json_output: bool) -> Result<(), AppError> {
     let raw = fs::read_to_string(path)?;
-    let document = crate::runtime_adapter::validate_runtime_adapter_capabilities(&raw)?;
-    let result = json!({
-        "valid": true,
-        "apiVersion": document.api_version,
-        "kind": document.kind,
-        "adapterId": document.metadata.adapter_id,
-        "adapterVersion": document.metadata.adapter_version,
-        "operationCount": document.spec.operations.len(),
-    });
+    let document = crate::runtime_adapter::validate_runtime_adapter_document(&raw)?;
+    let result = match document {
+        crate::runtime_adapter::RuntimeAdapterDocument::Capabilities(document) => json!({
+            "valid": true,
+            "apiVersion": document.api_version,
+            "kind": document.kind,
+            "adapterId": document.metadata.adapter_id,
+            "adapterVersion": document.metadata.adapter_version,
+            "operationCount": document.spec.operations.len(),
+        }),
+        crate::runtime_adapter::RuntimeAdapterDocument::ComputeInventory(document) => {
+            let gpu_count = document
+                .nodes
+                .iter()
+                .map(|node| node.gpus.len())
+                .sum::<usize>();
+            json!({
+                "valid": true,
+                "apiVersion": document.api_version,
+                "kind": document.kind,
+                "adapterId": document.metadata.adapter_id,
+                "snapshotId": document.metadata.snapshot_id,
+                "observedAt": document.metadata.observed_at,
+                "nodeCount": document.nodes.len(),
+                "gpuCount": gpu_count,
+            })
+        }
+    };
     if json_output {
         println!("{}", serde_json::to_string(&result)?);
-    } else {
+    } else if result["kind"] == crate::runtime_adapter::RUNTIME_ADAPTER_CAPABILITIES_KIND {
         println!(
             "Runtime Adapter capabilities valid: {} {} ({} read-only operations)",
             result["adapterId"].as_str().unwrap_or("unknown"),
             result["adapterVersion"].as_str().unwrap_or("unknown"),
             result["operationCount"].as_u64().unwrap_or(0)
+        );
+    } else {
+        println!(
+            "Runtime Adapter compute inventory valid: {} {} ({} node(s), {} GPU(s), observed {})",
+            result["adapterId"].as_str().unwrap_or("unknown"),
+            result["snapshotId"].as_str().unwrap_or("unknown"),
+            result["nodeCount"].as_u64().unwrap_or(0),
+            result["gpuCount"].as_u64().unwrap_or(0),
+            result["observedAt"].as_str().unwrap_or("unknown")
         );
     }
     Ok(())
@@ -289,7 +317,7 @@ fn now_millis() -> u64 {
 
 fn print_usage() {
     println!(
-        "Usage:\n  model-port\n  model-port --version\n  model-port config validate\n  model-port runtime-adapter validate <path> [--json]\n  model-port backup export <path>\n  model-port backup validate <path>\n  model-port backup restore <path> --yes\n\nCommands:\n  --version                Print release and source-build identity\n  config validate          Load and validate configuration without starting the server\n  runtime-adapter validate <path> [--json]\n                           Validate a side-effect-free v1alpha1 capability document\n  backup export <path>     Export auth/control definitions with hashed auth material\n  backup validate <path>   Validate a logical auth/control backup file\n  backup restore <path> --yes\n                           Restore auth/control definitions after saving current values"
+        "Usage:\n  model-port\n  model-port --version\n  model-port config validate\n  model-port runtime-adapter validate <path> [--json]\n  model-port backup export <path>\n  model-port backup validate <path>\n  model-port backup restore <path> --yes\n\nCommands:\n  --version                Print release and source-build identity\n  config validate          Load and validate configuration without starting the server\n  runtime-adapter validate <path> [--json]\n                           Validate a side-effect-free v1alpha1 capability or compute inventory document\n  backup export <path>     Export auth/control definitions with hashed auth material\n  backup validate <path>   Validate a logical auth/control backup file\n  backup restore <path> --yes\n                           Restore auth/control definitions after saving current values"
     );
 }
 

@@ -14,8 +14,8 @@ Usage:
   scripts/runtime-adapter-check.sh [options]
 
 Options:
-  --document <path>  Capability document to validate. Relative paths resolve
-                     from the ModelPort checkout.
+  --document <path>  Capability or Compute inventory document to validate.
+                     Relative paths resolve from the ModelPort checkout.
   --json             Emit a machine-readable validation result.
   -h, --help         Show this help.
 
@@ -50,7 +50,7 @@ done
 if [[ "$DOCUMENT_PATH" != /* ]]; then
   DOCUMENT_PATH="$ROOT_DIR/$DOCUMENT_PATH"
 fi
-[[ -f "$DOCUMENT_PATH" ]] || die "Runtime Adapter capability document not found: $DOCUMENT_PATH"
+[[ -f "$DOCUMENT_PATH" ]] || die "Runtime Adapter document not found: $DOCUMENT_PATH"
 
 arguments=(runtime-adapter validate "$DOCUMENT_PATH")
 if [[ "$JSON" -eq 1 ]]; then

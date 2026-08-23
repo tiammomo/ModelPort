@@ -1,25 +1,31 @@
-# Runtime Adapter Capability Contract
+# Runtime Adapter Contracts
 
-ModelPort publishes a versioned, read-only discovery contract for external
-inference runtimes. The shipped v1alpha1 artifact is a contract and offline validator;
-it does not expose an Adapter client, inventory API, reconciler, or mutation endpoint.
+ModelPort publishes versioned, read-only discovery and Compute Node/GPU
+observation contracts for external inference runtimes. The shipped v1alpha1
+artifacts are wire contracts and offline validators; they do not expose an
+Adapter client, persisted inventory API, reconciler, or mutation endpoint.
 
 ## Contract Files
 
 - `schemas/runtime-adapter-capabilities-v1alpha1.schema.json` is the normative [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) document.
-- `src/runtime_adapter.rs` contains the matching public Rust types and semantic validator.
-- `fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json` is one reference fixture; Qwen and llama.cpp are not special resource types.
+- `schemas/runtime-adapter-compute-inventory-v1alpha1.schema.json` defines the normative response from `inventory.compute.list`.
+- `src/runtime_adapter.rs` contains the matching public Rust types and semantic validators.
+- `fixtures/runtime-adapters/qwen-llama-cpp-*-v1alpha1.json` are reference fixtures; Qwen and llama.cpp are not special resource types.
 
 Validate the reference or another local document without contacting a runtime:
 
 ```bash
 scripts/runtime-adapter-check.sh
 scripts/runtime-adapter-check.sh --document path/to/capabilities.json --json
+scripts/runtime-adapter-check.sh --document path/to/compute-inventory.json --json
 ```
 
-The equivalent binary command is `model-port runtime-adapter validate path/to/capabilities.json --json`.
+The equivalent binary command is
+`model-port runtime-adapter validate path/to/document.json --json`. The
+validator dispatches only the two recognized `kind` values and rejects an
+unknown resource kind.
 
-## v1alpha1 Rules
+## Capability Rules
 
 Every document has `apiVersion: runtime.modelport.io/v1alpha1`,
 `kind: RuntimeAdapterCapabilities`, a stable adapter identity, authentication
@@ -37,6 +43,38 @@ operation/path mismatches.
 security boundary. Both require an advertised bearer-token or mutual-TLS
 authentication scheme; the fixture contains no credentials.
 
+## Compute Inventory Rules
+
+`RuntimeAdapterComputeInventory` is the response document for the advertised
+side-effect-free `inventory.compute.list` operation. Metadata binds each
+snapshot to an `adapterId`, opaque `snapshotId`,
+[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) `observedAt`, and
+collector version/revision provenance. Date-time format validation is enabled
+as an assertion rather than treated as a schema annotation.
+
+Node identity follows the distinction between OpenTelemetry
+[`host.id` and `host.name`](https://opentelemetry.io/docs/specs/semconv/resource/host/):
+`nodeId` is stable, while optional `hostName` is descriptive and may change.
+`idSource` records whether the stable value came from a machine ID, cloud
+instance ID, or explicit operator assignment.
+
+Each `gpuId` is unique across the snapshot and records an `idSource`. Prefer a
+vendor device or partition UUID. [NVIDIA NVML](https://docs.nvidia.com/deploy/nvml-api/group__nvmlDeviceQueries.html)
+exposes GPU UUID lookup, and
+[AMD SMI](https://rocm.docs.amd.com/projects/amdsmi/en/develop/conceptual/partition.html)
+exposes partition UUIDs on current ROCm versions. A PCI address may be reported
+as an observation, but neither a PCI address nor an enumeration index is an
+accepted identity source. A partition must reference a physical GPU on the
+same node. Available memory cannot exceed total memory, and both are integer
+byte counts.
+
+Node/device `health` reports the state observed at `observedAt`; it does not
+report snapshot freshness. The document cannot contain `fresh` or `stale`.
+ModelPort will derive `fresh`, `stale`, or `unavailable` from the accepted
+observation time and server-owned policy when persistence is implemented.
+Extensions are limited to bounded primitive values or bounded primitive arrays
+so they cannot become an unreviewed nested protocol.
+
 ## Compatibility And Evolution
 
 Consumers must reject an unsupported `apiVersion`; fields are not silently
@@ -45,7 +83,7 @@ reinterpreted across versions. Additive experimental data belongs in
 `local-inference-stack` checker remains an explicitly selected compatibility
 mode, not the source of this contract.
 
-Inventory responses, RFC 3339 observation time, freshness, provenance, stable
-GPU identity, authenticated transport, persistence, and writes are deferred to
-reviewed Issues. Validation cannot start a process, download a model, access a
-GPU, or call a network endpoint.
+Authenticated transport, collection policy, persistence, derived freshness,
+admin APIs, and all writes remain deferred to reviewed Issues. Validation
+cannot start a process, download a model, access a GPU, or call a network
+endpoint.
