@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STACK_DIR="${LOCAL_INFERENCE_STACK_DIR:-}"
 MODELPORT_CONFIG_PATH=""
 RELEASE=0
@@ -10,20 +11,19 @@ JSON=0
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/local-inference-check.sh --stack-dir <path> [options]
+  scripts/local-inference-check.sh [options]
 
 Options:
-  --stack-dir <path>       local-inference-stack checkout. May also be supplied
-                           through LOCAL_INFERENCE_STACK_DIR.
-  --config <path>          ModelPort config, relative to this checkout unless
-                           absolute (default: config.toml).
-  --release                Also check clean worktrees and the pinned gateway
-                           source revision.
-  --json                   Emit machine-readable JSON.
-  -h, --help               Show this help.
+  --stack-dir <path>  Deprecated external compatibility mode. May also be
+                      supplied through LOCAL_INFERENCE_STACK_DIR.
+  --config <path>     ModelPort config for deprecated compatibility mode.
+  --release           Add release checks in deprecated compatibility mode.
+  --json              Emit machine-readable JSON.
+  -h, --help          Show this help.
 
-This command is read-only. It does not start services, download models, send an
-inference request, or change GPU state.
+Without --stack-dir, this command validates ModelPort's repository-owned Qwen
+Runtime Adapter fixture. It does not connect to a runtime, download a model,
+or change GPU state. Prefer scripts/runtime-adapter-check.sh for new adapters.
 USAGE
 }
 
@@ -59,13 +59,23 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$STACK_DIR" ]]; then
+  if [[ -n "$MODELPORT_CONFIG_PATH" || "$RELEASE" -eq 1 ]]; then
+    printf '%s\n' '--config and --release require deprecated --stack-dir compatibility mode' >&2
+    exit 2
+  fi
+  arguments=()
+  if [[ "$JSON" -eq 1 ]]; then
+    arguments+=(--json)
+  fi
+  exec "$SCRIPT_DIR/runtime-adapter-check.sh" "${arguments[@]}"
+fi
+
+printf '%s\n' \
+  'warning: --stack-dir compatibility mode is deprecated; migrate to a v1alpha1 Runtime Adapter capability document.' >&2
+
 if [[ "$(uname -s)" != "Linux" ]]; then
   printf '%s\n' 'local inference integration checks require Linux or WSL2.' >&2
-  exit 2
-fi
-if [[ -z "$STACK_DIR" ]]; then
-  printf '%s\n' \
-    'set --stack-dir or LOCAL_INFERENCE_STACK_DIR; adjacent checkout paths are not assumed.' >&2
   exit 2
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -80,7 +90,7 @@ STACK_DIR="$(cd "$STACK_DIR" 2>/dev/null && pwd)" || {
 CHECKER="$STACK_DIR/scripts/compatibility-check.py"
 CONTRACT="$STACK_DIR/contracts/local-qwen-provider-v1.json"
 if [[ ! -f "$CHECKER" || ! -f "$CONTRACT" ]]; then
-  printf 'not a compatible local-inference-stack checkout: %s\n' "$STACK_DIR" >&2
+  printf 'not a compatible legacy local-inference-stack checkout: %s\n' "$STACK_DIR" >&2
   exit 2
 fi
 

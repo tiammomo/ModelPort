@@ -24,6 +24,7 @@ mod provider_credentials;
 mod provider_status;
 mod providers;
 mod routes;
+pub mod runtime_adapter;
 mod server;
 mod smart_router;
 mod storage;

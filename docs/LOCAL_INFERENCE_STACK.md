@@ -5,6 +5,8 @@
 事实来源或架构依赖。新的本地运行时必须遵循
 [ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md) 定义的通用
 Runtime Adapter 边界，不能依赖本文中的仓库目录、脚本或环境变量。
+通用 v1alpha1 capability 契约和离线验证方式见
+[Runtime Adapter Capability Contract](RUNTIME_ADAPTER.md)。
 
 当前 v0.1.x 仍只把本地 Qwen 暴露为一个 OpenAI-compatible Provider；尚未交付
 Compute Inventory 或 Deployment 生命周期 API。下面的兼容性命令先验证配置
@@ -54,10 +56,17 @@ cd "$LOCAL_INFERENCE_STACK_DIR"
 重点看 `readyToDeploy`、`resourceAvailableNow`、固定 revision、SHA256、许可证和
 `caveats`。`readyToDeploy=false` 时停在这里，处理资源或审批问题，不绕过准入。
 
-再校验两个仓库的静态契约：
+先校验 ModelPort 自有的通用 capability 和 Qwen 参考 Fixture：
 
 ```bash
 cd "$MODELPORT_PROJECT_DIR"
+./scripts/runtime-adapter-check.sh --json
+```
+
+成功结果包含 `"valid":true`，且不读取另一个仓库。仅为回归原始联合部署时，
+再显式进入已弃用的跨仓库兼容检查：
+
+```bash
 ./scripts/local-inference-check.sh \
   --stack-dir "$LOCAL_INFERENCE_STACK_DIR"
 ```
@@ -95,8 +104,7 @@ ANTHROPIC_MODEL=qwen3.5-code
 
 ```bash
 ./scripts/doctor.sh --setup
-./scripts/local-inference-check.sh \
-  --stack-dir "$LOCAL_INFERENCE_STACK_DIR"
+./scripts/runtime-adapter-check.sh
 ```
 
 这两个命令仍然不启动服务、不生成内容。
@@ -167,6 +175,7 @@ Token 计数；超出逻辑档位或 131,072 硬上下文时返回可操作的 4
 5. `/livez` 成功但请求被拒：检查 ModelPort Key、逻辑模型和返回的 Token 准入信息。
 
 在这个历史参考流程中，`local-inference-stack` 的契约文件只用于验证该适配
-Fixture，不是 ModelPort 的跨仓库事实来源。通用 Runtime Adapter 落地前，影响
-该 Fixture 的接口、模型、Reasoning、Token 限制或 Tool Use 变化仍需同步更新
-兼容测试和 `standard` 验收；新的核心功能不得读取该仓库的内部文件。
+Fixture，不是 ModelPort 的跨仓库事实来源。v1alpha1 当前只定义 capability，
+不代表库存、认证传输或生命周期 API 已交付。影响历史 Fixture 的接口、模型、
+Reasoning、Token 限制或 Tool Use 变化仍需同步更新兼容测试和 `standard` 验收；
+新的核心功能不得读取该仓库的内部文件。

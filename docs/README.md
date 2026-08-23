@@ -34,6 +34,8 @@ read every document: choose the path that matches your task.
   errors, request IDs, and control-plane endpoints.
 - [Providers](PROVIDERS.md) — choose a hosted Provider or local runtime and
   verify its exact model path.
+- [Runtime Adapter](RUNTIME_ADAPTER.md) — validate the versioned, read-only
+  capability boundary for an external local runtime.
 - [Tool Use](TOOL_USE_COMPATIBILITY.md) — request/response conversion,
   validation, streaming, and Provider-specific acceptance.
 - [Smart Routing](SMART_ROUTING.md) — define smart aliases and roll them out

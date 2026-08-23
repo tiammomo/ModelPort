@@ -255,6 +255,22 @@ validate_config_examples() {
   done
 }
 
+validate_runtime_adapter_examples() {
+  local fixture="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+  local invalid="$CHECK_TMP_DIR/invalid-runtime-adapter-capabilities.json"
+
+  run_check "validating the reference Runtime Adapter capabilities" \
+    "$ROOT_DIR/target/debug/model-port" runtime-adapter validate "$fixture"
+
+  printf '%s\n' \
+    '{"apiVersion":"runtime.modelport.io/v1alpha1","kind":"RuntimeAdapterCapabilities","metadata":{},"spec":{"operations":[{"operationId":"capabilities.get","method":"POST","path":"/runtime-adapter/v1alpha1/capabilities","sideEffectFree":false}]}}' \
+    > "$invalid"
+  if "$ROOT_DIR/target/debug/model-port" runtime-adapter validate "$invalid" >/dev/null 2>&1; then
+    die "the Runtime Adapter validator accepted a mutating invalid document"
+  fi
+  log "invalid Runtime Adapter capability document rejected"
+}
+
 main() {
   cd "$ROOT_DIR"
 
@@ -280,6 +296,7 @@ main() {
     cargo clippy --locked --all-targets --all-features -- -D warnings
   run_dashboard_checks
   validate_config_examples
+  validate_runtime_adapter_examples
 
   log "all repository checks passed"
 }

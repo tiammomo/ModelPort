@@ -16,6 +16,7 @@ enum Command {
     Help,
     Version,
     ValidateConfig,
+    ValidateRuntimeAdapter(String, bool),
     ExportBackup(String),
     ValidateBackup(String),
     RestoreBackup(String),
@@ -34,6 +35,10 @@ pub(crate) fn handle(args: Vec<String>) -> Result<bool, AppError> {
         }
         Command::ValidateConfig => {
             validate_config()?;
+            Ok(true)
+        }
+        Command::ValidateRuntimeAdapter(path, json) => {
+            validate_runtime_adapter(&path, json)?;
             Ok(true)
         }
         Command::ExportBackup(path) => {
@@ -58,6 +63,14 @@ fn parse_command(args: &[String]) -> Result<Command, AppError> {
         [flag] if flag == "-V" || flag == "--version" || flag == "version" => Ok(Command::Version),
         [command, subcommand] if command == "config" && subcommand == "validate" => {
             Ok(Command::ValidateConfig)
+        }
+        [command, subcommand, path] if command == "runtime-adapter" && subcommand == "validate" => {
+            Ok(Command::ValidateRuntimeAdapter(path.clone(), false))
+        }
+        [command, subcommand, path, flag]
+            if command == "runtime-adapter" && subcommand == "validate" && flag == "--json" =>
+        {
+            Ok(Command::ValidateRuntimeAdapter(path.clone(), true))
         }
         [command, subcommand, path] if command == "backup" && subcommand == "export" => {
             Ok(Command::ExportBackup(path.clone()))
@@ -118,6 +131,30 @@ fn validate_config() -> Result<(), AppError> {
     }
 
     println!("ModelPort configuration valid: {warnings} warning(s).");
+    Ok(())
+}
+
+fn validate_runtime_adapter(path: &str, json_output: bool) -> Result<(), AppError> {
+    let raw = fs::read_to_string(path)?;
+    let document = crate::runtime_adapter::validate_runtime_adapter_capabilities(&raw)?;
+    let result = json!({
+        "valid": true,
+        "apiVersion": document.api_version,
+        "kind": document.kind,
+        "adapterId": document.metadata.adapter_id,
+        "adapterVersion": document.metadata.adapter_version,
+        "operationCount": document.spec.operations.len(),
+    });
+    if json_output {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        println!(
+            "Runtime Adapter capabilities valid: {} {} ({} read-only operations)",
+            result["adapterId"].as_str().unwrap_or("unknown"),
+            result["adapterVersion"].as_str().unwrap_or("unknown"),
+            result["operationCount"].as_u64().unwrap_or(0)
+        );
+    }
     Ok(())
 }
 
@@ -252,7 +289,7 @@ fn now_millis() -> u64 {
 
 fn print_usage() {
     println!(
-        "Usage:\n  model-port\n  model-port --version\n  model-port config validate\n  model-port backup export <path>\n  model-port backup validate <path>\n  model-port backup restore <path> --yes\n\nCommands:\n  --version                Print release and source-build identity\n  config validate          Load and validate configuration without starting the server\n  backup export <path>     Export auth/control definitions with hashed auth material\n  backup validate <path>   Validate a logical auth/control backup file\n  backup restore <path> --yes\n                           Restore auth/control definitions after saving current values"
+        "Usage:\n  model-port\n  model-port --version\n  model-port config validate\n  model-port runtime-adapter validate <path> [--json]\n  model-port backup export <path>\n  model-port backup validate <path>\n  model-port backup restore <path> --yes\n\nCommands:\n  --version                Print release and source-build identity\n  config validate          Load and validate configuration without starting the server\n  runtime-adapter validate <path> [--json]\n                           Validate a side-effect-free v1alpha1 capability document\n  backup export <path>     Export auth/control definitions with hashed auth material\n  backup validate <path>   Validate a logical auth/control backup file\n  backup restore <path> --yes\n                           Restore auth/control definitions after saving current values"
     );
 }
 
@@ -275,6 +312,16 @@ mod tests {
         assert_eq!(
             parse_command(&args(&["config", "validate"])).unwrap(),
             Command::ValidateConfig
+        );
+        assert_eq!(
+            parse_command(&args(&[
+                "runtime-adapter",
+                "validate",
+                "capabilities.json",
+                "--json"
+            ]))
+            .unwrap(),
+            Command::ValidateRuntimeAdapter("capabilities.json".to_owned(), true)
         );
         assert_eq!(
             parse_command(&args(&["backup", "validate", "backup.json"])).unwrap(),

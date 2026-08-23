@@ -39,10 +39,10 @@ at every step:
 1. **Architecture contract:** define Client/Harness, Provider, Model, Runtime
    Adapter, Compute Node/GPU, Deployment, and Route ownership; align the eight
    backend and Dashboard domains without claiming unimplemented APIs.
-2. **Independent adapter boundary:** remove normative
-   `local-inference-stack` assumptions and publish a versioned, read-only
-   Runtime Adapter capability contract. Keep local Qwen as a reference fixture
-   and keep hosted Providers unchanged.
+2. **Independent adapter boundary:** the versioned, read-only Runtime Adapter
+   capability schema, validator, and Qwen fixture are shipped. Authenticated
+   transport and inventory response resources remain separate work; hosted
+   Providers are unchanged.
 3. **Compute inventory:** persist authenticated, read-only Compute Node/GPU
    observations with freshness, provenance, stable identifiers, and explicit
    unavailable/stale states. Inventory must not start a runtime or download a
@@ -58,10 +58,8 @@ at every step:
 These are sequential product boundaries, not one large implementation PR.
 Hosted-only installations remain supported throughout.
 
-The next focused Issues after the architecture contract are:
+The next focused Issues after the adapter capability contract are:
 
-- replace repository-specific local checks with a generic Runtime Adapter
-  capability and reference-Qwen fixture;
 - expose a read-only Compute Node/GPU inventory API with freshness and
   provenance;
 - introduce a Deployment resource and manual lifecycle reconciliation;

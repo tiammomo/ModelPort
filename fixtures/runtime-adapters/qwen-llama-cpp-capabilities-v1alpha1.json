@@ -1,0 +1,23 @@
+{
+  "apiVersion": "runtime.modelport.io/v1alpha1",
+  "kind": "RuntimeAdapterCapabilities",
+  "metadata": {
+    "adapterId": "qwen-llama-cpp-reference", "displayName": "Qwen llama.cpp reference adapter", "adapterVersion": "0.1.0"
+  },
+  "spec": {
+    "authentication": { "schemes": ["bearer"], "transport": "tls_or_loopback" },
+    "runtimeEngines": ["llama.cpp"],
+    "inferenceProtocols": [
+      { "id": "openai_compatible", "versions": ["v1"] }
+    ],
+    "inventoryKinds": ["model", "compute_node", "gpu", "deployment"],
+    "operations": [
+      { "operationId": "capabilities.get", "method": "GET", "path": "/runtime-adapter/v1alpha1/capabilities", "sideEffectFree": true },
+      { "operationId": "health.get", "method": "GET", "path": "/runtime-adapter/v1alpha1/health", "sideEffectFree": true },
+      { "operationId": "inventory.models.list", "method": "GET", "path": "/runtime-adapter/v1alpha1/inventory/models", "sideEffectFree": true },
+      { "operationId": "inventory.compute.list", "method": "GET", "path": "/runtime-adapter/v1alpha1/inventory/compute", "sideEffectFree": true },
+      { "operationId": "inventory.deployments.list", "method": "GET", "path": "/runtime-adapter/v1alpha1/inventory/deployments", "sideEffectFree": true }
+    ],
+    "extensions": { "referenceOnly": true, "modelFamily": "qwen" }
+  }
+}
