@@ -42,6 +42,14 @@ credential is not serializable and is redacted from debug output and upstream
 errors. Configuration-file loading, scheduling, and storage are intentionally
 outside this client boundary.
 
+Accepted Compute observations can be persisted through the Enterprise Ledger.
+PostgreSQL keeps immutable, identity-constrained snapshot history and the test
+backend provides matching in-memory semantics. Exact retries are idempotent;
+conflicting reuse of an adapter snapshot identity or observation timestamp is
+rejected. The latest query derives `fresh`, `stale`, or `unavailable` from the
+validated observation time, server time, and a bounded server-owned policy.
+Derived state never changes the stored Runtime Adapter document.
+
 ## Capability Rules
 
 Every document has `apiVersion: runtime.modelport.io/v1alpha1`,
@@ -100,8 +108,8 @@ reinterpreted across versions. Additive experimental data belongs in
 `local-inference-stack` checker remains an explicitly selected compatibility
 mode, not the source of this contract.
 
-Configuration integration, collection policy, persistence, derived freshness,
-admin APIs, and all writes remain deferred to reviewed Issues. Offline
+Configuration integration, collection scheduling, retention, admin APIs, and
+all writes remain deferred to reviewed Issues. Offline
 validation cannot start a process, download a model, access a GPU, or call a
 network endpoint; the collection client performs only the two advertised safe
 reads requested by its caller.
