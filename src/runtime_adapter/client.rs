@@ -8,7 +8,8 @@ use crate::{
     runtime_adapter::{
         RuntimeAdapterAuthenticationScheme, RuntimeAdapterCapabilities,
         RuntimeAdapterComputeInventory, RuntimeAdapterOperationId, RuntimeAdapterTransport,
-        validate_runtime_adapter_capabilities, validate_runtime_adapter_compute_inventory,
+        is_valid_runtime_adapter_id, validate_runtime_adapter_capabilities,
+        validate_runtime_adapter_compute_inventory,
     },
 };
 
@@ -186,15 +187,7 @@ impl RuntimeAdapterClient {
 }
 
 fn validate_adapter_id(adapter_id: &str) -> Result<(), AppError> {
-    let bytes = adapter_id.as_bytes();
-    let edge = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
-    if !(1..=63).contains(&bytes.len())
-        || !edge(bytes[0])
-        || !edge(bytes[bytes.len() - 1])
-        || !bytes
-            .iter()
-            .all(|byte| edge(*byte) || matches!(byte, b'.' | b'_' | b'-'))
-    {
+    if !is_valid_runtime_adapter_id(adapter_id) {
         return Err(AppError::Config(
             "Runtime Adapter ID must match the v1alpha1 identifier format".to_owned(),
         ));
