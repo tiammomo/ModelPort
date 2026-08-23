@@ -5,6 +5,12 @@ use serde_json::Value;
 
 use crate::AppError;
 
+mod client;
+
+pub use client::{
+    RuntimeAdapterClient, RuntimeAdapterClientConfig, RuntimeAdapterComputeObservation,
+};
+
 pub const RUNTIME_ADAPTER_API_VERSION: &str = "runtime.modelport.io/v1alpha1";
 pub const RUNTIME_ADAPTER_CAPABILITIES_KIND: &str = "RuntimeAdapterCapabilities";
 pub const RUNTIME_ADAPTER_COMPUTE_INVENTORY_KIND: &str = "RuntimeAdapterComputeInventory";

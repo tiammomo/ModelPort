@@ -2,8 +2,9 @@
 
 ModelPort publishes versioned, read-only discovery and Compute Node/GPU
 observation contracts for external inference runtimes. The shipped v1alpha1
-artifacts are wire contracts and offline validators; they do not expose an
-Adapter client, persisted inventory API, reconciler, or mutation endpoint.
+artifacts include wire contracts, offline validators, and a reusable
+authenticated collection client. They do not expose a persisted inventory API,
+reconciler, or mutation endpoint.
 
 ## Contract Files
 
@@ -24,6 +25,22 @@ The equivalent binary command is
 `model-port runtime-adapter validate path/to/document.json --json`. The
 validator dispatches only the two recognized `kind` values and rejects an
 unknown resource kind.
+
+## Authenticated Collection Boundary
+
+Library consumers can construct `RuntimeAdapterClientConfig` with an adapter
+ID, origin URL, and [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) Bearer
+credential, then call `RuntimeAdapterClient::collect_compute_inventory`. The
+client always reads and validates capabilities before the Compute snapshot,
+requires the advertised `inventory.compute.list` operation, and binds both
+documents to the configured adapter identity.
+
+Only HTTPS origins and literal loopback HTTP origins are accepted. Paths are
+fixed by the v1alpha1 contract; redirects remain disabled and the shared HTTP
+transport provides DNS pinning, timeouts, and bounded response bodies. The
+credential is not serializable and is redacted from debug output and upstream
+errors. Configuration-file loading, scheduling, and storage are intentionally
+outside this client boundary.
 
 ## Capability Rules
 
@@ -83,7 +100,8 @@ reinterpreted across versions. Additive experimental data belongs in
 `local-inference-stack` checker remains an explicitly selected compatibility
 mode, not the source of this contract.
 
-Authenticated transport, collection policy, persistence, derived freshness,
-admin APIs, and all writes remain deferred to reviewed Issues. Validation
-cannot start a process, download a model, access a GPU, or call a network
-endpoint.
+Configuration integration, collection policy, persistence, derived freshness,
+admin APIs, and all writes remain deferred to reviewed Issues. Offline
+validation cannot start a process, download a model, access a GPU, or call a
+network endpoint; the collection client performs only the two advertised safe
+reads requested by its caller.
