@@ -39,7 +39,7 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "postgres", "runtime-tokio-rustls"] }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
-toml = "0.9"
+toml = "1.1"
 tower = { version = "0.5", features = ["limit", "util"] }
 tower-http = { version = "0.6", features = ["request-id", "trace"] }
 tracing = "0.1"
