@@ -1,13 +1,63 @@
 use axum::{
-    Json,
+    Json, Router,
     extract::{Path, State},
     http::HeaderMap,
+    routing::{get, post},
 };
 use serde_json::{Value, json};
 
 use crate::{domain::TenantScope, governance::ChangeRequestInput};
 
 use super::*;
+
+#[cfg(test)]
+use super::route_contract::RouteContract;
+
+#[cfg(test)]
+pub(super) const ROUTES: &[RouteContract] = &[
+    RouteContract::new(
+        "admin-governance",
+        "/admin/self-service/governance",
+        &["GET"],
+    ),
+    RouteContract::new("admin-governance", "/admin/governance", &["GET"]),
+    RouteContract::new(
+        "admin-governance",
+        "/admin/governance/change-requests",
+        &["GET", "POST"],
+    ),
+    RouteContract::new(
+        "admin-governance",
+        "/admin/governance/change-requests/{change_id}/approve",
+        &["POST"],
+    ),
+    RouteContract::new(
+        "admin-governance",
+        "/admin/governance/change-requests/{change_id}/apply",
+        &["POST"],
+    ),
+];
+
+pub(super) fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/admin/self-service/governance",
+            get(self_service_governance),
+        )
+        .route("/admin/governance", get(admin_governance_overview))
+        .route(
+            "/admin/governance/change-requests",
+            get(admin_change_requests).post(admin_create_change_request),
+        )
+        .route(
+            "/admin/governance/change-requests/{change_id}/approve",
+            post(admin_approve_change_request),
+        )
+        .route(
+            "/admin/governance/change-requests/{change_id}/apply",
+            post(admin_apply_change_request),
+        )
+}
 
 pub(super) async fn self_service_governance(
     State(state): State<AppState>,

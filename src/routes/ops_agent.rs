@@ -1,7 +1,8 @@
 use axum::{
-    Json,
+    Json, Router,
     extract::{Path, Query, State},
     http::HeaderMap,
+    routing::{get, post},
 };
 use modelport_ops_protocol::{
     OpsAgentConfiguration, OpsAgentConfigurationUpdate, OpsAgentConfigurationView, OpsHeartbeat,
@@ -13,6 +14,69 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::control::OpsAgentConfigRecord;
+
+#[cfg(test)]
+use super::route_contract::RouteContract;
+
+#[cfg(test)]
+pub(super) const INTERNAL_ROUTES: &[RouteContract] = &[
+    RouteContract::new("internal-ops", "/internal/ops/v1/snapshot", &["GET"]),
+    RouteContract::new("internal-ops", "/internal/ops/v1/observations", &["POST"]),
+    RouteContract::new("internal-ops", "/internal/ops/v1/heartbeats", &["POST"]),
+];
+
+#[cfg(test)]
+pub(super) const ADMIN_ROUTES: &[RouteContract] = &[
+    RouteContract::new("admin-operations", "/admin/ops/incidents", &["GET"]),
+    RouteContract::new(
+        "admin-operations",
+        "/admin/ops/configuration",
+        &["GET", "PUT"],
+    ),
+    RouteContract::new(
+        "admin-operations",
+        "/admin/ops/incidents/{incident_id}",
+        &["GET"],
+    ),
+    RouteContract::new(
+        "admin-operations",
+        "/admin/ops/incidents/{incident_id}/status",
+        &["POST"],
+    ),
+    RouteContract::new(
+        "admin-operations",
+        "/admin/ops/incidents/{incident_id}/feedback",
+        &["POST"],
+    ),
+];
+
+pub(super) fn internal_router() -> Router<AppState> {
+    Router::new()
+        .route("/internal/ops/v1/snapshot", get(snapshot))
+        .route("/internal/ops/v1/observations", post(submit_observation))
+        .route("/internal/ops/v1/heartbeats", post(heartbeat))
+}
+
+pub(super) fn admin_router() -> Router<AppState> {
+    Router::new()
+        .route("/admin/ops/incidents", get(admin_incidents))
+        .route(
+            "/admin/ops/configuration",
+            get(admin_configuration).put(admin_update_configuration),
+        )
+        .route(
+            "/admin/ops/incidents/{incident_id}",
+            get(admin_incident_detail),
+        )
+        .route(
+            "/admin/ops/incidents/{incident_id}/status",
+            post(admin_update_incident_status),
+        )
+        .route(
+            "/admin/ops/incidents/{incident_id}/feedback",
+            post(admin_record_incident_feedback),
+        )
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

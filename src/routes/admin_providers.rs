@@ -1,13 +1,104 @@
 use axum::{
-    Json,
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
+    routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::*;
+
+#[cfg(test)]
+use super::route_contract::RouteContract;
+
+#[cfg(test)]
+pub(super) const ROUTES: &[RouteContract] = &[
+    RouteContract::new("admin-providers", "/admin/providers", &["GET", "POST"]),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}",
+        &["PUT", "DELETE"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/disable",
+        &["POST"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/models",
+        &["POST", "PUT", "DELETE"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/balance",
+        &["POST"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/credentials",
+        &["POST"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/credential-pool",
+        &["PUT"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/credentials/{credential_id}",
+        &["PUT", "DELETE"],
+    ),
+    RouteContract::new(
+        "admin-providers",
+        "/admin/providers/{provider_id}/credentials/{credential_id}/select",
+        &["POST"],
+    ),
+];
+
+pub(super) fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/admin/providers",
+            get(admin_providers).post(admin_create_provider),
+        )
+        .route(
+            "/admin/providers/{provider_id}",
+            put(admin_update_provider).delete(admin_delete_provider),
+        )
+        .route(
+            "/admin/providers/{provider_id}/disable",
+            post(admin_set_provider_disabled),
+        )
+        .route(
+            "/admin/providers/{provider_id}/models",
+            post(admin_provider_models)
+                .put(admin_upsert_provider_model)
+                .delete(admin_delete_provider_model),
+        )
+        .route(
+            "/admin/providers/{provider_id}/balance",
+            post(admin_provider_balance),
+        )
+        .route(
+            "/admin/providers/{provider_id}/credentials",
+            post(admin_create_provider_credential),
+        )
+        .route(
+            "/admin/providers/{provider_id}/credential-pool",
+            put(admin_set_provider_credential_pool_mode),
+        )
+        .route(
+            "/admin/providers/{provider_id}/credentials/{credential_id}",
+            put(admin_update_provider_credential).delete(admin_delete_provider_credential),
+        )
+        .route(
+            "/admin/providers/{provider_id}/credentials/{credential_id}/select",
+            post(admin_select_provider_credential),
+        )
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
