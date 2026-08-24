@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
+  AlertTriangle,
   Boxes,
   Copy,
   KeyRound,
@@ -20,6 +21,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { availableModelOptions, preferredAvailableModel } from '@/features/models/available-models'
 import { apiKeyExpiryState } from '@/features/api-keys/api-key-view'
+import { buildClientProfiles } from '@/features/client-profiles/client-profiles'
 
 function CodeBlock({ children, copyLabel, copyDisabled = false }: { children: string; copyLabel: string; copyDisabled?: boolean }) {
   const copy = async () => {
@@ -157,11 +159,11 @@ export function UsageGuidePage() {
   const activeModel = modelOptions.some((option) => option.id === selectedModel)
     ? selectedModel
     : preferredModel
-  const configuredModel = activeModel || '<先选择可用模型>'
   const copyDisabled = catalogLoading || Boolean(catalogError) || !activeModel
-
-  const anthropicEnv = `ANTHROPIC_BASE_URL=${gatewayOrigin}\nANTHROPIC_AUTH_TOKEN=<你的 ModelPort API Key>\nANTHROPIC_MODEL=${configuredModel}`
-  const openAiEnv = `OPENAI_BASE_URL=${gatewayOrigin}/v1\nOPENAI_API_KEY=<你的 ModelPort API Key>\nOPENAI_MODEL=${configuredModel}`
+  const clientProfiles = useMemo(() => buildClientProfiles({
+    gatewayOrigin,
+    selectedModel: activeModel || undefined,
+  }), [activeModel, gatewayOrigin])
 
   return (
     <div className="w-full">
@@ -184,7 +186,7 @@ export function UsageGuidePage() {
         <ol className="grid gap-x-8 gap-y-6 sm:grid-cols-2 xl:grid-cols-4">
           <GuideStep index={1} title="获取 API Key" description="使用管理员签发的受限密钥；密钥明文只在创建时展示一次。" to="/api-keys" />
           <GuideStep index={2} title="确认模型 ID" description={activeModel ? `当前选择 ${activeModel}；模型来自实时目录，不使用固定示例。` : '选择 API Key，再从它的实时目录选择模型。'} to="/models" />
-          <GuideStep index={3} title="选择客户端协议" description="Claude Code 使用 Anthropic Messages；OpenAI SDK 使用 Chat Completions。" />
+          <GuideStep index={3} title="选择客户端协议" description="Claude Code 使用 Anthropic Messages；Qwen Code 与 OpenAI SDK 使用 Chat Completions。" />
           <GuideStep index={4} title="核对请求日志" description="确认实际 Provider、模型、Token、计费和终止状态均符合预期。" to="/logs" />
         </ol>
       </section>
@@ -193,7 +195,7 @@ export function UsageGuidePage() {
         <SectionHeading
           eyebrow="Client setup"
           title="配置客户端"
-          description="两种客户端协议使用同一套 ModelPort API Key，但 Base URL 规则不同。"
+          description="Client/Harness 使用 ModelPort 客户端密钥；Provider 凭证始终留在服务端。"
         />
         <div className="mb-6 rounded-lg border bg-muted/20 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -255,26 +257,27 @@ export function UsageGuidePage() {
             </div>
           )}
         </div>
-        <div className="grid gap-8 xl:grid-cols-2 xl:gap-0 xl:divide-x">
-          <article className="xl:pr-8">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="flex items-center gap-2 font-semibold"><Terminal className="h-4 w-4 text-primary" />Anthropic-compatible</h3>
-              <span className="text-xs text-muted-foreground">Claude Code / Anthropic SDK</span>
-            </div>
-            <p className="mb-3 text-sm leading-6 text-muted-foreground">客户端连接 ModelPort，而不是直接连接实际模型上游。</p>
-            <CodeBlock copyLabel="Anthropic 配置" copyDisabled={copyDisabled}>{anthropicEnv}</CodeBlock>
-            <p className="mt-3 text-xs text-muted-foreground">接口：<code className="font-mono">POST /v1/messages</code>，认证头：<code className="font-mono">x-api-key</code>。</p>
-          </article>
-
-          <article className="xl:pl-8">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="flex items-center gap-2 font-semibold"><Terminal className="h-4 w-4 text-primary" />OpenAI-compatible</h3>
-              <span className="text-xs text-muted-foreground">OpenAI SDK / Quant</span>
-            </div>
-            <p className="mb-3 text-sm leading-6 text-muted-foreground">Base URL 需要包含 <code className="font-mono">/v1</code>，模型 ID 与密钥权限保持一致。</p>
-            <CodeBlock copyLabel="OpenAI 配置" copyDisabled={copyDisabled}>{openAiEnv}</CodeBlock>
-            <p className="mt-3 text-xs text-muted-foreground">接口：<code className="font-mono">POST /v1/chat/completions</code>，认证头：<code className="font-mono">Authorization: Bearer …</code>。</p>
-          </article>
+        <div className="grid gap-6 xl:grid-cols-2">
+          {clientProfiles.map((profile) => (
+            <article key={profile.id} className="rounded-lg border p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="flex items-center gap-2 font-semibold">
+                  {profile.status === 'blocked' ? <AlertTriangle className="h-4 w-4 text-amber-600" /> : <Terminal className="h-4 w-4 text-primary" />}
+                  {profile.name}
+                </h3>
+                <Badge variant="outline">{profile.status === 'supported' ? '可配置' : '暂不支持'}</Badge>
+              </div>
+              <p className="mb-3 text-sm leading-6 text-muted-foreground">{profile.description}</p>
+              {profile.status === 'supported' ? (
+                <CodeBlock copyLabel={`${profile.name} 配置`} copyDisabled={copyDisabled}>{profile.configuration}</CodeBlock>
+              ) : (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                  <p>{profile.reason}</p>
+                  <p className="mt-2 text-xs">{profile.followUp}</p>
+                </div>
+              )}
+            </article>
+          ))}
         </div>
       </section>
 

@@ -5,6 +5,9 @@
 - Add a bounded, provider-neutral Runtime Adapter registry with validated
   origins, environment-only Bearer credentials, collection policy, and
   fail-closed startup loading.
+- Add shared Dashboard Client/Harness setup profiles for Claude Code, Qwen
+  Code, and the OpenAI SDK, while explicitly blocking Codex CLI until the
+  Responses ingress exists.
 
 All notable ModelPort changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) once a version is published.

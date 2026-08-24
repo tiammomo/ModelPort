@@ -18,6 +18,23 @@ availability SLA or certification.
 | Product scale | One internal development team of approximately 20–50 people | Capacity depends on Provider/model latency, stream duration, PostgreSQL, and host resources. |
 | Product language | Complete Chinese-first Dashboard; maintained English API/operator docs | Full UI internationalization is deferred until a real English design partner exists. |
 
+### Client/Harness setup profiles
+
+Client/Harness profiles describe callers, not upstream Providers. Claude Code
+uses the Anthropic Messages edge. The OpenAI SDK and a
+[Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/)
+setup profile use the scoped OpenAI-compatible Chat Completions edge; Qwen Code
+references its ModelPort client key through an environment variable rather than
+storing the key in `settings.json`. The shipped setup profile does not replace
+dated Provider/model/stream/Tool Use acceptance evidence for the selected
+route.
+
+[Codex CLI](https://developers.openai.com/codex/config-reference/) custom
+Providers require the Responses wire API. ModelPort does not ship
+`POST /v1/responses`, so the Dashboard reports Codex CLI as blocked and does not
+offer a copyable configuration. Adding the scoped Responses ingress is a
+separate future change, not part of the current compatibility profile.
+
 Pin production images to the immutable digests recorded in the GitHub Release.
 A mutable version tag is acceptable only for initial local evaluation.
 

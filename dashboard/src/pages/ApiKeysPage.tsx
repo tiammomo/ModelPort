@@ -1,5 +1,5 @@
 import { useMemo, useState, type ElementType } from 'react'
-import { useApiKeys, useCancelApiKeyRotation, useConfirmApiKeyRotation, useCreateApiKey, useDeleteApiKey, useNow, useRevokeApiKey, useRotateApiKey, useTeams, useUpdateApiKey, useUpsertTeam, useUsers } from '@/hooks'
+import { useAliases, useApiKeys, useCancelApiKeyRotation, useConfirmApiKeyRotation, useCreateApiKey, useDeleteApiKey, useNow, useProviders, useRevokeApiKey, useRotateApiKey, useTeams, useUpdateApiKey, useUpsertTeam, useUsers } from '@/hooks'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { OneTimeSecretGuard } from '@/components/shared/OneTimeSecretGuard'
@@ -21,6 +21,8 @@ import { useAuthStore } from '@/stores'
 import { apiKeyAccessForRole, apiKeySelfServiceUpdate } from '@/features/api-keys/api-key-access'
 import { apiKeyExpiryState, filterApiKeys, isApiKeyFilterActive, type ApiKeyStatusFilter } from '@/features/api-keys/api-key-view'
 import { serviceAccountExpiryError } from '@/features/api-keys/service-account-expiry'
+import { buildClientProfiles } from '@/features/client-profiles/client-profiles'
+import { availableModelOptions } from '@/features/models/available-models'
 import { ApiError } from '@/lib/api-client'
 import { AlertTriangle, CalendarClock, Copy, DollarSign, FolderKanban, KeyRound, Pencil, Plus, RotateCw, Search, ShieldCheck, ShieldOff, Trash2, X, Zap } from 'lucide-react'
 import type { ApiKey, Team } from '@/types'
@@ -111,6 +113,8 @@ export function ApiKeysPage() {
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [newKey, setNewKey] = useState<string | null>(null)
+  const [newKeyId, setNewKeyId] = useState<string | null>(null)
+  const [newKeyModel, setNewKeyModel] = useState('')
   const [rotationResult, setRotationResult] = useState<{
     sourceKeyId: string
     replacement: PreparedApiKeyRotation
@@ -135,6 +139,21 @@ export function ApiKeysPage() {
     allowedProviders: '',
   })
   const [editForm, setEditForm] = useState<EditApiKeyForm>(emptyEditForm)
+  const { data: newKeyProviders = [], isFetching: newKeyProvidersFetching } = useProviders(
+    isAdmin ? undefined : newKeyId || undefined,
+    Boolean(newKeyId),
+  )
+  const { data: newKeyAliases = [], isFetching: newKeyAliasesFetching } = useAliases(
+    isAdmin ? undefined : newKeyId || undefined,
+    Boolean(newKeyId),
+  )
+  const newKeyModelOptions = useMemo(
+    () => availableModelOptions(newKeyProviders, newKeyAliases),
+    [newKeyAliases, newKeyProviders],
+  )
+  const activeNewKeyModel = newKeyModelOptions.some((option) => option.id === newKeyModel)
+    ? newKeyModel
+    : newKeyModelOptions[0]?.id || ''
 
   const groups = useMemo(() => {
     return Array.from(new Set(apiKeys.map((key) => key.group).filter(Boolean))).sort()
@@ -199,11 +218,15 @@ export function ApiKeysPage() {
       group: form.group.trim() || undefined,
     }, {
       onSuccess: (key) => {
+        setNewKeyId(key.id)
+        setNewKeyModel('')
         setForm({ userId: isAdmin ? '' : currentUser?.id || '', name: '', principalType: 'user', purpose: '', expiresAt: '', group: '', teamId: '', allowedModels: '', allowedProviders: '' })
         if (key.key) {
           setNewKey(key.key)
           toast.success('API 密钥已创建')
         } else {
+          setNewKeyId(null)
+          setNewKeyModel('')
           setShowCreateDialog(false)
           toast.error('密钥已创建，但服务端未返回完整密钥；请删除该密钥后重新创建')
         }
@@ -235,6 +258,8 @@ export function ApiKeysPage() {
     if (!access.canCreate) return
     createApiKey.reset()
     setNewKey(null)
+    setNewKeyId(null)
+    setNewKeyModel('')
     setForm((current) => ({
       ...current,
       userId: isAdmin ? current.userId : currentUser?.id || '',
@@ -835,6 +860,8 @@ export function ApiKeysPage() {
             setShowCreateDialog(open)
             if (!open) {
               setNewKey(null)
+              setNewKeyId(null)
+              setNewKeyModel('')
               createApiKey.reset()
             }
           }}
@@ -867,18 +894,35 @@ export function ApiKeysPage() {
               <div className="min-w-0 space-y-3 rounded-md border bg-muted/20 p-3">
                 <div>
                   <p className="text-sm font-medium">接入配置</p>
-                  <p className="mt-1 text-xs text-muted-foreground">同一把密钥可访问 Anthropic Messages 与 OpenAI Chat Completions；把 YOUR_MODEL 替换为模型列表返回的 ID 或稳定路由别名。</p>
+                  <p className="mt-1 text-xs text-muted-foreground">以下是 Client/Harness 配置，不包含 Provider 凭证。管理员看到组织目录；交付前仍需用新密钥查询 /v1/models 核对其实际范围。</p>
                 </div>
-                <CopySnippet
-                  title="Claude Code / Anthropic SDK"
-                  value={`ANTHROPIC_BASE_URL=${apiBaseUrl}\nANTHROPIC_AUTH_TOKEN=${newKey}\nANTHROPIC_MODEL=YOUR_MODEL`}
-                  onCopy={(value) => void copyText(value, 'Claude Code 配置')}
-                />
-                <CopySnippet
-                  title="OpenAI SDK"
-                  value={`OPENAI_BASE_URL=${apiBaseUrl}/v1\nOPENAI_API_KEY=${newKey}\nOPENAI_MODEL=YOUR_MODEL`}
-                  onCopy={(value) => void copyText(value, 'OpenAI SDK 配置')}
-                />
+                {newKeyModelOptions.length > 0 ? (
+                  <Select value={activeNewKeyModel} onValueChange={setNewKeyModel} disabled={newKeyProvidersFetching || newKeyAliasesFetching}>
+                    <SelectTrigger aria-label="选择新密钥可用模型"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {newKeyModelOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.displayName}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-950">{newKeyProvidersFetching || newKeyAliasesFetching ? '正在读取新密钥的实时模型目录…' : '新密钥当前没有可选择的实时模型；配置复制已禁用。'}</p>
+                )}
+                {buildClientProfiles({ gatewayOrigin: apiBaseUrl, selectedModel: activeNewKeyModel || undefined, oneTimeClientKey: newKey }).map((profile) => (
+                  profile.status === 'supported' ? (
+                    <CopySnippet
+                      key={profile.id}
+                      title={profile.name}
+                      value={profile.configuration}
+                      copyDisabled={!activeNewKeyModel}
+                      onCopy={(value) => void copyText(value, `${profile.name} 配置`)}
+                    />
+                  ) : (
+                    <div key={profile.id} className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+                      <p className="font-medium">{profile.name} · 暂不支持</p>
+                      <p className="mt-1">{profile.reason}</p>
+                      <p className="mt-1">{profile.followUp}</p>
+                    </div>
+                  )
+                ))}
               </div>
             </div>
           ) : (
@@ -964,7 +1008,7 @@ export function ApiKeysPage() {
 
           <DialogFooter>
             {newKey ? (
-              <Button onClick={() => { setNewKey(null); setShowCreateDialog(false); createApiKey.reset() }}>已保存，关闭</Button>
+              <Button onClick={() => { setNewKey(null); setNewKeyId(null); setNewKeyModel(''); setShowCreateDialog(false); createApiKey.reset() }}>已保存，关闭</Button>
             ) : (
               <>
                 <Button variant="outline" onClick={() => setShowCreateDialog(false)} disabled={createApiKey.isPending}>取消</Button>
@@ -1286,12 +1330,12 @@ function EndpointPill({
   )
 }
 
-function CopySnippet({ title, value, onCopy }: { title: string; value: string; onCopy: (value: string) => void }) {
+function CopySnippet({ title, value, copyDisabled = false, onCopy }: { title: string; value: string; copyDisabled?: boolean; onCopy: (value: string) => void }) {
   return (
     <div className="min-w-0 overflow-hidden rounded-md border bg-background">
       <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
         <p className="text-xs font-medium">{title}</p>
-        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => onCopy(value)}>
+        <Button type="button" variant="ghost" size="sm" className="h-7" disabled={copyDisabled} onClick={() => onCopy(value)}>
           <Copy className="mr-1.5 h-3.5 w-3.5" />复制配置
         </Button>
       </div>
