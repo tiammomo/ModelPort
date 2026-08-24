@@ -4,11 +4,12 @@ use std::{
 };
 
 use axum::{
-    Json,
+    Json, Router,
     body::Body,
     extract::{State, connect_info::ConnectInfo},
     http::HeaderMap,
     response::{IntoResponse, Response},
+    routing::{get, post},
 };
 use futures_util::StreamExt;
 use rand_core::{OsRng, RngCore};
@@ -43,6 +44,27 @@ use crate::{
 };
 
 use super::*;
+
+#[cfg(test)]
+use super::route_contract::RouteContract;
+
+#[cfg(test)]
+pub(super) const ROUTES: &[RouteContract] = &[
+    RouteContract::new("client-api", "/v1/models", &["GET"]),
+    RouteContract::new("client-api", "/v1/messages", &["POST"]),
+    RouteContract::new("client-api", "/v1/messages/count_tokens", &["POST"]),
+    RouteContract::new("client-api", "/v1/chat/completions", &["POST"]),
+    RouteContract::new("client-api", "/v1/effective-policy", &["GET"]),
+];
+
+pub(super) fn router() -> Router<AppState> {
+    Router::new()
+        .route("/v1/models", get(models))
+        .route("/v1/messages", post(messages))
+        .route("/v1/messages/count_tokens", post(count_tokens))
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/effective-policy", get(effective_policy))
+}
 
 pub(super) async fn models(
     State(state): State<AppState>,

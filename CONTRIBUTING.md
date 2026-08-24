@@ -75,6 +75,9 @@ ordinary pull requests should prefer mock-backed checks.
 
 - Preserve module boundaries described in
   [Architecture](docs/ARCHITECTURE.md#backend-boundaries).
+- Register every new HTTP capability through its domain-owned router and extend
+  the route-contract inventory; keep the root router limited to domain
+  composition and global middleware.
 - Keep protocol conversion in adapters and provider quirks in explicit provider
   configuration.
 - Add tests for split SSE frames, errors after headers, Tool Use causality,

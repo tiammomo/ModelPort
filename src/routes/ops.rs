@@ -1,14 +1,34 @@
 use axum::{
-    Json,
+    Json, Router,
     extract::State,
     http::{HeaderMap, header::CONTENT_TYPE},
     response::IntoResponse,
+    routing::get,
 };
 use serde_json::json;
 
 use super::*;
 
+#[cfg(test)]
+use super::route_contract::RouteContract;
+
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+#[cfg(test)]
+pub(super) const ROUTES: &[RouteContract] = &[
+    RouteContract::new("system", "/livez", &["GET"]),
+    RouteContract::new("system", "/readyz", &["GET"]),
+    RouteContract::new("system", "/health", &["GET"]),
+    RouteContract::new("system", "/metrics", &["GET"]),
+];
+
+pub(super) fn router() -> Router<AppState> {
+    Router::new()
+        .route("/livez", get(livez))
+        .route("/readyz", get(readyz))
+        .route("/health", get(health))
+        .route("/metrics", get(metrics))
+}
 
 pub(super) async fn livez(State(state): State<AppState>) -> Json<serde_json::Value> {
     let started = Instant::now();

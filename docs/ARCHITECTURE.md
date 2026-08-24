@@ -181,8 +181,12 @@ Tool Use verification evidence is maintained separately in the
   Provider rendering, and cross-protocol response mapping.
 - `src/stream_lifecycle.rs`: shared upstream terminal state and normalized
   streaming usage evidence.
-- `src/routes.rs` and `src/routes/`: router assembly, security helpers, public
-  client routes, operations routes, and control-plane endpoints.
+- `src/routes.rs`: application-state types, shared HTTP policy helpers, legacy
+  handlers that have not yet moved, domain-router composition, and global
+  middleware applied exactly once.
+- `src/routes/`: domain-owned route registration plus public client,
+  operations, identity, Provider, governance, control, and evidence handlers
+  and views.
 - `src/providers/`: Anthropic pass-through and OpenAI-compatible request,
   response, and SSE conversion.
 - `src/http.rs`: the upstream HTTP client, bounded response reading, SSE frame
@@ -198,6 +202,27 @@ Tool Use verification evidence is maintained separately in the
 - `src/metrics.rs`: process-local Prometheus counters.
 - `dashboard/`: the browser control plane. It consumes `/admin/*`; it is not a
   second source of routing truth.
+
+### HTTP route ownership
+
+The single-process server is composed from ten explicit HTTP domains: system,
+client API, internal operations, admin authentication, governance, admin
+operations, Providers, control, evidence, and identity. Each domain module owns
+its Axum method/path registration. `routes::router` merges those routers and
+then applies request IDs, tracing, concurrency, response headers, and the global
+body limit once; domain-local middleware such as login body and cache policy
+remains next to the owned route.
+
+Tests maintain one complete method/path/domain inventory for the 68 current
+route registrations. They reject duplicate method ownership and probe the
+composed application so a missing path or method fails independently of handler
+authorization or resource lookup results. A new Compute, Deployment, protocol,
+or admin capability must extend its domain router and this inventory rather
+than adding another registration to the root composition function.
+
+This is an internal modular-monolith boundary. It does not create another
+process, public discovery endpoint, authorization source, or API version, and
+reverting the composition requires no data or protocol migration.
 
 ## Request Lifecycle
 

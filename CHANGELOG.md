@@ -8,6 +8,8 @@
 - Add shared Dashboard Client/Harness setup profiles for Claude Code, Qwen
   Code, and the OpenAI SDK, while explicitly blocking Codex CLI until the
   Responses ingress exists.
+- Compose the HTTP application from domain-owned routers and verify one
+  complete method/path/domain inventory without changing the public API.
 
 All notable ModelPort changes are recorded here. The project follows
 [Semantic Versioning](https://semver.org/) once a version is published.

@@ -19,7 +19,6 @@ use axum::{
     },
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -57,6 +56,10 @@ use crate::{
 };
 
 mod admin_api_keys;
+mod admin_auth;
+mod admin_control;
+mod admin_evidence;
+mod admin_identity;
 mod admin_providers;
 mod admin_users;
 mod client_api;
@@ -67,6 +70,8 @@ mod logs_view;
 mod ops;
 mod ops_agent;
 mod provider_view;
+#[cfg(test)]
+mod route_contract;
 mod settings_view;
 
 use dashboard_view::{DashboardQuery, dashboard_body};
@@ -578,199 +583,16 @@ pub fn router(state: AppState) -> Router {
     let max_concurrent_requests = config.max_concurrent_requests;
 
     Router::new()
-        .route("/livez", get(ops::livez))
-        .route("/readyz", get(ops::readyz))
-        .route("/health", get(ops::health))
-        .route("/metrics", get(ops::metrics))
-        .route("/v1/models", get(client_api::models))
-        .route("/v1/messages", post(client_api::messages))
-        .route("/v1/messages/count_tokens", post(client_api::count_tokens))
-        .route("/v1/chat/completions", post(client_api::chat_completions))
-        .route("/v1/effective-policy", get(client_api::effective_policy))
-        .route("/internal/ops/v1/snapshot", get(ops_agent::snapshot))
-        .route(
-            "/internal/ops/v1/observations",
-            post(ops_agent::submit_observation),
-        )
-        .route("/internal/ops/v1/heartbeats", post(ops_agent::heartbeat))
-        .route(
-            "/admin/auth/login",
-            post(admin_login)
-                .layer(DefaultBodyLimit::max(16 * 1024))
-                .layer(middleware::from_fn(add_no_store_header)),
-        )
-        .route(
-            "/admin/auth/methods",
-            get(admin_auth_methods).layer(middleware::from_fn(add_no_store_header)),
-        )
-        .route(
-            "/admin/auth/oidc/start",
-            get(admin_oidc_start).layer(middleware::from_fn(add_no_store_header)),
-        )
-        .route(
-            "/admin/auth/oidc/callback",
-            get(admin_oidc_callback).layer(middleware::from_fn(add_no_store_header)),
-        )
-        .route("/admin/auth/logout", post(admin_logout))
-        .route("/admin/auth/me", get(admin_me))
-        .route(
-            "/admin/self-service/governance",
-            get(governance_routes::self_service_governance),
-        )
-        .route(
-            "/admin/governance",
-            get(governance_routes::admin_governance_overview),
-        )
-        .route(
-            "/admin/governance/change-requests",
-            get(governance_routes::admin_change_requests)
-                .post(governance_routes::admin_create_change_request),
-        )
-        .route(
-            "/admin/governance/change-requests/{change_id}/approve",
-            post(governance_routes::admin_approve_change_request),
-        )
-        .route(
-            "/admin/governance/change-requests/{change_id}/apply",
-            post(governance_routes::admin_apply_change_request),
-        )
-        .route("/admin/dashboard", get(admin_dashboard))
-        .route("/admin/ops/incidents", get(ops_agent::admin_incidents))
-        .route(
-            "/admin/ops/configuration",
-            get(ops_agent::admin_configuration).put(ops_agent::admin_update_configuration),
-        )
-        .route(
-            "/admin/ops/incidents/{incident_id}",
-            get(ops_agent::admin_incident_detail),
-        )
-        .route(
-            "/admin/ops/incidents/{incident_id}/status",
-            post(ops_agent::admin_update_incident_status),
-        )
-        .route(
-            "/admin/ops/incidents/{incident_id}/feedback",
-            post(ops_agent::admin_record_incident_feedback),
-        )
-        .route(
-            "/admin/providers",
-            get(admin_providers::admin_providers).post(admin_providers::admin_create_provider),
-        )
-        .route(
-            "/admin/providers/{provider_id}",
-            put(admin_providers::admin_update_provider)
-                .delete(admin_providers::admin_delete_provider),
-        )
-        .route(
-            "/admin/providers/{provider_id}/disable",
-            post(admin_providers::admin_set_provider_disabled),
-        )
-        .route(
-            "/admin/providers/{provider_id}/models",
-            post(admin_providers::admin_provider_models)
-                .put(admin_providers::admin_upsert_provider_model)
-                .delete(admin_providers::admin_delete_provider_model),
-        )
-        .route(
-            "/admin/providers/{provider_id}/balance",
-            post(admin_providers::admin_provider_balance),
-        )
-        .route(
-            "/admin/providers/{provider_id}/credentials",
-            post(admin_providers::admin_create_provider_credential),
-        )
-        .route(
-            "/admin/providers/{provider_id}/credential-pool",
-            put(admin_providers::admin_set_provider_credential_pool_mode),
-        )
-        .route(
-            "/admin/providers/{provider_id}/credentials/{credential_id}",
-            put(admin_providers::admin_update_provider_credential)
-                .delete(admin_providers::admin_delete_provider_credential),
-        )
-        .route(
-            "/admin/providers/{provider_id}/credentials/{credential_id}/select",
-            post(admin_providers::admin_select_provider_credential),
-        )
-        .route(
-            "/admin/aliases",
-            get(admin_aliases).post(admin_create_alias),
-        )
-        .route("/admin/aliases/{alias}", delete(admin_delete_alias))
-        .route(
-            "/admin/settings",
-            get(admin_settings).put(admin_update_settings),
-        )
-        .route("/admin/settings/reload-config", post(admin_reload_config))
-        .route("/admin/settings/test-provider", post(admin_test_provider))
-        .route("/admin/audit", get(admin_audit))
-        .route("/admin/backup", post(admin_backup))
-        .route("/admin/retention/run", post(admin_run_retention))
-        .route("/admin/logs", get(admin_logs))
-        .route("/admin/logs/{log_id}", get(admin_log_by_id))
-        .route("/admin/latency", get(admin_latency))
-        .route("/admin/router/status", get(admin_router_status))
-        .route("/admin/enterprise/overview", get(admin_enterprise_overview))
-        .route(
-            "/admin/enterprise/budget",
-            get(admin_enterprise_budget).put(admin_update_enterprise_budget),
-        )
-        .route(
-            "/admin/enterprise/budget/adjustments",
-            post(admin_adjust_enterprise_budget),
-        )
-        .route("/admin/enterprise/requests", get(admin_enterprise_requests))
-        .route(
-            "/admin/enterprise/requests/{ledger_id}",
-            get(admin_enterprise_request_detail),
-        )
-        .route("/admin/teams", get(admin_teams).post(admin_upsert_team))
-        .route(
-            "/admin/teams/{team_id}",
-            put(admin_update_team).delete(admin_delete_team),
-        )
-        .route(
-            "/admin/users",
-            get(admin_users::admin_users).post(admin_users::admin_create_user),
-        )
-        .route(
-            "/admin/users/{user_id}",
-            put(admin_users::admin_update_user).delete(admin_users::admin_delete_user),
-        )
-        .route(
-            "/admin/api-keys",
-            get(admin_api_keys::admin_api_keys).post(admin_api_keys::admin_create_api_key),
-        )
-        .route(
-            "/admin/api-keys/{key_id}/disable",
-            post(admin_api_keys::admin_revoke_api_key),
-        )
-        .route(
-            "/admin/api-keys/{key_id}/rotate",
-            post(admin_api_keys::admin_rotate_api_key),
-        )
-        .route(
-            "/admin/api-keys/{key_id}/rotate/{replacement_id}",
-            post(admin_api_keys::admin_confirm_api_key_rotation)
-                .delete(admin_api_keys::admin_cancel_api_key_rotation),
-        )
-        .route(
-            "/admin/users/{user_id}/api-keys",
-            get(admin_api_keys::admin_user_api_keys).post(admin_api_keys::admin_create_api_key),
-        )
-        .route(
-            "/admin/api-keys/{key_id}",
-            put(admin_api_keys::admin_update_api_key).delete(admin_api_keys::admin_delete_api_key),
-        )
-        .route(
-            "/admin/api-keys/{key_id}/scope",
-            put(admin_api_keys::admin_bind_api_key_scope),
-        )
-        .route("/admin/quotas", get(admin_quotas).post(admin_create_quota))
-        .route(
-            "/admin/quotas/{quota_id}",
-            put(admin_update_quota).delete(admin_delete_quota),
-        )
+        .merge(ops::router())
+        .merge(client_api::router())
+        .merge(ops_agent::internal_router())
+        .merge(admin_auth::router())
+        .merge(governance_routes::router())
+        .merge(ops_agent::admin_router())
+        .merge(admin_providers::router())
+        .merge(admin_control::router())
+        .merge(admin_evidence::router())
+        .merge(admin_identity::router())
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(
@@ -2841,9 +2663,10 @@ mod tests {
         body::{Body, to_bytes},
         extract::connect_info::ConnectInfo,
         http::{
-            Request, StatusCode,
+            Method, Request, StatusCode,
             header::{CONTENT_TYPE, COOKIE, HOST, HeaderValue, ORIGIN, SET_COOKIE},
         },
+        routing::{get, post},
     };
     use serde_json::{Value, json};
     use tokio::net::TcpListener;
@@ -2862,6 +2685,64 @@ mod tests {
     };
 
     const CLIENT_TOKEN: &str = "client-token";
+
+    #[tokio::test]
+    async fn composed_router_matches_the_complete_route_inventory() {
+        let app = router(test_state("http://127.0.0.1:9".to_owned(), 1024));
+
+        for contract in route_contract::all() {
+            let path = concrete_contract_path(contract.path);
+            let unowned_method = contract_response(&app, Method::TRACE, &path).await;
+            assert_eq!(
+                unowned_method,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{} does not resolve to its declared {} domain",
+                contract.path,
+                contract.domain,
+            );
+
+            for method in contract.methods {
+                let method = Method::from_bytes(method.as_bytes()).unwrap();
+                let status = contract_response(&app, method.clone(), &path).await;
+                assert_ne!(
+                    status,
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "{} {} is missing from the composed router",
+                    method,
+                    contract.path,
+                );
+            }
+        }
+    }
+
+    async fn contract_response(app: &Router, method: Method, path: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    fn concrete_contract_path(path: &str) -> String {
+        let mut concrete = String::with_capacity(path.len());
+        let mut remaining = path;
+        while let Some(start) = remaining.find('{') {
+            concrete.push_str(&remaining[..start]);
+            let parameter = &remaining[start..];
+            let end = parameter.find('}').expect("route parameter closes");
+            concrete.push_str("route-contract");
+            remaining = &parameter[end + 1..];
+        }
+        concrete.push_str(remaining);
+        concrete
+    }
 
     #[tokio::test]
     async fn public_auth_methods_report_disabled_oidc_without_cache() {
