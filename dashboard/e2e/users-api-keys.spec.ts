@@ -77,7 +77,7 @@ test.describe('users and API keys', () => {
     expect(savedKey?.allowedProviders).toContain('deepseek')
   })
 
-  test('new client key reveal provides one-time ready-to-copy Anthropic settings', async ({ page }) => {
+  test('new client key reveal provides one-time ready-to-copy harness profiles', async ({ page }) => {
     const suffix = Date.now()
     const username = `e2e_reveal_${suffix}`
     const createUserResponse = await page.request.post('/admin/users', {

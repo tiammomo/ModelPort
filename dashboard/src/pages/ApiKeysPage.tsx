@@ -867,6 +867,7 @@ export function ApiKeysPage() {
           }}
         >
           <DialogContent
+            className="max-h-[90vh] max-w-[640px] overflow-y-auto"
             hideCloseButton={createApiKey.isPending || Boolean(newKey)}
             onEscapeKeyDown={(event) => { if (createApiKey.isPending || newKey) event.preventDefault() }}
             onPointerDownOutside={(event) => { if (createApiKey.isPending || newKey) event.preventDefault() }}
