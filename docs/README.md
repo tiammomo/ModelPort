@@ -66,7 +66,10 @@ read every document: choose the path that matches your task.
 ## Project Direction
 
 [Roadmap](ROADMAP.md) defines the Small-Team Beta productization freeze and the
-staged control-plane direction. [ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md)
+staged control-plane direction. The
+[Post-Beta AI Gateway Strategy](AI_GATEWAY_STRATEGY.md) maps industry capability
+families to shipped, hardening, evidence-gated, and deferred work.
+[ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md)
 defines independent model, Runtime Adapter, Compute Node/GPU, and Deployment
 ownership. Deferred work must not be described as shipped.
 
@@ -83,4 +86,4 @@ ownership. Deferred work must not be described as shipped.
 6. Run `node scripts/check-doc-links.mjs` and the relevant checks from
    [Development](DEVELOPMENT.md) before merging.
 
-Last reviewed: 2026-08-23.
+Last reviewed: 2026-08-24.

@@ -3,7 +3,12 @@
 Status: accepted Small-Team Beta release contract with an approved
 post-Beta control-plane direction.
 
-Last reviewed: 2026-08-23.
+Last reviewed: 2026-08-24.
+
+The ordered post-Beta capability matrix, evidence gates, extension boundaries,
+and non-goals are maintained in the
+[Post-Beta AI Gateway Strategy](AI_GATEWAY_STRATEGY.md). This roadmap remains
+the release sequence; the strategy is the decision framework for parity work.
 
 ## Product Contract
 
@@ -58,7 +63,14 @@ at every step:
 These are sequential product boundaries, not one large implementation PR.
 Hosted-only installations remain supported throughout.
 
-The next focused Issues after the adapter wire contracts are:
+The immediate dependency chain after the adapter wire contracts is snapshot
+persistence ([#25](https://github.com/tiammomo/ModelPort/issues/25) and
+[#26](https://github.com/tiammomo/ModelPort/issues/26)), bounded collection
+([#29](https://github.com/tiammomo/ModelPort/issues/29)), a read-only admin API
+([#30](https://github.com/tiammomo/ModelPort/issues/30)), and the Compute/GPU
+dashboard ([#31](https://github.com/tiammomo/ModelPort/issues/31)). Deployment
+desired/observed lifecycle follows; policy-bounded placement comes only after
+reconciliation evidence. In product terms, those slices:
 
 - collect authenticated Compute Node/GPU observations, persist the latest
   accepted snapshots, and expose an admin read API with server-derived

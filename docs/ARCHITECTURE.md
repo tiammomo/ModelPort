@@ -40,6 +40,9 @@ from that governed gateway into an independent hybrid model and GPU control
 plane, but documentation and APIs must not present target resources as shipped
 behavior. [ADR-0007](adr/0007-independent-model-and-gpu-control-plane.md)
 defines the boundary and delivery order.
+The [Post-Beta AI Gateway Strategy](AI_GATEWAY_STRATEGY.md) maps gateway parity,
+control/data-plane ownership, evidence gates, and cache/guardrail boundaries
+onto that resource model.
 
 The target keeps inference engines outside ModelPort:
 
@@ -65,7 +68,7 @@ talks directly to a runtime or becomes another source of desired state.
 
 | Resource | Owner and relationship |
 | --- | --- |
-| Client/Harness | Calls a supported ModelPort protocol edge. Claude, Codex, DeepSeek tooling, SDKs, and internal applications are clients, not Provider types. |
+| Client/Harness | Calls a supported ModelPort protocol edge. Claude Code, Codex CLI, Qwen Code, SDKs, and internal applications are clients, not Provider types. DeepSeek remains a Provider/model family unless a distinct caller contract is introduced and verified. |
 | Provider | Governs an upstream connectivity, credential, trust, and commercial boundary. It can reference a hosted API or a Deployment-backed endpoint. |
 | Model | Describes a catalog identity, capabilities, limits, compatibility, and optional pricing. Catalog presence does not imply deployment or route eligibility. |
 | Runtime Adapter | Implements a versioned contract for inventory and bounded lifecycle operations against an external inference runtime. |
@@ -103,8 +106,11 @@ Backend ownership and Dashboard navigation converge on the same eight domains:
 
 This mapping is an information architecture contract, not a requirement to
 create eight services. The backend remains a modular monolith until a separate
-ADR proves a deployment boundary. UI migrations should preserve deep links and
-API compatibility or document an explicit replacement.
+ADR proves a deployment boundary, including configuration distribution,
+staleness, secret delivery, failure isolation, and rollback. The supported
+default remains the single-process Rust data path on one host. UI migrations
+should preserve deep links and API compatibility or document an explicit
+replacement.
 
 CLIProxyAPI (CPA) can be inserted only as an internal Provider boundary:
 
