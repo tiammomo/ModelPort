@@ -93,6 +93,7 @@ impl TenantScope {
 pub(crate) enum ClientProtocol {
     AnthropicMessages,
     OpenAiChatCompletions,
+    OpenAiResponses,
 }
 
 impl ClientProtocol {
@@ -100,6 +101,7 @@ impl ClientProtocol {
         match self {
             Self::AnthropicMessages => "anthropic-messages",
             Self::OpenAiChatCompletions => "openai-chat-completions",
+            Self::OpenAiResponses => "openai-responses",
         }
     }
 }

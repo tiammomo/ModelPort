@@ -2,6 +2,9 @@
 
 mod auth;
 mod cli;
+// Parsed contract only; the HTTP edge and Exchange adapter are deliberately deferred.
+#[allow(dead_code)]
+mod codex_responses;
 mod config;
 mod control;
 mod control_view;
