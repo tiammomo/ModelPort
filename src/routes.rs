@@ -7613,6 +7613,25 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn codex_responses_contract_does_not_register_an_http_route() {
+        let response = router(test_state("http://127.0.0.1:9".to_owned(), 1024 * 1024))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(crate::codex_responses::REQUEST_PATH)
+                    .header("content-type", "application/json")
+                    .body(Body::from(include_str!(
+                        "../fixtures/codex/codex-responses-request-v0.148.0-alpha.21.json"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn routes_openai_chat_completions_and_records_client_protocol() {
         let upstream = spawn_openai_upstream(
             StatusCode::OK,

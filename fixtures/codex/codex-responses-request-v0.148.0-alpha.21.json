@@ -1,0 +1,59 @@
+{
+  "model": "fixture-model",
+  "instructions": "fixture-instructions",
+  "input": [
+    {
+      "type": "message",
+      "id": "msg_fixture_1",
+      "role": "user",
+      "content": [{ "type": "input_text", "text": "fixture-input" }]
+    },
+    {
+      "type": "function_call",
+      "id": "fc_fixture_1",
+      "call_id": "call_fixture_1",
+      "name": "fixture_tool",
+      "arguments": "{\"fixture\":true}"
+    },
+    {
+      "type": "function_call_output",
+      "id": "fco_fixture_1",
+      "call_id": "call_fixture_1",
+      "output": "fixture-output"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "fixture_tool",
+      "description": "fixture-description",
+      "parameters": { "type": "object", "properties": {} },
+      "strict": false
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": false,
+  "reasoning": {
+    "effort": "medium",
+    "summary": "auto",
+    "context": "current_turn"
+  },
+  "store": false,
+  "stream": true,
+  "stream_options": {
+    "reasoning_summary_delivery": "sequential_cutoff"
+  },
+  "include": ["reasoning.encrypted_content"],
+  "service_tier": "flex",
+  "prompt_cache_key": "fixture-cache-key",
+  "text": { "verbosity": "medium" },
+  "client_metadata": {
+    "root_turn_id": "fixture-root-turn",
+    "session_id": "fixture-session",
+    "thread_id": "fixture-thread",
+    "turn_id": "fixture-turn",
+    "x-codex-installation-id": "fixture-installation",
+    "x-codex-turn-metadata": "fixture-turn-metadata",
+    "x-codex-window-id": "fixture-window"
+  }
+}

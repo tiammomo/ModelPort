@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a route-free, fail-closed Codex Responses request parser and content-free
+  fixture pinned to `codex-cli 0.148.0-alpha.21`.
 - Add a bounded, provider-neutral Runtime Adapter registry with validated
   origins, environment-only Bearer credentials, collection policy, and
   fail-closed startup loading.
