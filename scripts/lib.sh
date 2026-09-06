@@ -108,12 +108,17 @@ setup_cc_fallback() {
 
 release_is_fresh() {
   [[ -x "$RELEASE_BIN" ]] || return 1
-  ! find \
+  local newer_input
+  newer_input="$(find \
     "$ROOT_DIR/src" \
+    "$ROOT_DIR/crates" \
+    "$ROOT_DIR/resources" \
+    "$ROOT_DIR/migrations" \
     "$ROOT_DIR/Cargo.toml" \
     "$ROOT_DIR/Cargo.lock" \
     "$ROOT_DIR/rust-toolchain.toml" \
-    -newer "$RELEASE_BIN" -print -quit | grep -q .
+    -newer "$RELEASE_BIN" -print -quit)" || return 1
+  [[ -z "$newer_input" ]]
 }
 
 wait_for_health() {

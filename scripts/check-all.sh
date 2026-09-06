@@ -303,6 +303,7 @@ main() {
   check_shell_syntax
   check_shell_lint
   run_check "checking Markdown links" node "$ROOT_DIR/scripts/check-doc-links.mjs"
+  run_check "checking lifecycle build freshness" node --test "$ROOT_DIR/tests/scripts/"*.test.mjs
   run_check "checking Rust formatting" cargo fmt --all -- --check
   run_check "running Rust tests" cargo test --locked --all-targets
   run_check "running Rust clippy" \

@@ -11,7 +11,7 @@ Run the commands below from the repository root. The layout follows ownership:
 | `dashboard/` | Console, frontend tooling, dependency audit policy, and browser tests. |
 | `resources/` | Catalog and JSON schemas embedded in the gateway binary. |
 | `migrations/` | Ordered PostgreSQL migrations embedded by SQLx. |
-| `tests/` | Backend integration tests and shared fixtures. |
+| `tests/` | Backend integration tests, script regression tests, and shared fixtures. |
 | `scripts/` | Development, verification, and operations commands; compiler wrappers live in `toolchain/`. |
 | `deploy/` | Deployment variants and supporting server configuration. |
 | `docs/` | Maintained guides, architecture, and project policies under `project/`. |
@@ -91,8 +91,9 @@ scripts/stop.sh
 
 The scripts keep PID/log files below `.modelport/` and never require committing
 the local `.env`. Before launching a stopped service, `scripts/start.sh` reuses
-`target/release/model-port` only when it is newer than `src/`, `Cargo.toml`,
-`Cargo.lock`, and `rust-toolchain.toml`; otherwise it rebuilds with
+`target/release/model-port` only when it is newer than `src/`, `crates/`,
+`resources/`, `migrations/`, `Cargo.toml`, `Cargo.lock`, and
+`rust-toolchain.toml`; missing inputs also invalidate the cache. Otherwise it rebuilds with
 `cargo build --release --locked`. `scripts/config-validate.sh` uses the same
 freshness helper. Set `MODELPORT_FORCE_BUILD=1` to bypass the cache explicitly.
 
