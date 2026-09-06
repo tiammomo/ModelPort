@@ -34,7 +34,7 @@ import {
 } from '@/features/dashboard/dashboard-data'
 import type { DashboardRange } from '@/services/dashboard.service'
 import type { ApiKey, DashboardStats, Provider, RequestLog } from '@/types'
-import { buildOnboardingState, type OnboardingState } from '@/features/dashboard/onboarding'
+import { buildOnboardingState, nextSetupPath, setupJourneySteps, type OnboardingState } from '@/features/dashboard/onboarding'
 import { apiKeyAccessForRole } from '@/features/api-keys/api-key-access'
 import { apiKeyExpiryState } from '@/features/api-keys/api-key-view'
 import {
@@ -694,6 +694,7 @@ function PersonalDashboard({
 }
 
 function OnboardingChecklist({ state }: { state: OnboardingState }) {
+  const steps = setupJourneySteps(state)
   return (
     <Card className="overflow-hidden border-primary/30 bg-primary/[0.025]">
       <CardHeader className="border-b pb-4">
@@ -704,7 +705,7 @@ function OnboardingChecklist({ state }: { state: OnboardingState }) {
               清单由当前运行状态自动判断；保存配置不等于凭证已解析或连接已验证。
             </p>
           </div>
-          <Badge variant="outline">{state.completed} / {state.total} 已完成</Badge>
+          <Button asChild size="sm"><Link to={nextSetupPath(state)}>继续接入</Link></Button>
         </div>
         <div
           className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"
@@ -712,16 +713,16 @@ function OnboardingChecklist({ state }: { state: OnboardingState }) {
           aria-label="接入进度"
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={state.percent}
+          aria-valuenow={Math.round(steps.filter((step) => step.complete).length / steps.length * 100)}
         >
-          <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${state.percent}%` }} />
+          <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${steps.filter((step) => step.complete).length / steps.length * 100}%` }} />
         </div>
       </CardHeader>
-      <CardContent className="grid gap-px bg-border p-0 sm:grid-cols-2 xl:grid-cols-3">
-        {state.steps.map((step, index) => (
+      <CardContent className="grid gap-px bg-border p-0 sm:grid-cols-2 xl:grid-cols-4">
+        {steps.map((step, index) => (
           <Link
             key={step.id}
-            to={step.to}
+            to={`${step.to}?setup=1`}
             className="group flex min-w-0 items-start gap-3 bg-card px-4 py-4 transition-colors hover:bg-muted/35"
           >
             {step.complete

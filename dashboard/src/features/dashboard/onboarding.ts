@@ -84,8 +84,8 @@ export function buildOnboardingState({
       detail: (stats.apiKeysActive ?? 0) > 0
         ? `${stats.apiKeysActive} 把启用密钥；${stats.activeUsers} 个活跃用户。`
         : '创建开发者账号并签发最小权限密钥。',
-      to: (stats.activeUsers ?? 0) > 1 ? '/api-keys' : '/users',
-      complete: (stats.activeUsers ?? 0) > 1 && (stats.apiKeysActive ?? 0) > 0,
+      to: '/api-keys',
+      complete: (stats.apiKeysActive ?? 0) > 0,
     },
     {
       id: 'request',
@@ -111,4 +111,23 @@ export function buildOnboardingState({
     percent: Math.round((completed / steps.length) * 100),
     complete: completed === steps.length,
   }
+}
+
+export function setupJourneySteps(state: OnboardingState): OnboardingStep[] {
+  const step = (id: string) => state.steps.find((item) => item.id === id)!
+  const provider = step('provider')
+  const model = step('model')
+  const identity = step('identity')
+  const request = step('request')
+  return [
+    { ...provider, title: '接入模型', complete: provider.complete && model.complete, detail: provider.complete ? model.detail : provider.detail },
+    { ...step('route'), title: '设置外发边界', to: '/governance' },
+    { ...(identity.complete ? request : identity), id: 'client', title: '密钥与客户端', complete: identity.complete && request.complete },
+    { ...step('evidence'), title: '核对请求结果' },
+  ]
+}
+
+export function nextSetupPath(state: OnboardingState) {
+  const steps = setupJourneySteps(state)
+  return `${(steps.find((step) => !step.complete) ?? steps[steps.length - 1]).to}?setup=1`
 }

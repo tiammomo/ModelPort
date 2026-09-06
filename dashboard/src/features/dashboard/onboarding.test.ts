@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DashboardStats, Provider, SystemSettings } from '@/types'
-import { buildOnboardingState } from './onboarding'
+import { buildOnboardingState, nextSetupPath, setupJourneySteps } from './onboarding'
 
 const stats = {
   totalRequests: 0,
@@ -30,6 +30,16 @@ const provider = {
 } as Provider
 
 describe('administrator onboarding state', () => {
+  it('resumes from persisted policy state and allows an administrator to use a scoped key', () => {
+    const state = buildOnboardingState({
+      providers: [provider],
+      settings: { ...settings, setup: { ...settings.setup!, defaultProviderReady: true } },
+      stats: { ...stats, apiKeysActive: 1, onboardingMilestones: { hasRequestEver: false, hasSuccessfulRequestEver: false, hasDefaultProjectPolicy: true } },
+    })
+    expect(setupJourneySteps(state)).toHaveLength(4)
+    expect(nextSetupPath(state)).toBe('/guide?setup=1')
+    expect(setupJourneySteps(state).at(-1)?.complete).toBe(false)
+  })
   it('keeps saved provider configuration incomplete until connection evidence exists', () => {
     const state = buildOnboardingState({
       providers: [{ ...provider, lastTest: null }],

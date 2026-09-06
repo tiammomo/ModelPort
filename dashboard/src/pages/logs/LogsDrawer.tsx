@@ -1,8 +1,11 @@
+import { toast } from 'sonner'
+import { Link } from 'react-router-dom'
+import { useAuthStore } from '@/stores'
 import { useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { cn, formatLatency } from '@/lib/utils'
+import { cn, copyToClipboard, formatLatency } from '@/lib/utils'
 import {
   ArrowRight,
   BadgeDollarSign,
@@ -39,21 +42,6 @@ import {
 
 // ── Copy-to-clipboard helper ─────────────────────────────────────
 
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
-}
-
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -66,7 +54,10 @@ function CopyButton({ value }: { value: string }) {
 
   const handleClick = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    await copyToClipboard(value)
+    if (!await copyToClipboard(value)) {
+      toast.error('复制失败，请手动复制')
+      return
+    }
     setCopied(true)
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
     timeoutRef.current = setTimeout(() => setCopied(false), 2000)
@@ -621,6 +612,7 @@ export function LogsDrawer({
   onRetry?: () => void
   onClose: () => void
 }) {
+  const isAdmin = useAuthStore((state) => state.currentUser?.role === 'admin')
   const backdropRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -741,6 +733,9 @@ export function LogsDrawer({
 
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto p-5">
+          {isAdmin && <Button asChild variant="outline" size="sm" className="mb-4">
+            <Link to={`/enterprise?request=${encodeURIComponent(log.id)}`}>查看实际路由与计费证据<ArrowRight className="h-3.5 w-3.5" /></Link>
+          </Button>}
           {detailLoading && (
             <div className="mb-4 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200" role="status">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />

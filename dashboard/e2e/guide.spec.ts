@@ -1,6 +1,21 @@
 import { expect, test } from '@playwright/test'
 import { csrfHeaders, login, requireE2EEnv } from './helpers'
 
+test('keeps the four-step setup journey when opening policy and reloading', async ({ page }) => {
+  await login(page, requireE2EEnv())
+  await page.goto('/models?setup=1')
+  const journey = page.getByRole('region', { name: '首次接入引导' })
+  await expect(journey.getByRole('navigation', { name: '接入步骤' }).getByRole('link')).toHaveCount(4)
+  await journey.getByRole('link', { name: /设置外发边界/ }).click()
+  await expect(page).toHaveURL(/\/governance\?setup=1$/)
+  await expect(page.getByLabel('选择 Provider', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(journey.getByRole('link', { name: /设置外发边界/ })).toHaveAttribute('aria-current', 'step')
+  await journey.getByRole('button', { name: '退出引导' }).click()
+  await expect(journey).toHaveCount(0)
+  await expect(page).toHaveURL(/\/governance$/)
+})
+
 test('opens the user guide through the five-entry task navigation', async ({ page }) => {
   await login(page, requireE2EEnv())
   const navigation = page.getByRole('complementary', { name: '主导航' })

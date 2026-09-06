@@ -104,4 +104,17 @@ test.describe('request logs', () => {
     expect(layout.leftGap).toBeLessThanOrEqual(17)
     expect(layout.rightGap).toBeLessThanOrEqual(17)
   })
+
+  test('opens the exact ledger evidence from a log and preserves it on reload', async ({ page }) => {
+    await seedFailedGatewayRequest(page)
+    await page.goto('/logs')
+    await page.getByRole('button', { name: /查看 .* 请求详情/ }).first().click()
+    const drawer = page.getByRole('dialog', { name: '请求详情' })
+    await drawer.getByRole('link', { name: '查看实际路由与计费证据' }).click()
+    await expect(page).toHaveURL(/\/enterprise\?request=/)
+    const evidence = page.getByRole('dialog', { name: '请求事实' })
+    await expect(evidence.getByText(/Provider Attempts/)).toBeVisible()
+    await page.reload()
+    await expect(evidence.getByText(/Provider Attempts/)).toBeVisible()
+  })
 })

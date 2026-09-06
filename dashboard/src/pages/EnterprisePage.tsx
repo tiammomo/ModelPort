@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Activity,
   ArrowRight,
@@ -40,7 +41,7 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { PaginationBar } from '@/components/shared/PaginationBar'
 import { Skeleton } from '@/components/shared/Skeleton'
 import { budgetEventAmountLines } from '@/features/enterprise/budget-events'
-import { cn } from '@/lib/utils'
+import { copyToClipboard, cn } from '@/lib/utils'
 import { DEFAULT_ENTERPRISE_BUDGET_SCOPE } from '@/services/enterprise.service'
 import type {
   EnterpriseAttempt,
@@ -62,7 +63,13 @@ export function EnterprisePage() {
   const [searchDraft, setSearchDraft] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [selectedLedgerId, setSelectedLedgerId] = useState<string>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedLedgerId = searchParams.get('request') || undefined
+  const setSelectedLedgerId = (id?: string) => setSearchParams((current) => {
+    if (id) current.set('request', id)
+    else current.delete('request')
+    return current
+  })
   const [budgetOpen, setBudgetOpen] = useState(false)
 
   const overviewQuery = useEnterpriseOverview()
@@ -759,8 +766,8 @@ function DetailSection({ title, icon: Icon, children }: { title: string; icon: t
 
 function DetailRow({ label, value, copy = false }: { label: string; value: string; copy?: boolean }) {
   const copyValue = async () => {
-    await navigator.clipboard.writeText(value)
-    toast.success(`${label} 已复制`)
+    if (await copyToClipboard(value)) toast.success(`${label} 已复制`)
+    else toast.error('复制失败，请手动复制')
   }
   return (
     <div className="grid grid-cols-[110px_minmax(0,1fr)_28px] items-start gap-3 border-b py-2.5 text-sm last:border-b-0">

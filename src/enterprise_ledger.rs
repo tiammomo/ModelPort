@@ -829,10 +829,11 @@ impl EnterpriseLedger {
                 let ledger = ledger.lock().expect("enterprise ledger lock poisoned");
                 let has_request = !ledger.requests.is_empty();
                 let has_successful_request = ledger.requests.values().any(|request| {
-                    request
-                        .record
-                        .status_code
-                        .is_some_and(|status| (200..300).contains(&status))
+                    request.record.state == "completed"
+                        && request
+                            .record
+                            .status_code
+                            .is_some_and(|status| (200..300).contains(&status))
                 });
                 Ok((has_request, has_successful_request))
             }
@@ -844,7 +845,7 @@ impl EnterpriseLedger {
                         EXISTS (
                             SELECT 1
                             FROM modelport_gateway_requests
-                            WHERE status_code >= 200 AND status_code < 300
+                            WHERE state = 'completed' AND status_code >= 200 AND status_code < 300
                         ) AS has_successful_request
                     "#,
                 )
@@ -6911,6 +6912,46 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn onboarding_requires_completed_request_not_just_success_headers() {
+        let ledger = EnterpriseLedger::memory();
+        let request = ledger
+            .begin_request(&context(), "gpt-test", true, None, TEST_FINGERPRINT)
+            .await
+            .unwrap();
+        assert_eq!(ledger.onboarding_milestones().await.unwrap(), (true, false));
+        let failed_stream = LedgerOutcome::provider_attempt(
+            false,
+            200,
+            Some("stream failed after headers".to_owned()),
+            estimate(0.0),
+            "local-estimate",
+            Duration::from_millis(10),
+        );
+        ledger
+            .finalize_request(&request, &failed_stream)
+            .await
+            .unwrap();
+        assert_eq!(ledger.onboarding_milestones().await.unwrap(), (true, false));
+        let successful = ledger
+            .begin_request(&context(), "gpt-test", true, None, TEST_FINGERPRINT)
+            .await
+            .unwrap();
+        let completed = LedgerOutcome::provider_attempt(
+            true,
+            200,
+            None,
+            estimate(0.0),
+            "local-estimate",
+            Duration::from_millis(10),
+        );
+        ledger
+            .finalize_request(&successful, &completed)
+            .await
+            .unwrap();
+        assert_eq!(ledger.onboarding_milestones().await.unwrap(), (true, true));
     }
 
     fn usage_policy(
