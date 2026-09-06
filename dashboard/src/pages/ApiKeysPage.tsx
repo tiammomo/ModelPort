@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { cn, formatDate, formatNumber } from '@/lib/utils'
+import { copyToClipboard, cn, formatDate, formatNumber } from '@/lib/utils'
 import { paginateItems } from '@/lib/pagination'
 import { useAuthStore } from '@/stores'
 import { apiKeyAccessForRole, apiKeySelfServiceUpdate } from '@/features/api-keys/api-key-access'
@@ -502,7 +502,7 @@ export function ApiKeysPage() {
 
   const copyText = async (text: string, label = '内容') => {
     try {
-      await navigator.clipboard.writeText(text)
+      if (!await copyToClipboard(text)) throw new Error('复制失败')
       toast.success(`${label}已复制`)
     } catch {
       toast.error('复制失败，请手动复制')

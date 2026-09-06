@@ -1,3 +1,4 @@
+import { copyToClipboard } from '@/lib/utils'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -28,7 +29,7 @@ import { ClientSetupStatus } from '@/features/client-profiles/ClientSetupStatus'
 function CodeBlock({ children, copyLabel, copyDisabled = false }: { children: string; copyLabel: string; copyDisabled?: boolean }) {
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(children)
+      if (!await copyToClipboard(children)) throw new Error('复制失败')
       toast.success(`${copyLabel}已复制`)
     } catch {
       toast.error('复制失败，请手动选择文本')
