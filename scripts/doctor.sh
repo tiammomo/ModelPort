@@ -280,7 +280,9 @@ check_compose_values() {
   check_provider_env
   check_required_value MODELPORT_ADMIN_USERNAME
   check_required_secret MODELPORT_ADMIN_PASSWORD
-  check_required_secret MODELPORT_POSTGRES_PASSWORD
+  if [[ -z "${MODELPORT_DATABASE_URL:-}" ]]; then
+    check_required_secret MODELPORT_POSTGRES_PASSWORD
+  fi
 }
 
 check_compose_setup() {
