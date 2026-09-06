@@ -28,8 +28,7 @@ export default defineConfig({
           if (id.includes('/node_modules/@tanstack/')) {
             return 'query-vendor'
           }
-          if (id.includes('/node_modules/framer-motion/')
-            || id.includes('/node_modules/lucide-react/')
+          if (id.includes('/node_modules/lucide-react/')
             || id.includes('/node_modules/sonner/')
             || id.includes('/node_modules/cmdk/')) {
             return 'ui-vendor'
