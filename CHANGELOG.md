@@ -5,6 +5,18 @@ All notable ModelPort changes are recorded here. The project follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-06
+
+### Release correction
+
+- Scan the staged binary directory for the SPDX SBOM and keep all release
+  uploads in the final publication job. The v0.1.0 attempt failed before
+  publishing assets because the SBOM action received an archive as a directory.
+- Pin release examples and images to v0.1.1; preserve the failed v0.1.0 tag.
+- Honor the selected Compose deployment in backup, verification and restore
+  drills; keep generated config readable by the non-root container user.
+- Build clean local images from one immutable Git snapshot.
+
 ### Team setup and maintenance
 
 - Generate minimal local configuration and independent credentials with
@@ -33,7 +45,7 @@ All notable ModelPort changes are recorded here. The project follows
 
 ### Release preparation
 
-- Prepared `v0.1.0 Small-Team Beta` for a free, MIT-licensed, self-hosted
+- Prepared `v0.1.1 Small-Team Beta` for a free, MIT-licensed, self-hosted
   20–50 person internal development team; this changelog does not claim the tag,
   GHCR images, signatures, or GitHub Release exist before the release workflow
   succeeds.
@@ -45,7 +57,7 @@ All notable ModelPort changes are recorded here. The project follows
   Kubernetes, hosted, paid, or public-multi-tenant surface except to resolve a
   security/data-loss/release blocker or a verified design-partner blocker.
 
-## [0.1.0] - Pending publication
+## [0.1.0] - Unpublished candidate
 
 ### Added
 
@@ -102,5 +114,6 @@ Back up PostgreSQL and run a restore drill before upgrading. Compose still uses
 the PostgreSQL 18 volume `modelport_modelport-postgres-18`; export any older
 volume before removing it.
 
-[Unreleased]: https://github.com/tiammomo/ModelPort/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.0
+[Unreleased]: https://github.com/tiammomo/ModelPort/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.1
+[0.1.0]: https://github.com/tiammomo/ModelPort/tree/v0.1.0

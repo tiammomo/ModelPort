@@ -31,7 +31,7 @@ services:
         max-file: "${MODELPORT_LOG_MAX_FILES:-5}"
 
   modelport:
-    image: ${MODELPORT_IMAGE:-ghcr.io/tiammomo/modelport:0.1.0}
+    image: ${MODELPORT_IMAGE:-ghcr.io/tiammomo/modelport:0.1.1}
     pull_policy: ${MODELPORT_PULL_POLICY:-missing}
     init: true
     read_only: true
@@ -86,7 +86,7 @@ services:
         max-file: "${MODELPORT_LOG_MAX_FILES:-5}"
 
   dashboard:
-    image: ${MODELPORT_DASHBOARD_IMAGE:-ghcr.io/tiammomo/modelport-dashboard:0.1.0}
+    image: ${MODELPORT_DASHBOARD_IMAGE:-ghcr.io/tiammomo/modelport-dashboard:0.1.1}
     pull_policy: ${MODELPORT_PULL_POLICY:-missing}
     init: true
     read_only: true
@@ -108,7 +108,7 @@ services:
 
   ops-agent:
     profiles: ["ops-agent"]
-    image: ${MODELPORT_OPS_AGENT_IMAGE:-ghcr.io/tiammomo/modelport-ops-agent:0.1.0}
+    image: ${MODELPORT_OPS_AGENT_IMAGE:-ghcr.io/tiammomo/modelport-ops-agent:0.1.1}
     pull_policy: ${MODELPORT_PULL_POLICY:-missing}
     init: true
     read_only: true
