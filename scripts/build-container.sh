@@ -6,13 +6,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 allow_dirty=0
-if [[ "${1:-}" == "--allow-dirty" ]]; then
-  allow_dirty=1
-  shift
-fi
-if [[ "$#" -ne 0 ]]; then
-  die "usage: scripts/build-container.sh [--allow-dirty]"
-fi
+with_ops_agent=0
+for option in "$@"; do
+  case "$option" in
+    --allow-dirty) allow_dirty=1 ;;
+    --with-ops-agent) with_ops_agent=1 ;;
+    --help|-h)
+      cat <<'USAGE'
+Usage: scripts/build-container.sh [--allow-dirty] [--with-ops-agent]
+
+Build the gateway and dashboard images with source provenance labels.
+  --with-ops-agent  Also build the optional operations agent image.
+  --allow-dirty     Allow uncommitted changes for local testing only.
+USAGE
+      exit 0
+      ;;
+    *) die "unknown option: $option; use --help" ;;
+  esac
+done
 
 source_revision="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 source_state="clean"
@@ -48,13 +59,17 @@ docker build \
   --file "$ROOT_DIR/dashboard/Dockerfile" \
   --tag modelport-dashboard:local \
   "$ROOT_DIR"
-docker build \
-  "${common_args[@]}" \
-  --file "$ROOT_DIR/ops-agent/Dockerfile" \
-  --tag modelport-ops-agent:local \
-  "$ROOT_DIR"
+images=(modelport:local modelport-dashboard:local)
+if [[ "$with_ops_agent" == "1" ]]; then
+  docker build \
+    "${common_args[@]}" \
+    --file "$ROOT_DIR/ops-agent/Dockerfile" \
+    --tag modelport-ops-agent:local \
+    "$ROOT_DIR"
+  images+=(modelport-ops-agent:local)
+fi
 
-for image in modelport:local modelport-dashboard:local modelport-ops-agent:local; do
+for image in "${images[@]}"; do
   image_id="$(docker image inspect "$image" --format '{{.Id}}')"
   image_revision="$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
   image_state="$(docker image inspect "$image" --format '{{index .Config.Labels "io.modelport.source-state"}}')"
@@ -67,3 +82,6 @@ for image in modelport:local modelport-dashboard:local modelport-ops-agent:local
 done
 
 log "start these source-built images with: MODELPORT_LOCAL_BUILD=1 scripts/compose-up.sh"
+if [[ "$with_ops_agent" == "1" ]]; then
+  log "enable the agent with: COMPOSE_PROFILES=ops-agent MODELPORT_LOCAL_BUILD=1 scripts/compose-up.sh"
+fi

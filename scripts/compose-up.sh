@@ -100,8 +100,13 @@ if [[ "$local_mode" == "1" ]]; then
     done
   fi
   for local_image in "${local_images[@]}"; do
-    docker image inspect "$local_image" >/dev/null 2>&1 \
-      || die "missing $local_image; run scripts/build-container.sh first"
+    if ! docker image inspect "$local_image" >/dev/null 2>&1; then
+      build_options=""
+      if [[ "$local_image" == "modelport-ops-agent:local" ]]; then
+        build_options=" --with-ops-agent"
+      fi
+      die "missing $local_image; run scripts/build-container.sh${build_options} first"
+    fi
   done
   export MODELPORT_IMAGE=modelport:local
   export MODELPORT_DASHBOARD_IMAGE=modelport-dashboard:local
