@@ -53,4 +53,19 @@ describe('auth query isolation', () => {
     expect(queryClient.getQueryData(['private', 'logs'])).toBeUndefined()
     expect(useAuthStore.getState().isAuthenticated).toBe(false)
   })
+  it('shares concurrent initialization without clearing newly mounted queries twice', async () => {
+    let resolve!: (user: User) => void
+    vi.mocked(authService.getCurrentUser).mockReturnValue(new Promise((done) => { resolve = done }))
+    const clear = vi.spyOn(queryClient, 'clear')
+    const first = useAuthStore.getState().initialize()
+    const second = useAuthStore.getState().initialize()
+    expect(first).toBe(second)
+    expect(authService.getCurrentUser).toHaveBeenCalledOnce()
+    resolve(user)
+    await Promise.all([first, second])
+    expect(clear).toHaveBeenCalledOnce()
+    expect(useAuthStore.getState().currentUser).toEqual(user)
+    clear.mockRestore()
+  })
+
 })
