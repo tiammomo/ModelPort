@@ -41,6 +41,9 @@ else
 fi
 if [[ ! -e "$target_dir/config.toml" ]]; then
   cat "$ROOT_DIR/config.example.toml" > "$target_dir/config.toml"
+  # This file contains only configuration and secret references. The gateway
+  # runs as an unprivileged container user; only .env requires owner-only read.
+  chmod 0644 "$target_dir/config.toml"
   printf '[modelport] Created %s/config.toml\n' "$target_dir"
 else
   printf '[modelport] Preserved existing %s/config.toml\n' "$target_dir"
