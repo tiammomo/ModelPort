@@ -129,6 +129,7 @@ export interface Provider {
   displayName: string
   source?: 'config' | 'control'
   protocol: ProviderProtocol
+  governance?: { boundary: 'local' | 'cloud'; region: string; apiVersion: string }
   baseUrl: string
   apiKeyEnv: string | null
   apiKeyRequired: boolean

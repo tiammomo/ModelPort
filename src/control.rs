@@ -1027,6 +1027,7 @@ impl ApiKeyPolicy {
 pub(crate) struct UserCatalogGrant {
     pub(crate) policy: ApiKeyPolicy,
     pub(crate) tenant: TenantScope,
+    pub(crate) purpose: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2379,6 +2380,7 @@ impl ControlStore {
                     .as_deref()
                     .and_then(|team_id| inner.teams.get(team_id));
                 UserCatalogGrant {
+                    purpose: record.purpose.clone(),
                     policy: api_key_policy_with_subject(record, team, inner.api_keys.values()),
                     tenant: TenantScope::from_strings(
                         record.organization_id.clone(),

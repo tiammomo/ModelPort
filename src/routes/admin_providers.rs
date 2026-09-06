@@ -95,10 +95,15 @@ pub(super) async fn admin_providers(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     let actor = require_console_user(&state, &headers)?;
-    let rows = if actor.role == "admin" {
+    let rows = if actor.role == "admin" && query.api_key_id.is_none() {
         provider_rows(&state)
     } else {
-        catalog_provider_rows(&state, &actor.id, query.api_key_id.as_deref())
+        let owner = if actor.role == "admin" {
+            catalog_owner(&state, &actor, query.api_key_id.as_deref())?
+        } else {
+            actor.id.clone()
+        };
+        catalog_provider_rows(&state, &owner, query.api_key_id.as_deref())
     };
     Ok(Json(Value::Array(rows)))
 }

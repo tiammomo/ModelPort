@@ -22,6 +22,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { availableModelOptions, preferredAvailableModel } from '@/features/models/available-models'
 import { apiKeyExpiryState } from '@/features/api-keys/api-key-view'
 import { buildClientProfiles } from '@/features/client-profiles/client-profiles'
+import { setupAllowsCopy, useClientSetup } from '@/features/client-profiles/client-setup'
+import { ClientSetupStatus } from '@/features/client-profiles/ClientSetupStatus'
 
 function CodeBlock({ children, copyLabel, copyDisabled = false }: { children: string; copyLabel: string; copyDisabled?: boolean }) {
   const copy = async () => {
@@ -108,7 +110,7 @@ export function UsageGuidePage() {
     isLoading: apiKeysLoading,
     isFetching: apiKeysFetching,
     error: apiKeysError,
-  } = useApiKeys(!isAdmin)
+  } = useApiKeys()
   const usableApiKeys = useMemo(() => apiKeys.filter((key) => (
     key.status === 'active'
     && apiKeyExpiryState(key, catalogNow) !== 'expired'
@@ -118,14 +120,14 @@ export function UsageGuidePage() {
   const activeCatalogKeyId = usableApiKeys.some((key) => key.id === selectedCatalogKeyId)
     ? selectedCatalogKeyId
     : usableApiKeys[0]?.id ?? ''
-  const catalogEnabled = isAdmin || Boolean(activeCatalogKeyId)
+  const catalogEnabled = Boolean(activeCatalogKeyId)
   const {
     data: providers = [],
     isLoading: providersLoading,
     isFetching: providersFetching,
     error: providersError,
   } = useProviders(
-    isAdmin ? undefined : activeCatalogKeyId,
+    activeCatalogKeyId,
     catalogEnabled,
   )
   const {
@@ -134,7 +136,7 @@ export function UsageGuidePage() {
     isFetching: aliasesFetching,
     error: aliasesError,
   } = useAliases(
-    isAdmin ? undefined : activeCatalogKeyId,
+    activeCatalogKeyId,
     catalogEnabled,
   )
   const { data: settings } = useSettings(isAdmin)
@@ -142,9 +144,9 @@ export function UsageGuidePage() {
   const gatewayOrigin = String(import.meta.env.VITE_API_BASE_URL || window.location.origin).replace(/\/+$/, '')
 
   const modelOptions = useMemo(() => {
-    if (providersError || aliasesError || providersFetching || aliasesFetching || (!isAdmin && apiKeysFetching)) return []
+    if (!activeCatalogKeyId || providersError || aliasesError || providersFetching || aliasesFetching || apiKeysFetching) return []
     return availableModelOptions(providers, aliases)
-  }, [aliases, aliasesError, aliasesFetching, apiKeysFetching, isAdmin, providers, providersError, providersFetching])
+  }, [activeCatalogKeyId, aliases, aliasesError, aliasesFetching, apiKeysFetching, providers, providersError, providersFetching])
   const preferredModel = useMemo(
     () => preferredAvailableModel(modelOptions, settings?.gateway.defaultProvider),
     [modelOptions, settings?.gateway.defaultProvider],
@@ -154,12 +156,14 @@ export function UsageGuidePage() {
     || providersFetching
     || aliasesLoading
     || aliasesFetching
-    || (!isAdmin && (apiKeysLoading || apiKeysFetching))
-  const catalogError = providersError || aliasesError || (!isAdmin ? apiKeysError : null)
+    || apiKeysLoading || apiKeysFetching
+  const catalogError = providersError || aliasesError || apiKeysError
   const activeModel = modelOptions.some((option) => option.id === selectedModel)
     ? selectedModel
     : preferredModel
-  const copyDisabled = catalogLoading || Boolean(catalogError) || !activeModel
+  const setup = useClientSetup(activeCatalogKeyId, activeModel)
+  const copyDisabled = catalogLoading || Boolean(catalogError) || setup.isFetching || Boolean(setup.error)
+    || !setupAllowsCopy(setup.data, activeCatalogKeyId, activeModel)
   const clientProfiles = useMemo(() => buildClientProfiles({
     gatewayOrigin,
     selectedModel: activeModel || undefined,
@@ -202,14 +206,12 @@ export function UsageGuidePage() {
             <div>
               <p className="text-sm font-semibold">选择当前可用模型</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {isAdmin
-                  ? '管理员看到组织当前可路由目录；优先使用稳定逻辑别名。'
-                  : '目录由服务端按所选 API Key 的模型、Provider 与项目策略计算；IP 限制请由实际客户端用同一密钥请求 /v1/models 验证。'}
+                目录由服务端按所选 API Key 的模型、Provider 与项目策略计算；IP 限制请由实际客户端用同一密钥请求 /v1/models 验证。
               </p>
             </div>
             <Badge variant="outline">{modelOptions.length} 个可用</Badge>
           </div>
-          {!isAdmin && usableApiKeys.length > 0 && (
+          {usableApiKeys.length > 0 && (
             <div className="mt-3">
               <Label htmlFor="guide-api-key" className="text-xs">用于查询目录的 API Key</Label>
               <Select
@@ -252,10 +254,11 @@ export function UsageGuidePage() {
             </Select>
           ) : (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              <span>{catalogLoading ? '正在加载实时模型目录…' : isAdmin ? '当前没有通过凭证解析的启用模型。' : usableApiKeys.length === 0 ? '当前没有可用于查询目录的有效 API Key。' : '所选密钥的模型、Provider 或项目策略未允许任何已启用模型。'}</span>
+              <span>{catalogLoading ? '正在加载实时模型目录…' : usableApiKeys.length === 0 ? '当前没有可用于查询目录的有效 API Key。' : '所选密钥的模型、Provider 或项目策略未允许任何已启用模型。'}</span>
               {!catalogLoading && <Button asChild size="sm" variant="outline"><Link to={isAdmin ? '/models' : '/api-keys'}>{isAdmin ? '检查 Provider' : '创建或检查密钥'}</Link></Button>}
             </div>
           )}
+          <div className="mt-3"><ClientSetupStatus check={setup.data} pending={setup.isFetching} error={setup.error} hasSelection={Boolean(activeCatalogKeyId && activeModel)} isAdmin={isAdmin} onRetry={() => void setup.refetch()} /></div>
         </div>
         <div className="grid gap-6 xl:grid-cols-2">
           {clientProfiles.map((profile) => (
@@ -265,7 +268,7 @@ export function UsageGuidePage() {
                   {profile.status === 'blocked' ? <AlertTriangle className="h-4 w-4 text-amber-600" /> : <Terminal className="h-4 w-4 text-primary" />}
                   {profile.name}
                 </h3>
-                <Badge variant="outline">{profile.status === 'supported' ? '可配置' : '暂不支持'}</Badge>
+                <Badge variant="outline">{profile.status === 'supported' ? copyDisabled ? '待检查接入' : '配置检查通过' : '暂不支持'}</Badge>
               </div>
               <p className="mb-3 text-sm leading-6 text-muted-foreground">{profile.description}</p>
               {profile.status === 'supported' ? (

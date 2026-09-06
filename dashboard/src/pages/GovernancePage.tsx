@@ -15,6 +15,9 @@ import {
   useGovernance,
 } from '@/hooks/use-governance'
 import type { GovernanceChangeRequest } from '@/types'
+import { useProviders } from '@/hooks/use-models'
+import { ProjectPolicyEditor } from '@/features/governance/ProjectPolicyEditor'
+import { buildProjectPolicy, EMPTY_PROJECT_POLICY } from '@/features/governance/project-policy'
 
 const ACTIONS = [
   ['project_policy.upsert', '项目路由策略'],
@@ -31,18 +34,6 @@ const ACTIONS = [
 const DIRECT_APPLY_ACTIONS = new Set(['project_policy.upsert', 'budget.hard_limit'])
 
 const PAYLOAD_TEMPLATES: Record<string, unknown> = {
-  'project_policy.upsert': {
-    organizationId: 'org_local',
-    projectId: 'prj_default',
-    environmentId: 'env_default',
-    maximumMode: 'cloud_first',
-    defaultClassification: 'internal',
-    allowedProviders: ['deepseek'],
-    allowedModels: ['deepseek-v4-flash'],
-    allowedRegions: ['global'],
-    allowedApiVersions: ['anthropic-v1'],
-    cloudEnabled: true,
-  },
   'provider.allowlist_change': { providerId: '', operation: 'add', region: '', apiVersion: '', models: [] },
   'routing.cloud_first': { organizationId: 'local', projectId: 'default', environmentId: 'production', enabled: true },
   'budget.hard_limit': { organizationId: 'local', projectId: 'default', environmentId: 'production', hardLimitMicrounits: 0 },
@@ -55,6 +46,7 @@ const PAYLOAD_TEMPLATES: Record<string, unknown> = {
 
 export function GovernancePage() {
   const { data, isLoading, error, refetch } = useGovernance()
+  const { data: providers = [] } = useProviders()
   const createChange = useCreateGovernanceChange()
   const approveChange = useApproveGovernanceChange()
   const applyChange = useApplyGovernanceChange()
@@ -62,6 +54,7 @@ export function GovernancePage() {
   const [target, setTarget] = useState('org_local/prj_default/env_default')
   const [reason, setReason] = useState('')
   const [payloadText, setPayloadText] = useState(() => formatTemplate(ACTIONS[0][0]))
+  const [policyDraft, setPolicyDraft] = useState(EMPTY_PROJECT_POLICY)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [selectedChangeId, setSelectedChangeId] = useState(() => window.sessionStorage.getItem('modelport_change_request_id') || '')
 
@@ -81,13 +74,20 @@ export function GovernancePage() {
   const submit = () => {
     setNotice(null)
     let payload: unknown
+    let changeTarget = target
     try {
-      payload = JSON.parse(payloadText)
-    } catch {
-      setNotice({ kind: 'error', text: '变更载荷不是有效 JSON' })
+      if (action === 'project_policy.upsert') {
+        const policy = buildProjectPolicy(policyDraft)
+        payload = policy
+        changeTarget = `${policy.organizationId}/${policy.projectId}/${policy.environmentId}`
+      } else {
+        payload = JSON.parse(payloadText)
+      }
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : '请检查变更内容' })
       return
     }
-    createChange.mutate({ action, target, reason, payload }, {
+    createChange.mutate({ action, target: changeTarget, reason, payload }, {
       onSuccess: (change) => {
         setReason('')
         setNotice({
@@ -180,16 +180,17 @@ export function GovernancePage() {
                 {ACTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
             </div>
-            <div className="space-y-2">
+            {action !== 'project_policy.upsert' && <div className="space-y-2">
               <Label htmlFor="governance-target">目标标识</Label>
               <Input id="governance-target" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="org_local/prj_default/env_default" />
-            </div>
+            </div>}
           </div>
+          {action === 'project_policy.upsert' && <ProjectPolicyEditor value={policyDraft} onChange={setPolicyDraft} providers={providers} />}
           <div className="space-y-2">
             <Label htmlFor="governance-reason">业务原因与回滚依据</Label>
             <Input id="governance-reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明必要性、影响面、验证和回滚条件" />
           </div>
-          <div className="space-y-2">
+          {action !== 'project_policy.upsert' && <div className="space-y-2">
             <Label htmlFor="governance-payload">精确变更载荷（JSON）</Label>
             <textarea
               id="governance-payload"
@@ -198,12 +199,7 @@ export function GovernancePage() {
               onChange={(event) => setPayloadText(event.target.value)}
               spellCheck={false}
             />
-            {action === 'project_policy.upsert' && (
-              <p className="text-xs leading-5 text-amber-700">
-                默认模板会为示例 DeepSeek 路由显式开启云外发，并可能产生 Provider 费用；使用本地模型时请改为 local_strict、cloudEnabled=false 及对应 Provider/模型。
-              </p>
-            )}
-          </div>
+          </div>}
           <div className="flex justify-end">
             <Button onClick={submit} disabled={createChange.isPending || reason.trim().length < 8 || !target.trim()}>
               {createChange.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}

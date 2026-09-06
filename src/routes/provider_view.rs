@@ -9,7 +9,7 @@ use crate::{
     },
     control_view::provider_credential_rows,
     error::AppError,
-    governance::ProjectPolicy,
+    governance::{ProjectPolicy, ProviderBoundary, provider_governance_metadata},
     model_catalog::MODEL_ADAPTATION_CATALOG_VERSION,
 };
 
@@ -379,12 +379,23 @@ impl ProviderRowAssembler {
         } else {
             config_status
         };
+        let resolved = ResolvedProvider {
+            provider_id: id.to_owned(),
+            provider: provider.clone(),
+            model: provider.default_model.clone(),
+        };
+        let (region, api_version) = provider_governance_metadata(&resolved);
 
         Some(json!({
             "id": id,
             "displayName": provider.display_name,
             "source": if self.controls.provider_overrides.contains_key(id) { "control" } else { "config" },
             "protocol": provider_protocol_value(provider.protocol),
+            "governance": {
+                "boundary": if ProviderBoundary::for_resolved(&resolved) == ProviderBoundary::Local { "local" } else { "cloud" },
+                "region": region,
+                "apiVersion": api_version,
+            },
             "baseUrl": provider.base_url,
             "apiKeyEnv": provider.api_key_env,
             "apiKeyRequired": provider.api_key_required,

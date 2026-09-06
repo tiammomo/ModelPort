@@ -4,6 +4,7 @@ import { queryKeys } from './use-dashboard'
 import type { CreateUserInput, UpdateUserInput, UpsertTeamInput } from '@/types'
 
 function invalidateEffectiveCatalog(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['client-setup'] })
   qc.invalidateQueries({ queryKey: queryKeys.providers })
   qc.invalidateQueries({ queryKey: queryKeys.aliases })
 }
