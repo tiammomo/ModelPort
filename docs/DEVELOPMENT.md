@@ -132,7 +132,9 @@ npm --prefix dashboard audit --audit-level=low
 
 Release-oriented backend images must be built with
 `scripts/build-container.sh`. It refuses uncommitted source and records the Git
-revision in OCI labels. `--allow-dirty` is limited to local integration testing;
+revision in OCI labels. Clean builds use an immutable Git archive for all
+images, so concurrent worktree edits cannot change later image contents.
+`--allow-dirty` is limited to local integration testing;
 downstream release verification rejects the resulting dirty source-state label.
 The default build produces only gateway and Dashboard images. Add
 `--with-ops-agent` for the optional Agent; workspace tests and release jobs

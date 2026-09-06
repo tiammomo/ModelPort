@@ -27,12 +27,6 @@ done
 
 source_revision="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 source_state="clean"
-modelport_version="$(
-  sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT_DIR/Cargo.toml" | head -n 1
-)"
-if [[ -z "$modelport_version" ]]; then
-  die "could not read package version from Cargo.toml"
-fi
 build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [[ -n "$(git -C "$ROOT_DIR" status --porcelain=v1)" ]]; then
   source_state="dirty"
@@ -41,6 +35,27 @@ if [[ -n "$(git -C "$ROOT_DIR" status --porcelain=v1)" ]]; then
   fi
 fi
 
+build_context="$ROOT_DIR"
+snapshot_dir=""
+cleanup() {
+  if [[ -n "$snapshot_dir" ]]; then
+    rm -rf "$snapshot_dir"
+  fi
+}
+trap cleanup EXIT
+if [[ "$source_state" == "clean" ]]; then
+  # Pin every image to the same immutable source even if the worktree changes
+  # during a long build. Dirty local tests deliberately use the working tree.
+  snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/modelport-build.XXXXXX")"
+  git -C "$ROOT_DIR" archive "$source_revision" | tar -x -C "$snapshot_dir"
+  build_context="$snapshot_dir"
+fi
+modelport_version="$(
+  sed -n 's/^version = "\([^"]*\)"/\1/p' "$build_context/Cargo.toml" | head -n 1
+)"
+if [[ -z "$modelport_version" ]]; then
+  die "could not read package version from Cargo.toml"
+fi
 log "building ModelPort images version=$modelport_version revision=$source_revision source_state=$source_state"
 common_args=(
   --build-arg "MODELPORT_VERSION=$modelport_version"
@@ -51,21 +66,21 @@ common_args=(
 
 docker build \
   "${common_args[@]}" \
-  --file "$ROOT_DIR/Dockerfile" \
+  --file "$build_context/Dockerfile" \
   --tag modelport:local \
-  "$ROOT_DIR"
+  "$build_context"
 docker build \
   "${common_args[@]}" \
-  --file "$ROOT_DIR/dashboard/Dockerfile" \
+  --file "$build_context/dashboard/Dockerfile" \
   --tag modelport-dashboard:local \
-  "$ROOT_DIR"
+  "$build_context"
 images=(modelport:local modelport-dashboard:local)
 if [[ "$with_ops_agent" == "1" ]]; then
   docker build \
     "${common_args[@]}" \
-    --file "$ROOT_DIR/ops-agent/Dockerfile" \
+    --file "$build_context/ops-agent/Dockerfile" \
     --tag modelport-ops-agent:local \
-    "$ROOT_DIR"
+    "$build_context"
   images+=(modelport-ops-agent:local)
 fi
 
