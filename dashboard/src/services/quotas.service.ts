@@ -3,7 +3,7 @@ import { api } from '@/lib/api-client'
 import { isMockMode, mockDelay, nextMockId } from '@/lib/mock-mode'
 import { mockQuotas } from '@/mock'
 
-let mockQuotaStore = [...mockQuotas]
+let mockQuotaStore = isMockMode ? [...mockQuotas] : []
 
 export const quotasService = {
   getQuotas: (): Promise<Quota[]> =>

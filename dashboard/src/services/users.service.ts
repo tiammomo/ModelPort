@@ -40,8 +40,8 @@ export type PreparedApiKeyRotation = Omit<ApiKey, 'status'> & {
   key: string
 }
 
-let mockUserStore = [...mockUsers]
-let mockApiKeyStore = [...mockApiKeys]
+let mockUserStore = isMockMode ? [...mockUsers] : []
+let mockApiKeyStore = isMockMode ? [...mockApiKeys] : []
 const mockPendingApiKeyRotations = new Map<string, { sourceKeyId: string; replacement: PreparedApiKeyRotation }>()
 let mockTeamStore: Team[] = [
   {

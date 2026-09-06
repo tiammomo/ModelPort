@@ -17,8 +17,8 @@ import { isMockMode, mockDelay } from '@/lib/mock-mode'
 import { mockAliases, mockProviders } from '@/mock'
 import { settingsService } from './settings.service'
 
-let mockAliasStore = [...mockAliases]
-let mockProviderStore: Provider[] = mockProviders.map((provider) => ({
+let mockAliasStore = isMockMode ? [...mockAliases] : []
+let mockProviderStore: Provider[] = isMockMode ? mockProviders.map((provider) => ({
   ...provider,
   toolUse: provider.toolUse ?? defaultToolUse(provider.protocol, provider.deduplicateStreamText, provider.id),
   modelInventory: provider.modelInventory ?? provider.models.map((model): ProviderModelInventory => ({
@@ -26,7 +26,7 @@ let mockProviderStore: Provider[] = mockProviders.map((provider) => ({
     status: 'active',
     default: model === provider.defaultModel,
   })),
-}))
+})) : []
 
 export const modelsService = {
   getProviders: (apiKeyId?: string): Promise<Provider[]> =>

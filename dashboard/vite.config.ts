@@ -15,24 +15,14 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 450,
     rollupOptions: {
+      // Mock modules only export fixtures. Their generated sample data need
+      // not execute when production has removed all mock-mode branches.
+      treeshake: { moduleSideEffects: (id) => !id.includes('/src/mock/') },
       output: {
+        // Keep shared React code stable; let route imports own their optional
+        // dependencies so the login page does not preload the chart library.
         manualChunks(id) {
-          if (id.includes('/node_modules/recharts/') || id.includes('/node_modules/d3-')) {
-            return 'charts-vendor'
-          }
-          if (id.includes('/node_modules/react/')
-            || id.includes('/node_modules/react-dom/')
-            || id.includes('/node_modules/react-router')) {
-            return 'react-vendor'
-          }
-          if (id.includes('/node_modules/@tanstack/')) {
-            return 'query-vendor'
-          }
-          if (id.includes('/node_modules/lucide-react/')
-            || id.includes('/node_modules/sonner/')
-            || id.includes('/node_modules/cmdk/')) {
-            return 'ui-vendor'
-          }
+          if (/\/node_modules\/(react|react-dom|react-router|react-router-dom)\//.test(id)) return 'react-vendor'
         },
       },
     },
