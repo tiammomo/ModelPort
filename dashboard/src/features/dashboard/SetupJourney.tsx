@@ -40,7 +40,7 @@ function JourneyProgress() {
       {failed ? <p role="alert" className="text-sm text-destructive">接入进度读取失败。<button type="button" className="ml-2 underline" onClick={retry}>重试</button></p>
         : !state ? <p role="status" className="text-sm text-muted-foreground">正在读取已保存的接入进度…</p>
           : <>
-            <nav aria-label="接入步骤" className="grid gap-2 sm:grid-cols-4">
+            <nav aria-label="接入步骤" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {steps.map((step, index) => <Link key={step.id} to={`${step.to}?setup=1`} aria-current={pathname === step.to ? 'step' : undefined} className={cn('rounded-md border px-3 py-2 text-sm', pathname === step.to && 'border-primary bg-primary/5', step.complete && 'text-emerald-700 dark:text-emerald-400')}>
                 {step.complete ? '✓' : index + 1} · {step.title}
               </Link>)}

@@ -131,13 +131,6 @@ export function GovernancePage() {
         action={{ label: '刷新状态', onClick: () => void refetch(), icon: RefreshCw }}
       />
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Metric title="治理存储" value={data.ready ? '就绪' : '降级'} detail="审批状态持久化" icon={data.ready ? CheckCircle2 : AlertTriangle} />
-        <Metric title="审批门禁" value={approvalMode} detail={data.dualApprovalRequired ? '高风险写入必须匹配审批单' : '直接写入仍受 CSRF 与审计保护'} icon={ShieldCheck} />
-        <Metric title="交互队列" value={`${scheduler.interactiveQueued} / ${scheduler.limits.globalInteractiveQueue}`} detail="全局本地队列" icon={Clock3} />
-        <Metric title="后台队列" value={`${scheduler.batchQueued} / ${scheduler.limits.globalBatchQueue}`} detail="独立低优先级" icon={Clock3} />
-      </div>
-
       {notice && (
         <div className={`rounded-lg border p-3 text-sm ${notice.kind === 'success' ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-red-300 bg-red-50 text-red-800'}`} role="status">
           {notice.text}
@@ -208,6 +201,13 @@ export function GovernancePage() {
           </div>
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <Metric title="治理存储" value={data.ready ? '就绪' : '降级'} detail="审批状态持久化" icon={data.ready ? CheckCircle2 : AlertTriangle} />
+        <Metric title="审批门禁" value={approvalMode} detail={data.dualApprovalRequired ? '高风险写入必须匹配审批单' : '直接写入仍受 CSRF 与审计保护'} icon={ShieldCheck} />
+        <Metric title="交互队列" value={`${scheduler.interactiveQueued} / ${scheduler.limits.globalInteractiveQueue}`} detail="全局本地队列" icon={Clock3} />
+        <Metric title="后台队列" value={`${scheduler.batchQueued} / ${scheduler.limits.globalBatchQueue}`} detail="独立低优先级" icon={Clock3} />
+      </div>
 
       <Card>
         <CardHeader>
