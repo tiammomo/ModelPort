@@ -33,6 +33,11 @@ cosign verify \
   ghcr.io/tiammomo/modelport@sha256:<backend-digest>
 ```
 
+The binary archive includes `Cargo.lock`; its SBOM inventories locked workspace
+dependencies, including optional and test dependencies. It does not claim that
+every listed crate is linked into the gateway executable. Container SBOMs also
+cover their runtime image contents.
+
 Repeat the image verification for `modelport-dashboard` and, when enabled,
 `modelport-ops-agent`. Verification proves
 release provenance; it does not prove that a Provider account or model remains

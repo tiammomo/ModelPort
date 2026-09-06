@@ -77,7 +77,7 @@ jobs:
           archive="model-port-v${version}-linux-amd64"
           mkdir -p "target/release-package/${archive}" dist
           cp target/release/model-port "target/release-package/${archive}/"
-          cp README.md LICENSE CHANGELOG.md "target/release-package/${archive}/"
+          cp README.md LICENSE CHANGELOG.md Cargo.lock "target/release-package/${archive}/"
           tar -C target/release-package -czf "dist/${archive}.tar.gz" "$archive"
 
       - name: Generate SPDX SBOM
@@ -88,6 +88,21 @@ jobs:
           output-file: dist/model-port-${{ github.ref_name }}-linux-amd64.spdx.json
           upload-artifact: false
           upload-release-assets: false
+
+      - name: Verify SBOM includes locked Rust dependencies
+        run: |
+          python3 - "dist/model-port-${GITHUB_REF_NAME}-linux-amd64.spdx.json" <<'PYCODE'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              sbom = json.load(handle)
+          assert any(
+              ref.get("referenceType") == "purl"
+              and ref.get("referenceLocator", "").startswith("pkg:cargo/")
+              for package in sbom.get("packages", [])
+              for ref in package.get("externalRefs", [])
+          ), "binary SBOM is missing the locked Rust dependency inventory"
+          PYCODE
 
       - name: Generate checksums
         run: |

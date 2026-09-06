@@ -12,6 +12,8 @@ All notable ModelPort changes are recorded here. The project follows
 - Scan the staged binary directory for the SPDX SBOM and keep all release
   uploads in the final publication job. The v0.1.0 attempt failed before
   publishing assets because the SBOM action received an archive as a directory.
+- Include the workspace lockfile in the binary archive and reject a binary
+  SBOM without a Rust dependency inventory.
 - Pin release examples and images to v0.1.1; preserve the failed v0.1.0 tag.
 - Honor the selected Compose deployment in backup, verification and restore
   drills; keep generated config readable by the non-root container user.
