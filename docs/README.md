@@ -73,6 +73,11 @@ families to shipped, hardening, evidence-gated, and deferred work.
 defines independent model, Runtime Adapter, Compute Node/GPU, and Deployment
 ownership. Deferred work must not be described as shipped.
 
+[ADR-0008](adr/0008-team-gateway-focus-and-task-navigation.md) prioritizes team
+activation and five task navigation groups while gating Compute/Deployment
+expansion. [精炼与价值收敛评审](LEAN_REVIEW.zh-CN.md) preserves the baseline
+analysis and distinguishes delivered work from later increments.
+
 ## Documentation Rules
 
 1. Each fact has one authoritative document; other pages link to it.

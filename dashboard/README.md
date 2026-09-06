@@ -118,6 +118,24 @@ attention.
 
 ## Experience Contract
 
+The primary administrator navigation has five task groups: overview, model
+access, requests/usage, team/policy, and system. Existing page URLs remain
+available through role-filtered section navigation and the command palette.
+Backend domain boundaries do not dictate top-level navigation entries.
+
+Project routing policies use a form with local-only execution and unknown data
+classification by default. Choosing a cloud Provider does not enable egress;
+administrators explicitly choose both execution scope and data classification.
+Provider region/API-version defaults come from the backend's governance
+metadata. The form records and applies changes through the existing audited
+governance API and retains the configured dual-approval gate.
+
+The guide and one-time key reveal use the selected key's catalog for every
+role. Configuration copying is disabled until the server's key/model setup
+check passes, and disabled again during refresh or after an error. A setup
+check does not call the Provider or prove payload compatibility, live health,
+remaining quota, or the actual client's IP. Verify these through a real request.
+
 The preferred first-run sequence is:
 
 1. Configure a Provider and its server-side credential reference.

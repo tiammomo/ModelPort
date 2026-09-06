@@ -3,7 +3,7 @@
 Status: accepted Small-Team Beta release contract with an approved
 post-Beta control-plane direction.
 
-Last reviewed: 2026-08-24.
+Last reviewed: 2026-09-06.
 
 The ordered post-Beta capability matrix, evidence gates, extension boundaries,
 and non-goals are maintained in the
@@ -38,6 +38,14 @@ adapter, not a dependency on another product repository. See
 
 ## Control-Plane Delivery Sequence
 
+[ADR-0008](adr/0008-team-gateway-focus-and-task-navigation.md) puts first-request
+activation and daily team use ahead of this expansion. The current increment
+ships explicit policy forms, selected-key configuration checks, five task
+navigation groups, and opt-in local Agent builds. A resumable onboarding wizard
+and focused module decomposition follow independently. Compute/Deployment work
+resumes only after the Beta activation gates and at least two concrete
+design-partner capacity/deployment blockers justify its operating cost.
+
 Control-plane work is staged so the shipped gateway remains useful and honest
 at every step:
 
@@ -63,7 +71,7 @@ at every step:
 These are sequential product boundaries, not one large implementation PR.
 Hosted-only installations remain supported throughout.
 
-The immediate dependency chain after the adapter wire contracts is snapshot
+The deferred dependency chain after the adapter wire contracts is snapshot
 persistence ([#25](https://github.com/tiammomo/ModelPort/issues/25) and
 [#26](https://github.com/tiammomo/ModelPort/issues/26)), bounded collection
 ([#29](https://github.com/tiammomo/ModelPort/issues/29)), a read-only admin API

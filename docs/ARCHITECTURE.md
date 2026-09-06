@@ -91,7 +91,11 @@ remain temporary until the generic Runtime Adapter follow-up replaces them.
 
 ### Product domains and console information architecture
 
-Backend ownership and Dashboard navigation converge on the same eight domains:
+Backend ownership retains eight domains. Per
+[ADR-0008](adr/0008-team-gateway-focus-and-task-navigation.md), Dashboard tasks
+are grouped into overview, model access, requests/usage, team/policy, and system.
+The domain surfaces below live within those groups or remain future resources;
+they are not eight top-level navigation entries:
 
 | Domain | Backend responsibility | Dashboard surface | v0.1.x status |
 | --- | --- | --- | --- |

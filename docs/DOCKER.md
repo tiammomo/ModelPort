@@ -53,8 +53,7 @@ After `v0.1.0` and both GHCR images actually exist, use a tagged checkout and
 the release profile:
 
 ```bash
-cp deploy/docker/modelport.env.example .env
-cp config.example.toml config.toml
+scripts/setup.sh
 # replace every required placeholder
 export MODELPORT_COMPOSE_FILE="$PWD/deploy/release/compose.yml"
 docker compose -f "$MODELPORT_COMPOSE_FILE" pull
@@ -117,7 +116,8 @@ docker compose -f "$MODELPORT_COMPOSE_FILE" ps
 docker compose -f "$MODELPORT_COMPOSE_FILE" logs -f modelport
 docker compose -f "$MODELPORT_COMPOSE_FILE" logs -f dashboard
 docker compose -f "$MODELPORT_COMPOSE_FILE" restart modelport
-scripts/build-container.sh && MODELPORT_LOCAL_BUILD=1 scripts/compose-up.sh
+scripts/build-container.sh
+MODELPORT_LOCAL_BUILD=1 scripts/compose-up.sh
 docker compose -f "$MODELPORT_COMPOSE_FILE" down
 ```
 

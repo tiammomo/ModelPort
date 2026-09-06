@@ -3,8 +3,7 @@
 This is the shortest Tier 1 path to a governed request. It builds the backend
 and Dashboard images locally inside Docker (no host Rust or Node toolchain is
 needed), then runs them with Docker Compose, PostgreSQL, and the DeepSeek
-example. Once the `v0.1.0` release images are published, an optional section
-below shows pulling them instead of building. Use
+example. Published release images are an optional path below. Use
 [Providers](PROVIDERS.md) for a local runtime or another hosted Provider.
 
 ## 1. Prerequisites
@@ -20,29 +19,19 @@ you do not need to install PostgreSQL on the host.
 ## 2. Create Local Configuration
 
 ```bash
-git clone --branch v0.1.0 --depth 1 https://github.com/tiammomo/ModelPort.git
+git clone --depth 1 https://github.com/tiammomo/ModelPort.git
 cd ModelPort
-cp deploy/docker/modelport.env.example .env
-cp config.example.toml config.toml
+scripts/setup.sh
 ```
 
-Both copies are required. Compose mounts `.env` and `config.toml` read-only into
-the backend container.
+The initializer creates `.env` with unique router, administrator and database
+credentials (mode `0600`) and copies `config.toml`. Existing files are preserved.
+Set `DEEPSEEK_ANTHROPIC_AUTH_TOKEN` in `.env` to your Provider key. For another
+Provider, follow [Providers](PROVIDERS.md). Advanced environment options remain
+in the [Docker reference](../deploy/docker/modelport.env.example).
 
-Edit `.env` and replace every required `replace-with-...` value:
-
-```env
-MODELPORT_AUTH_TOKEN=<long-random-router-token>
-MODELPORT_ADMIN_USERNAME=admin
-MODELPORT_ADMIN_PASSWORD=<different-strong-admin-password>
-MODELPORT_POSTGRES_PASSWORD=<long-url-safe-database-password>
-
-DEEPSEEK_ANTHROPIC_AUTH_TOKEN=<real-provider-key>
-ANTHROPIC_AUTH_TOKEN=<same-value-as-MODELPORT_AUTH_TOKEN>
-```
-
-Do not commit `.env` or `config.toml`. Provider credentials remain in ModelPort;
-client applications receive a ModelPort token or a scoped client API key.
+Do not commit `.env` or `config.toml`. Provider credentials stay on the server;
+client applications use a scoped ModelPort API key.
 
 The sample model is `deepseek-v4-flash`. If the Provider account exposes a
 different ID, update `DEEPSEEK_MODEL`, the `config.toml` model list/default, and
@@ -70,8 +59,9 @@ docker compose ps
 ```
 
 `scripts/build-container.sh` builds `modelport:local`,
-`modelport-dashboard:local`, and `modelport-ops-agent:local` with Docker.
-`MODELPORT_LOCAL_BUILD=1` verifies those local images exist and disables image
+`modelport-dashboard:local` with Docker. Add `--with-ops-agent` only when the
+optional Agent is needed.
+`MODELPORT_LOCAL_BUILD=1` verifies the selected local images exist and disables image
 pulls; with the manifest defaulting to `docker-compose.yml`, `docker compose
 ps` shows the running project.
 
@@ -92,9 +82,9 @@ GitHub Release. Verify checksums, signatures,
 attestations, and SBOMs through
 [Upgrading and Rollback](UPGRADING.md#release-inputs).
 
-Do not run this release path until the `v0.1.0` tag and required GHCR images
-actually exist; they are not published yet, so the default is the local build
-in step 4. A repository change cannot publish them.
+Use this path only after the matching tag and all required images appear in
+[GitHub Releases](https://github.com/tiammomo/ModelPort/releases). Source builds
+remain available for unreleased changes.
 
 Expected services:
 
@@ -126,9 +116,9 @@ unavailable.
 If a service does not start:
 
 ```bash
-docker compose -f "$MODELPORT_COMPOSE_FILE" logs --tail=100 postgres
-docker compose -f "$MODELPORT_COMPOSE_FILE" logs --tail=100 modelport
-docker compose -f "$MODELPORT_COMPOSE_FILE" logs --tail=100 dashboard
+docker compose -f "${MODELPORT_COMPOSE_FILE:-docker-compose.yml}" logs --tail=100 postgres
+docker compose -f "${MODELPORT_COMPOSE_FILE:-docker-compose.yml}" logs --tail=100 modelport
+docker compose -f "${MODELPORT_COMPOSE_FILE:-docker-compose.yml}" logs --tail=100 dashboard
 ```
 
 ## 5. Verify The Gateway
@@ -140,34 +130,22 @@ scripts/smoke-test.sh
 This checks process liveness, authenticated storage readiness, and the model
 catalog without generating model output.
 
-Open `http://127.0.0.1:33002` and sign in with the configured administrator
-username and password. The backend API remains at
+Open `http://127.0.0.1:33002` and sign in with the generated administrator
+username and password from `.env`. Choose **继续接入** on the Dashboard to follow
+the four-step flow; saved configuration restores progress after a reload. The backend API remains at
 `http://127.0.0.1:38082`.
 
 ## 6. Authorize The First Governed Request
 
 ModelPort fails closed for cloud egress when a project has no policy. Before
 calling the DeepSeek example, open **Governance (治理与变更审批)** in the
-Dashboard, choose `project_policy.upsert`, and use:
+Dashboard under **团队与策略 → 治理与审批**. Choose the project routing policy,
+select DeepSeek and its exact model, explicitly allow approved cloud execution,
+and keep the default classification `unknown`. The advanced fields should use:
 
 - Target: `org_local/prj_default/env_default`
 - Reason: a concrete explanation such as `Allow the documented public synthetic DeepSeek test`
-- Payload:
-
-```json
-{
-  "organizationId": "org_local",
-  "projectId": "prj_default",
-  "environmentId": "env_default",
-  "maximumMode": "cloud_first",
-  "defaultClassification": "unknown",
-  "allowedProviders": ["deepseek"],
-  "allowedModels": ["deepseek-v4-flash"],
-  "allowedRegions": ["global"],
-  "allowedApiVersions": ["anthropic-v1"],
-  "cloudEnabled": true
-}
-```
+- Region: `global`; API version: `anthropic-v1`
 
 Submit the recorded change. In default Small-Team mode, choose
 **Direct apply (直接应用)**; the write still requires CSRF protection and is
@@ -213,25 +191,24 @@ value is still not an authoritative invoice.
 
 ## 8. Connect A Client
 
-Claude Code or another Anthropic-compatible client:
+Create a user and scoped client API key under **团队与策略**, then open
+**模型接入 → 用户使用说明**. Select that key and a model. Both administrators
+and developers see the selected key's effective catalog. Configuration copying
+requires a current setup check for that key/model, including its default data
+classification and project egress policy. The key reveal dialog uses the same
+check without retaining its one-time secret.
 
-```env
-ANTHROPIC_BASE_URL=http://127.0.0.1:38082
-ANTHROPIC_AUTH_TOKEN=<MODELPORT_AUTH_TOKEN>
-ANTHROPIC_MODEL=deepseek-v4-flash
-```
+The public synthetic curl above supplies its own classification header. It does
+not make the project's `unknown` default suitable for ordinary cloud calls.
+Use a local route, or explicitly classify a dedicated approved project's data
+through the policy form. Unknown and sensitive data remain local-only. Never
+classify arbitrary source code as public to bypass this check.
 
-OpenAI-compatible SDK:
-
-```env
-OPENAI_BASE_URL=http://127.0.0.1:38082/v1
-OPENAI_API_KEY=<MODELPORT_AUTH_TOKEN>
-OPENAI_MODEL=deepseek-v4-flash
-```
-
-For shared use, create a real user and a scoped client API key in the dashboard,
-then set `MODELPORT_REQUIRE_CONTROL_API_KEYS=1` during production hardening.
-Never give a client the upstream Provider key.
+Setup checks do not send a Provider request or reserve budget. Actual client IP,
+quota, upstream health and payload-specific Tool Use/fidelity checks still apply
+when a request runs; inspect its request log. Production hardening can require
+scoped keys with `MODELPORT_REQUIRE_CONTROL_API_KEYS=1`. Never give a client the
+upstream Provider key.
 
 ## 9. Stop, Restart, Or Upgrade
 

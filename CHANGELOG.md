@@ -1,18 +1,35 @@
 # Changelog
 
-## Unreleased
+All notable ModelPort changes are recorded here. The project follows
+[Semantic Versioning](https://semver.org/) once a version is published.
 
+## [Unreleased]
+
+### Team setup and maintenance
+
+- Generate minimal local configuration and independent credentials with
+  `scripts/setup.sh`; preserve existing files on rerun.
+- Honor deployment `MODELPORT_BIND` with TOML and allow external-database
+  Compose rendering without an unused internal database password.
+- Resume the four-step setup journey from saved configuration, require a
+  completed request for success, and link logs to exact ledger evidence.
+- Deduplicate session initialization to avoid detached loading queries; share
+  clipboard fallback behavior and report rejected copies accurately.
+- Load chart dependencies with the Dashboard instead of the login page, prune
+  unused mock initialization, and isolate model adaptation and operations queries.
+- Add audited project-policy forms with local/unknown defaults and selected-key
+  client setup checks; stop treating the administrator catalog as a key's scope.
+- Group the console into five task entry points while retaining page URLs and
+  role checks. Prioritize team activation over GPU expansion per ADR-0008.
+- Build the optional operations Agent locally only with `--with-ops-agent`.
+- Remove unused date-fns and framer-motion dependencies; update React Router
+  and Browserslist patches and retire the resolved router audit exception.
 - Add a bounded, provider-neutral Runtime Adapter registry with validated
   origins, environment-only Bearer credentials, collection policy, and
   fail-closed startup loading.
 - Add shared Dashboard Client/Harness setup profiles for Claude Code, Qwen
   Code, and the OpenAI SDK, while explicitly blocking Codex CLI until the
   Responses ingress exists.
-
-All notable ModelPort changes are recorded here. The project follows
-[Semantic Versioning](https://semver.org/) once a version is published.
-
-## [Unreleased]
 
 ### Release preparation
 

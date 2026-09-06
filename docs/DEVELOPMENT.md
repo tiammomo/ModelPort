@@ -90,6 +90,11 @@ proxy. Mock mode is UI-only and must not be used as evidence of backend behavior
 VITE_MODELPORT_MOCK=1 npm run dev
 ```
 
+The setup initializer can also be checked without changing the local deployment:
+`scripts/setup.sh /tmp/modelport-setup-check`. It preserves existing files and
+creates a minimal Compose environment; the full examples remain configuration
+references.
+
 ## Test Layers
 
 Fast backend checks:
@@ -129,6 +134,9 @@ Release-oriented backend images must be built with
 `scripts/build-container.sh`. It refuses uncommitted source and records the Git
 revision in OCI labels. `--allow-dirty` is limited to local integration testing;
 downstream release verification rejects the resulting dirty source-state label.
+The default build produces only gateway and Dashboard images. Add
+`--with-ops-agent` for the optional Agent; workspace tests and release jobs
+continue to cover all three workspace members.
 
 `cargo audit` downloads the current RustSec advisory database, so this networked
 check is kept separate from the deterministic repository check script. Project
