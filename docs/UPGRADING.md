@@ -22,16 +22,21 @@ GitHub Release. Verify the release before editing deployment state:
 
 ```bash
 sha256sum --check SHA256SUMS
-gh attestation verify model-port-v0.1.0-linux-amd64.tar.gz \
+gh attestation verify model-port-v0.1.1-linux-amd64.tar.gz \
   --repo tiammomo/ModelPort
 gh attestation verify \
   oci://ghcr.io/tiammomo/modelport@sha256:<backend-digest> \
   --repo tiammomo/ModelPort
 cosign verify \
-  --certificate-identity-regexp='https://github.com/tiammomo/ModelPort/.github/workflows/release.yml@refs/tags/v0[.]1[.]0' \
+  --certificate-identity-regexp='https://github.com/tiammomo/ModelPort/.github/workflows/release.yml@refs/tags/v0[.]1[.]1' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   ghcr.io/tiammomo/modelport@sha256:<backend-digest>
 ```
+
+The binary archive includes `Cargo.lock`; its SBOM inventories locked workspace
+dependencies, including optional and test dependencies. It does not claim that
+every listed crate is linked into the gateway executable. Container SBOMs also
+cover their runtime image contents.
 
 Repeat the image verification for `modelport-dashboard` and, when enabled,
 `modelport-ops-agent`. Verification proves

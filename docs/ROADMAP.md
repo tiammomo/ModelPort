@@ -90,7 +90,7 @@ reconciliation evidence. In product terms, those slices:
 
 ## v0.1.x Small-Team Beta Freeze
 
-For the first 6–8 weeks after v0.1.0, new protocol, Provider, and platform
+For the first 6–8 weeks after v0.1.1, new protocol, Provider, and platform
 breadth is frozen. A change may break the freeze only when it fixes a security
 issue, data-loss risk, release/upgrade blocker, or a reproducible blocker found
 by a design-partner team.

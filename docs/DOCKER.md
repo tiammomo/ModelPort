@@ -49,7 +49,7 @@ updates, and secret protection.
 
 ## Start
 
-After `v0.1.0` and both GHCR images actually exist, use a tagged checkout and
+After `v0.1.1` and both GHCR images actually exist, use a tagged checkout and
 the release profile:
 
 ```bash
