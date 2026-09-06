@@ -397,6 +397,28 @@ receive 403.
 The administrator dashboard exposes this as a preview-first action under
 **运行设置与运维 → 运维审计 → 数据保留**.
 
+`GET /admin/api-keys/{key_id}/setup?model=<logical-or-qualified-model>` is a
+read-only, `Cache-Control: no-store` configuration check for a console session.
+Owners may check their own keys; administrators may check any key. It checks
+owner/key availability, model and team permissions, credential resolution, and
+the bound project's policy with its **default** classification and routing mode.
+It never sends an upstream request or reserves budget. The response includes
+`apiKeyId`, `model`, `status` (`ready` or `blocked`), a stable `code`,
+`checkedAtMs`, and `upstreamVerified: false`. Usable keys also receive their
+project tuple, `defaultClassification`, `effectiveMode`, and `ipRestricted`.
+Codes include `ready`, `key_unavailable`, `control_only_key`, `owner_unavailable`,
+`model_not_allowed`, `project_policy_denied`, `local_only`,
+`model_unavailable`, and `missing_credential`.
+
+`ready` describes configuration eligibility only. Actual client IP, quota,
+health, and payload-specific protocol/Tool Use fidelity remain request-time
+checks. With an `unknown` default, even an approved cloud Provider can return
+`local_only`. The Dashboard requires a current matching key/model check before
+enabling configuration copying. It never silently adds a public classification.
+Administrators supplying `apiKeyId` to `/admin/providers` or `/admin/aliases`
+receive that key's reduced effective catalog; omitting it retains management
+views. Non-admin catalog ownership and redaction remain enforced.
+
 `PUT /admin/api-keys/{key_id}/scope` is the administrator-only tenant-binding
 operation. Its JSON body must contain a complete `organizationId`, `projectId`,
 and `environmentId` tuple. The tuple is persisted on the authenticated client

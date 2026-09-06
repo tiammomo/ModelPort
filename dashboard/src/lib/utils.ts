@@ -76,18 +76,22 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return true
   } catch {
     // Fallback for older browsers or insecure contexts
+    let textarea: HTMLTextAreaElement | undefined
+    const previousFocus = document.activeElement as HTMLElement | null
     try {
-      const textarea = document.createElement('textarea')
+      textarea = document.createElement('textarea')
       textarea.value = text
+      textarea.readOnly = true
       textarea.style.position = 'fixed'
       textarea.style.opacity = '0'
       document.body.appendChild(textarea)
       textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      return true
+      return document.execCommand('copy')
     } catch {
       return false
+    } finally {
+      textarea?.remove()
+      previousFocus?.focus?.({ preventScroll: true })
     }
   }
 }

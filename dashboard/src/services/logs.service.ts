@@ -5,7 +5,7 @@ import { mockLogs } from '@/mock'
 
 type LogsResponse = { logs: RequestLog[]; total: number; summary: LogSummary }
 
-const latencyValues = mockLogs.map((log) => log.latencyMs).sort((a, b) => a - b)
+const latencyValues = isMockMode ? mockLogs.map((log) => log.latencyMs).sort((a, b) => a - b) : []
 
 function percentile(values: number[], p: number) {
   if (values.length === 0) return 0

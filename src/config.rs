@@ -1293,7 +1293,9 @@ impl AppConfig {
             max_concurrent_requests: None,
         });
 
-        let bind_addr = resolve_bind(server.bind)?;
+        // Deployment wiring must work with the same TOML on a host or inside
+        // a container. An explicit environment bind overrides the file default.
+        let bind_addr = resolve_bind(service_env_value("MODELPORT_BIND").or(server.bind))?;
         let max_request_body_bytes = resolve_usize_env(
             server.max_request_body_bytes,
             "MODELPORT_MAX_REQUEST_BODY_BYTES",

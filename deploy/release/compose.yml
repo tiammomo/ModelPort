@@ -13,7 +13,7 @@ services:
     environment:
       POSTGRES_DB: ${MODELPORT_POSTGRES_DB:-modelport}
       POSTGRES_USER: ${MODELPORT_POSTGRES_USER:-modelport}
-      POSTGRES_PASSWORD: ${MODELPORT_POSTGRES_PASSWORD:?set MODELPORT_POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${MODELPORT_POSTGRES_PASSWORD:-}
       PGDATA: /var/lib/postgresql/18/docker
     volumes:
       - modelport-postgres-18:/var/lib/postgresql

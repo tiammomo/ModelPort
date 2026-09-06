@@ -127,6 +127,18 @@ fn cli_deployment_preflight_accepts_a_valid_local_environment() {
 }
 
 #[test]
+fn deployment_bind_overrides_toml_and_rejects_invalid_values() {
+    let output = run_config_validate(&[("MODELPORT_BIND", "0.0.0.0:38082")]);
+    let text = output_text(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("0.0.0.0:38082"), "{text}");
+
+    let invalid = run_config_validate(&[("MODELPORT_BIND", "not-an-address")]);
+    assert!(!invalid.status.success());
+    assert!(output_text(&invalid).contains("invalid bind address"));
+}
+
+#[test]
 fn openai_legacy_server_env_names_remain_compatible_with_a_migration_warning() {
     let output = run_env_default_config_validate(&[
         ("OPENAI_BASE_URL", "https://api.openai.com/v1"),

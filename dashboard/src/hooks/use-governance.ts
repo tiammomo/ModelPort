@@ -32,6 +32,12 @@ export function useApplyGovernanceChange() {
   const client = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => governanceService.applyChange(id),
-    onSuccess: () => client.invalidateQueries({ queryKey: governanceKey }),
+    onSuccess: () => Promise.all([
+      client.invalidateQueries({ queryKey: governanceKey }),
+      client.invalidateQueries({ queryKey: ['client-setup'] }),
+      client.invalidateQueries({ queryKey: ['providers'] }),
+      client.invalidateQueries({ queryKey: ['aliases'] }),
+      client.invalidateQueries({ queryKey: ['dashboard'] }),
+    ]),
   })
 }

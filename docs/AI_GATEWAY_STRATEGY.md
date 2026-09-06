@@ -3,7 +3,7 @@
 Status: accepted product decision framework; target capabilities remain proposed
 unless another maintained document marks them implemented.
 
-Last reviewed: 2026-08-24.
+Last reviewed: 2026-09-06.
 
 ## Decision
 
@@ -55,7 +55,7 @@ credential, or unbounded attribute content by default.
 | Content-minimized observability | Request/attempt IDs, route and policy evidence, token/cost provenance, latency, metrics, retained logs, audit rows, and operations diagnostics ship without intentional prompt/response persistence. | **Hardening.** Add content-free, OpenTelemetry-compatible spans/metrics and trace-context propagation with bounded cardinality, tenant access controls, sampling, and retention. “Provider-reported” is not invoice-exact; unknown or estimated costs stay labelled. Prompt-content telemetry is **deferred**. |
 | Operator UX | Dashboard flows cover onboarding, Providers, routing, governance, requests, budgets, incidents, backup, and operations. | **Hardening.** Optimize first governed request, Provider credential test state, capability evidence, route explanation, and copyable Client profiles. Compute and Deployment views follow the dependency chain below. |
 | Cache and guardrail extensions | No general response cache or pluggable content guardrail is claimed. Existing size, protocol, policy, and egress checks are gateway safety controls, not that product category. | **Evidence-gated.** See the extension contract below. Exact and semantic cache are separate proposals; semantic cache follows exact-cache evidence. Guardrails remain opt-in policy components, not an implicit inspection layer. |
-| Hybrid model/GPU control plane | Versioned Runtime Adapter contracts and read-only schemas exist; first-class persisted Compute and Deployment APIs do not yet ship. | **Hardening** for the immediate inventory chain, then **evidence-gated** lifecycle and placement. Hosted Providers remain first-class and no GPU is required. |
+| Hybrid model/GPU control plane | Versioned Runtime Adapter contracts and read-only schemas exist; first-class persisted Compute and Deployment APIs do not yet ship. | **Evidence-gated** inventory, lifecycle, and placement after activation and design-partner blockers per ADR-0008. Hosted Providers remain first-class and no GPU is required. |
 
 ## Identity boundaries
 
@@ -89,6 +89,12 @@ delivery, failure isolation, migration/rollback, and equivalent acceptance
 evidence. The default must continue to support the single-host deployment.
 
 ## Ordered delivery and dependencies
+
+[ADR-0008](adr/0008-team-gateway-focus-and-task-navigation.md) makes activation,
+selected-key setup correctness, and daily team workflows the immediate work.
+The following Compute/Deployment chain is retained as a dependency contract,
+but waits for Beta activation evidence and concrete capacity/deployment blockers
+from at least two design partners.
 
 ```text
 #25/#26 snapshot persistence

@@ -26,6 +26,11 @@ the same key. Avoid defining conflicting values in both places. In Docker,
 remember that Compose copies `env_file` values into the process when the
 container is created.
 
+`MODELPORT_BIND` overrides `[server].bind` in TOML so the same provider
+configuration works on a host and inside Docker. Without that environment
+value, the TOML address (or the loopback default) is used. Other TOML server
+fields keep their existing precedence over environment defaults.
+
 Control-plane overrides are applied after the base configuration for provider
 records, model inventory, aliases, default provider, and provider order.
 

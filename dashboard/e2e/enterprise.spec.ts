@@ -55,20 +55,15 @@ test.describe('enterprise operations', () => {
 
     const suffix = Date.now().toString(36)
     const target = `org_e2e/prj_${suffix}/env_test`
-    await page.getByLabel('目标标识').fill(target)
+    await expect(page.getByLabel('精确变更载荷（JSON）')).toHaveCount(0)
+    await page.getByLabel('选择 Provider', { exact: true }).selectOption('custom')
+    await expect(page.getByLabel('模型执行范围')).toHaveValue('local')
+    await expect(page.getByLabel('未携带分类信息时的数据类型')).toHaveValue('unknown')
+    await page.getByText('项目范围与高级边界', { exact: true }).click()
+    await page.getByLabel('组织标识', { exact: true }).fill('org_e2e')
+    await page.getByLabel('项目标识', { exact: true }).fill(`prj_${suffix}`)
+    await page.getByLabel('环境标识', { exact: true }).fill('env_test')
     await page.getByLabel('业务原因与回滚依据').fill('verify one-administrator small-team policy application')
-    await page.getByLabel('精确变更载荷（JSON）').fill(JSON.stringify({
-      organizationId: 'org_e2e',
-      projectId: `prj_${suffix}`,
-      environmentId: 'env_test',
-      maximumMode: 'local_strict',
-      defaultClassification: 'unknown',
-      allowedProviders: [],
-      allowedModels: [],
-      allowedRegions: ['local'],
-      allowedApiVersions: ['openai-compatible-v1'],
-      cloudEnabled: false,
-    }, null, 2))
     const createdResponsePromise = page.waitForResponse((response) => (
       new URL(response.url()).pathname === '/admin/governance/change-requests'
       && response.request().method() === 'POST'
@@ -76,7 +71,9 @@ test.describe('enterprise operations', () => {
     await page.getByRole('button', { name: '记录变更意图' }).click()
     const createdResponse = await createdResponsePromise
     expect(createdResponse.ok()).toBeTruthy()
-    const change = await createdResponse.json() as { id: string }
+    const change = await createdResponse.json() as { id: string; target: string; payload: unknown }
+    expect(change.target).toBe(target)
+    expect(change.payload).toMatchObject({ cloudEnabled: false, defaultClassification: 'unknown', allowedProviders: ['custom'], allowedModels: ['ci-model'] })
 
     const row = page.getByTestId(`governance-change-${change.id}`)
     await expect(row).toContainText(target)

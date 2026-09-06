@@ -15,13 +15,15 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { cn, formatDate, formatNumber } from '@/lib/utils'
+import { copyToClipboard, cn, formatDate, formatNumber } from '@/lib/utils'
 import { paginateItems } from '@/lib/pagination'
 import { useAuthStore } from '@/stores'
 import { apiKeyAccessForRole, apiKeySelfServiceUpdate } from '@/features/api-keys/api-key-access'
 import { apiKeyExpiryState, filterApiKeys, isApiKeyFilterActive, type ApiKeyStatusFilter } from '@/features/api-keys/api-key-view'
 import { serviceAccountExpiryError } from '@/features/api-keys/service-account-expiry'
 import { buildClientProfiles } from '@/features/client-profiles/client-profiles'
+import { setupAllowsCopy, useClientSetup } from '@/features/client-profiles/client-setup'
+import { ClientSetupStatus } from '@/features/client-profiles/ClientSetupStatus'
 import { availableModelOptions } from '@/features/models/available-models'
 import { ApiError } from '@/lib/api-client'
 import { AlertTriangle, CalendarClock, Copy, DollarSign, FolderKanban, KeyRound, Pencil, Plus, RotateCw, Search, ShieldCheck, ShieldOff, Trash2, X, Zap } from 'lucide-react'
@@ -139,21 +141,25 @@ export function ApiKeysPage() {
     allowedProviders: '',
   })
   const [editForm, setEditForm] = useState<EditApiKeyForm>(emptyEditForm)
-  const { data: newKeyProviders = [], isFetching: newKeyProvidersFetching } = useProviders(
-    isAdmin ? undefined : newKeyId || undefined,
+  const { data: newKeyProviders = [], isFetching: newKeyProvidersFetching, error: newKeyProvidersError } = useProviders(
+    newKeyId || undefined,
     Boolean(newKeyId),
   )
-  const { data: newKeyAliases = [], isFetching: newKeyAliasesFetching } = useAliases(
-    isAdmin ? undefined : newKeyId || undefined,
+  const { data: newKeyAliases = [], isFetching: newKeyAliasesFetching, error: newKeyAliasesError } = useAliases(
+    newKeyId || undefined,
     Boolean(newKeyId),
   )
   const newKeyModelOptions = useMemo(
-    () => availableModelOptions(newKeyProviders, newKeyAliases),
-    [newKeyAliases, newKeyProviders],
+    () => !newKeyId || newKeyProvidersFetching || newKeyAliasesFetching || newKeyProvidersError || newKeyAliasesError
+      ? [] : availableModelOptions(newKeyProviders, newKeyAliases),
+    [newKeyId, newKeyAliases, newKeyProviders, newKeyProvidersFetching, newKeyAliasesFetching, newKeyProvidersError, newKeyAliasesError],
   )
   const activeNewKeyModel = newKeyModelOptions.some((option) => option.id === newKeyModel)
     ? newKeyModel
     : newKeyModelOptions[0]?.id || ''
+  const newKeySetup = useClientSetup(newKeyId || '', activeNewKeyModel)
+  const newKeyCopyDisabled = newKeySetup.isFetching || Boolean(newKeySetup.error)
+    || !setupAllowsCopy(newKeySetup.data, newKeyId || '', activeNewKeyModel)
 
   const groups = useMemo(() => {
     return Array.from(new Set(apiKeys.map((key) => key.group).filter(Boolean))).sort()
@@ -496,7 +502,7 @@ export function ApiKeysPage() {
 
   const copyText = async (text: string, label = '内容') => {
     try {
-      await navigator.clipboard.writeText(text)
+      if (!await copyToClipboard(text)) throw new Error('复制失败')
       toast.success(`${label}已复制`)
     } catch {
       toast.error('复制失败，请手动复制')
@@ -895,7 +901,7 @@ export function ApiKeysPage() {
               <div className="min-w-0 space-y-3 rounded-md border bg-muted/20 p-3">
                 <div>
                   <p className="text-sm font-medium">接入配置</p>
-                  <p className="mt-1 text-xs text-muted-foreground">以下是 Client/Harness 配置，不包含 Provider 凭证。管理员看到组织目录；交付前仍需用新密钥查询 /v1/models 核对其实际范围。</p>
+                  <p className="mt-1 text-xs text-muted-foreground">目录和接入检查均使用这把新密钥的实际权限与项目策略。配置仅包含客户端密钥。</p>
                 </div>
                 {newKeyModelOptions.length > 0 ? (
                   <Select value={activeNewKeyModel} onValueChange={setNewKeyModel} disabled={newKeyProvidersFetching || newKeyAliasesFetching}>
@@ -907,13 +913,14 @@ export function ApiKeysPage() {
                 ) : (
                   <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-950">{newKeyProvidersFetching || newKeyAliasesFetching ? '正在读取新密钥的实时模型目录…' : '新密钥当前没有可选择的实时模型；配置复制已禁用。'}</p>
                 )}
+                <ClientSetupStatus check={newKeySetup.data} pending={newKeySetup.isFetching} error={newKeySetup.error} hasSelection={Boolean(newKeyId && activeNewKeyModel)} isAdmin={isAdmin} onRetry={() => void newKeySetup.refetch()} />
                 {buildClientProfiles({ gatewayOrigin: apiBaseUrl, selectedModel: activeNewKeyModel || undefined, oneTimeClientKey: newKey }).map((profile) => (
                   profile.status === 'supported' ? (
                     <CopySnippet
                       key={profile.id}
                       title={profile.name}
                       value={profile.configuration}
-                      copyDisabled={!activeNewKeyModel}
+                      copyDisabled={newKeyCopyDisabled}
                       onCopy={(value) => void copyText(value, `${profile.name} 配置`)}
                     />
                   ) : (

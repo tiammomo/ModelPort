@@ -60,6 +60,9 @@ mod admin_api_keys;
 mod admin_providers;
 mod admin_users;
 mod client_api;
+mod client_setup;
+#[cfg(test)]
+mod client_setup_tests;
 mod dashboard_view;
 #[path = "routes/governance.rs"]
 mod governance_routes;
@@ -613,6 +616,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/auth/logout", post(admin_logout))
         .route("/admin/auth/me", get(admin_me))
+        .route(
+            "/admin/api-keys/{key_id}/setup",
+            get(client_setup::check).layer(middleware::from_fn(add_no_store_header)),
+        )
         .route(
             "/admin/self-service/governance",
             get(governance_routes::self_service_governance),
@@ -1255,6 +1262,19 @@ fn ensure_api_key_access(
     }
 }
 
+fn catalog_owner(
+    state: &AppState,
+    actor: &PublicUser,
+    api_key_id: Option<&str>,
+) -> Result<String, AppError> {
+    if let Some(key_id) = api_key_id {
+        ensure_api_key_access(state, actor, key_id)?;
+        state.control.api_key_user_id(key_id)
+    } else {
+        Ok(actor.id.clone())
+    }
+}
+
 async fn record_admin_activity(
     state: &AppState,
     actor: &PublicUser,
@@ -1305,7 +1325,11 @@ fn authenticate_inference_client(
 }
 
 fn ensure_inference_identity(identity: &ClientIdentity) -> Result<(), AppError> {
-    if identity.purpose.as_deref() == Some("modelport_ops_agent") {
+    ensure_inference_purpose(identity.purpose.as_deref())
+}
+
+fn ensure_inference_purpose(purpose: Option<&str>) -> Result<(), AppError> {
+    if purpose == Some("modelport_ops_agent") {
         return Err(AppError::Forbidden(
             "operations-agent credentials cannot access the inference data plane".to_owned(),
         ));
@@ -1405,10 +1429,15 @@ async fn admin_aliases(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     let actor = require_console_user(&state, &headers)?;
-    let rows = if actor.role == "admin" {
+    let rows = if actor.role == "admin" && query.api_key_id.is_none() {
         alias_rows(&state)
     } else {
-        catalog_alias_rows(&state, &actor.id, query.api_key_id.as_deref())
+        let owner = if actor.role == "admin" {
+            catalog_owner(&state, &actor, query.api_key_id.as_deref())?
+        } else {
+            actor.id.clone()
+        };
+        catalog_alias_rows(&state, &owner, query.api_key_id.as_deref())
     };
     Ok(Json(Value::Array(rows)))
 }
@@ -7995,7 +8024,7 @@ data: {"type":"message_stop"}
         post_message_with_key(app, CLIENT_TOKEN, body).await
     }
 
-    async fn login_cookie(app: Router, username: &str, password: &str) -> HeaderValue {
+    pub(super) async fn login_cookie(app: Router, username: &str, password: &str) -> HeaderValue {
         let response = app
             .oneshot(
                 Request::builder()
@@ -8038,7 +8067,7 @@ data: {"type":"message_stop"}
         (status, body)
     }
 
-    async fn get_console_json(app: Router, uri: &str, cookie: HeaderValue) -> Value {
+    pub(super) async fn get_console_json(app: Router, uri: &str, cookie: HeaderValue) -> Value {
         let response = app
             .oneshot(
                 Request::builder()
@@ -8109,7 +8138,7 @@ data: {"type":"message_stop"}
         }
     }
 
-    fn create_test_api_key(
+    pub(super) fn create_test_api_key(
         state: &AppState,
         user: &PublicUser,
         name: &str,
@@ -8468,7 +8497,10 @@ data: {"type":"message_stop"}
         test_state_with_flags(base_url, max_request_body_bytes, true, false)
     }
 
-    fn test_state_with_admin(base_url: String, max_request_body_bytes: usize) -> AppState {
+    pub(super) fn test_state_with_admin(
+        base_url: String,
+        max_request_body_bytes: usize,
+    ) -> AppState {
         let state = test_state(base_url, max_request_body_bytes);
         state
             .auth

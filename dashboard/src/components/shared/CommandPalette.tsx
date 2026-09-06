@@ -5,7 +5,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { DialogTitle } from '@/components/ui/dialog'
 import { NAV_SECTIONS, navItemsForRole } from '@/lib/constants'
 import { useAuthStore } from '@/stores'
-import { Search, LayoutDashboard, KeyRound, Users, Gauge, Boxes, ScrollText, Settings, ShieldCheck, BookOpen } from 'lucide-react'
+import { Search, LayoutDashboard, KeyRound, Users, Gauge, Boxes, ScrollText, Settings, ShieldCheck, BookOpen, Scale, Siren } from 'lucide-react'
 
 const iconMap: Record<string, React.ElementType> = {
   LayoutDashboard,
@@ -17,6 +17,8 @@ const iconMap: Record<string, React.ElementType> = {
   Settings,
   ShieldCheck,
   BookOpen,
+  Scale,
+  Siren,
 }
 
 export function CommandPalette() {

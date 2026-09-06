@@ -12,6 +12,8 @@ interface AuthState {
   initialize: () => Promise<void>
 }
 
+let initialization: Promise<void> | undefined
+
 export const useAuthStore = create<AuthState>((set) => ({
   currentUser: null,
   isAuthenticated: false,
@@ -29,14 +31,20 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ currentUser: null, isAuthenticated: false, isInitializing: false })
   },
 
-  initialize: async () => {
-    try {
-      const currentUser = await authService.getCurrentUser()
-      clearSessionQueries()
-      set({ currentUser, isAuthenticated: true, isInitializing: false })
-    } catch {
-      clearSessionQueries()
-      set({ currentUser: null, isAuthenticated: false, isInitializing: false })
-    }
+  initialize: () => {
+    // StrictMode and concurrent mounts must share one session probe. A second
+    // cache clear can otherwise detach newly mounted queries indefinitely.
+    if (initialization) return initialization
+    initialization = (async () => {
+      try {
+        const currentUser = await authService.getCurrentUser()
+        clearSessionQueries()
+        set({ currentUser, isAuthenticated: true, isInitializing: false })
+      } catch {
+        clearSessionQueries()
+        set({ currentUser: null, isAuthenticated: false, isInitializing: false })
+      }
+    })().finally(() => { initialization = undefined })
+    return initialization
   },
 }))

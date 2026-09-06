@@ -58,10 +58,15 @@ default startup, and the persisted Agent setting defaults to disabled. First
 start the optional process in shadow mode:
 
 ```bash
+scripts/build-container.sh --with-ops-agent
 MODELPORT_OPS_MODE=shadow docker compose --profile ops-agent up -d ops-agent
 docker compose logs --tail=100 ops-agent
 docker compose exec ops-agent curl -fsS http://127.0.0.1:38083/readyz
 ```
+
+The default local build includes only the gateway and Dashboard. For a local
+integration build with uncommitted changes, add `--allow-dirty`; published
+release images continue to include the optional Agent as a separate artifact.
 
 It will report a disabled heartbeat but will not evaluate rules until an
 administrator opens **运维事件**, chooses a base model if desired, turns on

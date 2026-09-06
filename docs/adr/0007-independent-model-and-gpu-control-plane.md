@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-08-23
+- Amended: [ADR-0008](0008-team-gateway-focus-and-task-navigation.md) changes
+  delivery priority and top-level navigation; resource ownership remains accepted.
 - Supersedes: the local model, artifact, runtime, and GPU ownership decision in
   [ADR-0005](0005-forty-user-hybrid-routing-baseline.md)
 

@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { formatBytes, formatRelativeTime } from '@/lib/utils'
+import { copyToClipboard, formatBytes, formatRelativeTime } from '@/lib/utils'
 import { providerReadiness, settingsTabForCheck, type SettingsOperatorTab } from '@/features/models/operator-state'
 import {
   Activity,
@@ -223,7 +223,7 @@ function SettingsForm({ initialSettings }: { initialSettings: SystemSettings }) 
 
   const handleCopy = async (label: string, value: string) => {
     try {
-      await navigator.clipboard.writeText(value)
+      if (!await copyToClipboard(value)) throw new Error('复制失败')
       setNotice({ type: 'success', message: `${label} 已复制` })
     } catch {
       setNotice({ type: 'error', message: '复制失败，请手动复制' })

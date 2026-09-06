@@ -7,213 +7,74 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-ModelPort v0.1.x is a free, MIT-licensed, self-hosted LLM gateway for 20–50
-person internal development teams that use local models and approved cloud
-Providers. It gives Claude Code, SDKs, and internal applications one governed
-endpoint for authentication, logical-model routing, quotas, usage, Provider
-health, and request evidence. The Small-Team Beta experience is Chinese-first;
-the API and maintained operator documentation remain available in English.
-
-The approved product direction is an independent hybrid model and GPU control
-plane. That direction keeps hosted API Providers first-class, treats local
-Qwen as one replaceable Runtime Adapter example, and does not claim that the
-target Compute or Deployment APIs ship in v0.1.x. See
-[Architecture](docs/ARCHITECTURE.md) and
-[ADR-0007](docs/adr/0007-independent-model-and-gpu-control-plane.md).
+ModelPort is a free, self-hosted model gateway for 20–50 person development
+teams. Administrators connect local or cloud models and define access boundaries;
+developers copy client configuration and inspect request, routing, usage and
+billing evidence when something fails. Licensed under MIT.
 
 ![ModelPort architecture overview](docs/assets/modelport-overview.svg)
 
 ## What You Get
 
-- `POST /v1/messages`, `POST /v1/chat/completions`, `GET /v1/models`, and
-  opt-in exact token counting.
-- Anthropic and OpenAI-compatible Provider adapters with bounded streaming and
-  Tool Use conversion.
-- Optional CPA Codex and Claude account channels that remain internal Providers
-  behind ModelPort's policy, routing, and evidence boundary.
-- Deterministic routes plus opt-in explainable smart routing with shadow mode,
-  stable canaries, and durable decision evidence.
-- Scoped client API keys, users, teams, quotas, spend controls, Provider
-  credential pools, cooldown, and bounded fallback.
-- A React operations dashboard and a PostgreSQL request, usage, budget, and
-  audit ledger.
-- An off-by-default deterministic, read-only operations Agent with a durable
-  incident center, bounded offline spool, recovery evidence, and optional
-  local-first, operator-selected model diagnosis.
-- Docker Compose and systemd deployment paths, backup/restore tooling,
-  Prometheus metrics, and acceptance scripts.
+- One endpoint for Claude Code, Qwen Code and the OpenAI SDK, with Messages,
+  Chat Completions, streaming and Tool Use.
+- Users, teams, scoped API keys, quotas and budgets; unknown and sensitive data
+  stays local by default.
+- Local and cloud Providers, model catalogs, deterministic and optional smart routes.
+- Five console entry points: overview, model access, requests/usage, team/policy, system.
+- PostgreSQL evidence, backup/restore and metrics; an optional operations Agent.
 
-ModelPort currently supports one Linux x86_64 instance on a trusted host or
-small trusted network. It is not enterprise/HA software, a public multi-tenant
-service, model runtime, chat UI, payment processor, or Provider invoice. See
-[Compatibility](docs/COMPATIBILITY.md), [Production](docs/PRODUCTION.md), and
-[Roadmap](docs/ROADMAP.md) before making broader availability claims.
+v0.1.x is a Chinese-first Small-Team Beta for single-instance Linux x86_64.
+See the [compatibility matrix](docs/COMPATIBILITY.md) for protocol and deployment
+boundaries. Team activation and diagnosis take priority; GPU expansion is driven
+by verified needs in the [roadmap](docs/ROADMAP.md).
 
 ## Quick Start
 
-Requirements: Linux x86_64, Git, Docker, Docker Compose v2, and credentials for
-at least one Provider. The default path below builds the backend, Dashboard,
-and optional Agent images locally from source (Docker performs the build;
-no Rust or Node toolchain is needed on the host). The maintained example uses
-DeepSeek's Anthropic-compatible endpoint.
+Requires Linux x86_64, Git, Docker Compose v2 and Provider credentials. No host
+Rust or Node installation is needed.
 
 ```bash
 git clone https://github.com/tiammomo/ModelPort.git
 cd ModelPort
-cp deploy/docker/modelport.env.example .env
-cp config.example.toml config.toml
-```
-
-Edit `.env` and replace every required `replace-with-...` value. At minimum set
-unique router, administrator, PostgreSQL, and Provider credentials. Keep
-`MODELPORT_AUTH_TOKEN` and the client-side `ANTHROPIC_AUTH_TOKEN` equal for the
-first local test.
-
-By default the stack runs its own internal PostgreSQL container. If you set
-`MODELPORT_DATABASE_URL` in `.env` to an external PostgreSQL instance, the
-internal `postgres` container is not started (Compose profile `internal-db`);
-leave it unset or empty to keep the internal database.
-
-```bash
+scripts/setup.sh
+# Set DEEPSEEK_ANTHROPIC_AUTH_TOKEN in .env
 scripts/doctor.sh --setup
 scripts/build-container.sh
-MODELPORT_LOCAL_BUILD=1 scripts/compose-up.sh
+scripts/compose-up.sh
 docker compose ps
 scripts/smoke-test.sh
 ```
 
-No `MODELPORT_COMPOSE_FILE` export is needed: the scripts default to the root
-source-build manifest (`docker-compose.yml`), and `MODELPORT_LOCAL_BUILD=1`
-selects the `:local` images built in the previous step.
+The initializer writes distinct router, administrator and database credentials
+to `.env` with mode `0600`; reruns preserve existing configuration. The default
+build produces the gateway and Dashboard images. Compose supplies PostgreSQL
+and publishes ports on loopback only.
 
-Open `http://127.0.0.1:33002` and sign in with
-`MODELPORT_ADMIN_USERNAME`/`MODELPORT_ADMIN_PASSWORD`.
-
-### Optional: Pull Published Release Images
-
-The `ghcr.io/tiammomo/*:0.1.0` release images are not published yet, so the
-default is the local build above. Once they exist, switch to the release
-manifest to pull them instead of building:
-
-```bash
-export MODELPORT_COMPOSE_FILE="$PWD/deploy/release/compose.yml"
-scripts/doctor.sh --setup
-docker compose -f "$MODELPORT_COMPOSE_FILE" pull
-MODELPORT_LOCAL_BUILD=0 scripts/compose-up.sh
-docker compose -f "$MODELPORT_COMPOSE_FILE" ps
-scripts/smoke-test.sh
-```
-
-The release manifest resolves to `ghcr.io/tiammomo/*:0.1.0` with
-`pull_policy: missing`, so `up` pulls them automatically and the explicit
-`pull` step is optional. Image mode is otherwise automatic:
-`scripts/compose-up.sh` detects local vs remote from the manifest and runs the
-local preflight only for the source-build profile.
-
-For local Qwen, another Provider, production hardening, digest pinning, or
-troubleshooting, follow the tested [Getting Started guide](docs/GETTING_STARTED.md).
-The optional Agent has its own [safe rollout guide](docs/OPS_AGENT.md); it is
-free and open source with the rest of ModelPort and starts in shadow mode.
+Open `http://127.0.0.1:33002`, sign in with the administrator credentials in
+`.env`, and choose **Continue setup (继续接入)**. The four-step journey resumes
+from saved configuration. For another Provider, external PostgreSQL or published
+images, use [Getting Started](docs/GETTING_STARTED.md).
 
 ## Send Your First Request
 
-Cloud egress is fail-closed until the request's project has an explicit policy.
-In the Dashboard, open **Governance (治理与变更审批)**, choose
-`project_policy.upsert`, set the target to
-`org_local/prj_default/env_default`, and record this narrow example policy:
+Follow **model access → egress policy → key/client → request evidence**. Record
+and apply project policy through the form. Selecting a cloud Provider still
+requires explicit egress authorization and data classification. Client setup
+checks the selected key's permissions, credentials and policy before enabling copy.
 
-```json
-{
-  "organizationId": "org_local",
-  "projectId": "prj_default",
-  "environmentId": "env_default",
-  "maximumMode": "cloud_first",
-  "defaultClassification": "unknown",
-  "allowedProviders": ["deepseek"],
-  "allowedModels": ["deepseek-v4-flash"],
-  "allowedRegions": ["global"],
-  "allowedApiVersions": ["anthropic-v1"],
-  "cloudEnabled": true
-}
-```
-
-Give the change a concrete reason, submit it, then apply it. The default
-Small-Team mode lets the same administrator apply this recorded change with
-CSRF and audit protection. Enterprise mode or
-`MODELPORT_REQUIRE_DUAL_APPROVAL=1` requires a different administrator to
-approve it before apply. This boundary permits only the documented DeepSeek
-model/API path; requests without an explicit safe classification still remain
-local-only.
-
-```bash
-source .env
-
-curl -fsS \
-  -H "x-api-key: $MODELPORT_AUTH_TOKEN" \
-  -H 'content-type: application/json' \
-  -H 'x-modelport-data-classification: public' \
-  -H 'x-modelport-hybrid-mode: cloud_first' \
-  http://127.0.0.1:38082/v1/messages \
-  -d '{
-    "model":"deepseek-v4-flash",
-    "max_tokens":96,
-    "messages":[{"role":"user","content":"Reply exactly: OK"}]
-  }'
-```
-
-This call can consume Provider quota. `scripts/smoke-test.sh` is local-only;
-use `scripts/smoke-test.sh --upstream` when a paid synthetic call is intended.
-
-Claude Code:
-
-```env
-ANTHROPIC_BASE_URL=http://127.0.0.1:38082
-ANTHROPIC_AUTH_TOKEN=<MODELPORT_AUTH_TOKEN>
-ANTHROPIC_MODEL=deepseek-v4-flash
-```
-
-OpenAI-compatible SDK:
-
-```env
-OPENAI_BASE_URL=http://127.0.0.1:38082/v1
-OPENAI_API_KEY=<MODELPORT_CLIENT_KEY>
-OPENAI_MODEL=deepseek-v4-flash
-```
-
-Use a dashboard-issued scoped client key for shared deployments. Provider keys
-stay in ModelPort and must never be copied into client applications.
+The [first-request example](docs/GETTING_STARTED.md#7-send-the-first-request)
+uses explicitly classified synthetic data and may consume Provider quota.
+Ordinary `smoke-test.sh` does not call an upstream. Use request logs to confirm a
+complete call; administrators can open the exact routing and billing evidence
+from a log. Provider keys remain on the server.
 
 ## Documentation
 
-Choose the document for your task instead of reading the whole documentation
-set:
-
-- [Getting Started](docs/GETTING_STARTED.md) — install, first login, first
-  request, and common startup failures.
-- [Learning Path](docs/LEARNING_PATH.md) — role-based 30–60 minute operator,
-  client-integration, operations, and contributor tracks.
-- [Local Qwen reference adapter](docs/LOCAL_INFERENCE_STACK.md) — an optional
-  Linux/WSL2 compatibility walkthrough for the original integration; it is not
-  a ModelPort architecture dependency.
-- [Configuration](docs/CONFIGURATION.md) — environment and TOML reference.
-- [API](docs/API.md) — client and control-plane contracts.
-- [Providers](docs/PROVIDERS.md) — hosted Providers, local runtimes, and
-  compatibility evidence.
-- [Smart Routing](docs/SMART_ROUTING.md) — scoring, shadow, canary, and
-  rollback.
-- [Deployment](docs/DEPLOYMENT.md) — Docker Compose, systemd, and production
-  topology.
-- [Operations](docs/OPERATIONS.md) — health, logs, metrics, backup, retention,
-  incidents, and upgrades.
-- [Compatibility](docs/COMPATIBILITY.md) — Tier 1 platform and explicit
-  experimental/unsupported boundaries.
-- [Observability runbook](docs/OBSERVABILITY_RUNBOOK.md) — official alerts,
-  Grafana dashboard, and incident actions.
-- [Upgrading and rollback](docs/UPGRADING.md) — safe-stop, backup, migration,
-  acceptance, and paired application/database rollback.
-- [Production](docs/PRODUCTION.md) — go-live and release acceptance.
-- [Development](docs/DEVELOPMENT.md) — contributor workflow and test matrix.
-- [Documentation index](docs/README.md) — role-based navigation.
+- [Getting started and troubleshooting](docs/GETTING_STARTED.md)
+- [Configuration](docs/CONFIGURATION.md) and [API](docs/API.md)
+- [Deployment](docs/DEPLOYMENT.md), [operations](docs/OPERATIONS.md) and [upgrades/rollback](docs/UPGRADING.md)
+- [Documentation index](docs/README.md) and [roadmap](docs/ROADMAP.md)
 
 ## Security And Support
 

@@ -1,11 +1,4 @@
 {
   "schemaVersion": 1,
-  "exceptions": [
-    {
-      "id": "GHSA-qwww-vcr4-c8h2",
-      "package": "react-router",
-      "expires": "2026-08-31",
-      "rationale": "ModelPort ships a static Vite SPA and does not use React Router RSC Server Actions or createCallServer. Keep React Router current because downgrading reintroduces other fixed advisories; remove this exception when an upstream fix is released."
-    }
-  ]
+  "exceptions": []
 }

@@ -17,7 +17,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { cn, formatDate, formatNumber } from '@/lib/utils'
+import { copyToClipboard, cn, formatDate, formatNumber } from '@/lib/utils'
 import { paginateItems } from '@/lib/pagination'
 import { ROLE_LABELS } from '@/lib/constants'
 import { filterUsers, isCreateUserFormValid, isUserEmailValid, isUserFilterActive, type UserRoleFilter, type UserStatusFilter } from '@/features/users/user-view'
@@ -215,7 +215,7 @@ export function UsersPage() {
 
   const copyText = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(text)
+      if (!await copyToClipboard(text)) throw new Error('复制失败')
       toast.success(`${label}已复制`)
     } catch {
       toast.error('复制失败，请手动复制')
