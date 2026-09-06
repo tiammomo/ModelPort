@@ -30,13 +30,13 @@ marketing or unverified Provider behavior.
 ## Releases And Security
 
 Only maintainers may create release tags, publish container images, or issue
-security advisories. A release must satisfy [the release process](docs/RELEASING.md).
-Security reports follow [SECURITY.md](SECURITY.md) and are handled privately
+security advisories. A release must satisfy [the release process](../RELEASING.md).
+Security reports follow [SECURITY.md](../../.github/SECURITY.md) and are handled privately
 until coordinated disclosure is appropriate.
 
 Small-Team Beta targets a four-week release cadence, with urgent security fixes
 outside that schedule. Only the latest Beta is maintained; see
-[SUPPORT.md](SUPPORT.md). A stable release is blocked until at least two named
+[SUPPORT.md](../../.github/SUPPORT.md). A stable release is blocked until at least two named
 maintainers have repository release and private security-response access and
 have completed a release/security handoff. This is an explicit continuity gate,
 not a claim that a second maintainer already exists.

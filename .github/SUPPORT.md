@@ -5,7 +5,7 @@
 Use GitHub issues for reproducible defects and feature proposals. Before
 opening an issue:
 
-1. read the maintained documentation in [`docs/`](docs/README.md);
+1. read the maintained documentation in [`docs/`](../docs/README.md);
 2. run `scripts/config-validate.sh` and `scripts/doctor.sh`;
 3. search existing issues;
 4. remove API keys, tokens, prompts, responses, personal data, database URLs,

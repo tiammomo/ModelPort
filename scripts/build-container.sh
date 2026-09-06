@@ -78,7 +78,7 @@ images=(modelport:local modelport-dashboard:local)
 if [[ "$with_ops_agent" == "1" ]]; then
   docker build \
     "${common_args[@]}" \
-    --file "$build_context/ops-agent/Dockerfile" \
+    --file "$build_context/crates/ops-agent/Dockerfile" \
     --tag modelport-ops-agent:local \
     "$build_context"
   images+=(modelport-ops-agent:local)

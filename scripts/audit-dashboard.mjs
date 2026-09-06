@@ -7,11 +7,11 @@ import { dirname, resolve } from 'node:path'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const dashboard = resolve(root, 'dashboard')
-const policyPath = resolve(root, 'security', 'npm-audit-exceptions.json')
+const policyPath = resolve(dashboard, 'npm-audit-exceptions.json')
 const policy = JSON.parse(readFileSync(policyPath, 'utf8'))
 
 if (policy.schemaVersion !== 1 || !Array.isArray(policy.exceptions)) {
-  throw new Error('security/npm-audit-exceptions.json has an unsupported schema')
+  throw new Error('dashboard/npm-audit-exceptions.json has an unsupported schema')
 }
 
 const audit = spawnSync(

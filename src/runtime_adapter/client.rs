@@ -300,10 +300,11 @@ mod tests {
 
     use super::*;
 
-    const CAPABILITIES: &str =
-        include_str!("../../fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json");
+    const CAPABILITIES: &str = include_str!(
+        "../../tests/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+    );
     const INVENTORY: &str = include_str!(
-        "../../fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json"
+        "../../tests/fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json"
     );
 
     #[derive(Clone)]

@@ -13,7 +13,7 @@ Older snapshots may not receive backports unless a release notice says so.
 ## Dependency Audit Exceptions
 
 Rust and dashboard dependency audits fail CI. A temporary exception is allowed
-only in `security/npm-audit-exceptions.json`, with an exact advisory/package
+only in `dashboard/npm-audit-exceptions.json`, with an exact advisory/package
 pair, an expiry date, and a deployment-specific exposure analysis. The audit
 fails for every unlisted advisory, expired exception, or stale exception.
 Exceptions are risk acceptance records, not claims that an affected package is
@@ -177,7 +177,7 @@ retain the automatically saved previous values plus a storage-native backup.
 
 ## Known Security Limits
 
-- The optional [OIDC console sign-in preview](docs/OIDC.md) is single-host and
+- The optional [OIDC console sign-in preview](../docs/OIDC.md) is single-host and
   process-local; it is not complete enterprise IAM, distributed SSO/session
   coordination, SCIM, service-account lifecycle, or public multi-tenant
   isolation.
@@ -195,6 +195,6 @@ retain the automatically saved previous values plus a storage-native backup.
   transactional reservation under concurrency. The tenant budget ledger has a
   separate transactional reservation and settlement path.
 
-See [Architecture](docs/ARCHITECTURE.md),
-[Configuration](docs/CONFIGURATION.md), and
-[Operations](docs/OPERATIONS.md) for the corresponding implementation limits.
+See [Architecture](../docs/ARCHITECTURE.md),
+[Configuration](../docs/CONFIGURATION.md), and
+[Operations](../docs/OPERATIONS.md) for the corresponding implementation limits.

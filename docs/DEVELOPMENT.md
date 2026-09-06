@@ -1,5 +1,34 @@
 # Development
 
+## Repository Map
+
+Run the commands below from the repository root. The layout follows ownership:
+
+| Path | Responsibility |
+| --- | --- |
+| `src/` | Gateway application and its colocated Rust unit tests. |
+| `crates/` | Operations Agent and shared operations protocol workspace packages. |
+| `dashboard/` | Console, frontend tooling, dependency audit policy, and browser tests. |
+| `resources/` | Catalog and JSON schemas embedded in the gateway binary. |
+| `migrations/` | Ordered PostgreSQL migrations embedded by SQLx. |
+| `tests/` | Backend integration tests and shared fixtures. |
+| `scripts/` | Development, verification, and operations commands; compiler wrappers live in `toolchain/`. |
+| `deploy/` | Deployment variants and supporting server configuration. |
+| `docs/` | Maintained guides, architecture, and project policies under `project/`. |
+| `.github/` | CI, repository automation, and community contribution/security/support policies. |
+| `.cargo/` | Cargo-specific configuration. |
+
+Keep standard build manifests, lockfiles, `Dockerfile`, `docker-compose.yml`,
+configuration examples, READMEs, changelog, and license at the root so common
+commands work without extra flags. Put new files with their owning component;
+avoid adding a top-level directory for a single helper or duplicating documents.
+Runtime resources belong in `resources/`; test-only examples belong in
+`tests/fixtures/`. Keep SQL migrations in their conventional location.
+
+`target/`, `.modelport/`, `dashboard/node_modules/`, and dashboard build/test
+outputs are generated local state, excluded from version control. They are not
+source directories. Keep `.env`, `config.toml`, logs, and backups local too.
+
 ## Toolchain
 
 The maintained baseline is:

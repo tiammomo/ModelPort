@@ -127,7 +127,7 @@ services:
     profiles: ["ops-agent"]
     build:
       context: .
-      dockerfile: ops-agent/Dockerfile
+      dockerfile: crates/ops-agent/Dockerfile
       args:
         MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.1}
         MODELPORT_SOURCE_REVISION: ${MODELPORT_SOURCE_REVISION:-unknown}

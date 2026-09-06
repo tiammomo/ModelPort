@@ -97,12 +97,12 @@ setup_cc_fallback() {
     export ZIG_BIN
   fi
 
-  if [[ -z "${CC_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/tools/zig-cc-wrapper.sh" ]]; then
-    export CC_x86_64_unknown_linux_gnu="$ROOT_DIR/tools/zig-cc-wrapper.sh"
+  if [[ -z "${CC_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/scripts/toolchain/zig-cc-wrapper.sh" ]]; then
+    export CC_x86_64_unknown_linux_gnu="$ROOT_DIR/scripts/toolchain/zig-cc-wrapper.sh"
   fi
 
-  if [[ -z "${CXX_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/tools/zig-cxx-wrapper.sh" ]]; then
-    export CXX_x86_64_unknown_linux_gnu="$ROOT_DIR/tools/zig-cxx-wrapper.sh"
+  if [[ -z "${CXX_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/scripts/toolchain/zig-cxx-wrapper.sh" ]]; then
+    export CXX_x86_64_unknown_linux_gnu="$ROOT_DIR/scripts/toolchain/zig-cxx-wrapper.sh"
   fi
 }
 

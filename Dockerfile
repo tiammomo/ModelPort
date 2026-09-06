@@ -17,11 +17,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 COPY crates ./crates
-COPY ops-agent ./ops-agent
 # Embedded at compile time via include_str! (src/model_catalog.rs,
 # src/runtime_adapter.rs); a missing directory fails `cargo build`.
-COPY catalog ./catalog
-COPY schemas ./schemas
+COPY resources ./resources
 
 RUN cargo build --release --locked -p model-port
 

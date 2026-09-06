@@ -13,8 +13,8 @@ categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [workspace]
-members = [".", "crates/ops-protocol", "ops-agent"]
-default-members = [".", "crates/ops-protocol", "ops-agent"]
+members = [".", "crates/ops-protocol", "crates/ops-agent"]
+default-members = [".", "crates/ops-protocol", "crates/ops-agent"]
 resolver = "3"
 
 [profile.release]

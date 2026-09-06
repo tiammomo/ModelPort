@@ -17,7 +17,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 COPY crates ./crates
-COPY ops-agent ./ops-agent
 
 RUN cargo build --release --locked -p modelport-ops-agent
 

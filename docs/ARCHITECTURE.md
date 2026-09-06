@@ -505,7 +505,7 @@ upstream outcome.
 - Upstream error redaction covers common secret fields and token patterns; it is
   defense in depth, not a reason to log raw secrets or payloads.
 
-See [Security Policy](../SECURITY.md) and [Operations](OPERATIONS.md).
+See [Security Policy](../.github/SECURITY.md) and [Operations](OPERATIONS.md).
 
 ## Deliberate Non-Goals
 
