@@ -97,23 +97,28 @@ setup_cc_fallback() {
     export ZIG_BIN
   fi
 
-  if [[ -z "${CC_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/tools/zig-cc-wrapper.sh" ]]; then
-    export CC_x86_64_unknown_linux_gnu="$ROOT_DIR/tools/zig-cc-wrapper.sh"
+  if [[ -z "${CC_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/scripts/toolchain/zig-cc-wrapper.sh" ]]; then
+    export CC_x86_64_unknown_linux_gnu="$ROOT_DIR/scripts/toolchain/zig-cc-wrapper.sh"
   fi
 
-  if [[ -z "${CXX_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/tools/zig-cxx-wrapper.sh" ]]; then
-    export CXX_x86_64_unknown_linux_gnu="$ROOT_DIR/tools/zig-cxx-wrapper.sh"
+  if [[ -z "${CXX_x86_64_unknown_linux_gnu:-}" && -x "$ROOT_DIR/scripts/toolchain/zig-cxx-wrapper.sh" ]]; then
+    export CXX_x86_64_unknown_linux_gnu="$ROOT_DIR/scripts/toolchain/zig-cxx-wrapper.sh"
   fi
 }
 
 release_is_fresh() {
   [[ -x "$RELEASE_BIN" ]] || return 1
-  ! find \
+  local newer_input
+  newer_input="$(find \
     "$ROOT_DIR/src" \
+    "$ROOT_DIR/crates" \
+    "$ROOT_DIR/resources" \
+    "$ROOT_DIR/migrations" \
     "$ROOT_DIR/Cargo.toml" \
     "$ROOT_DIR/Cargo.lock" \
     "$ROOT_DIR/rust-toolchain.toml" \
-    -newer "$RELEASE_BIN" -print -quit | grep -q .
+    -newer "$RELEASE_BIN" -print -quit)" || return 1
+  [[ -z "$newer_input" ]]
 }
 
 wait_for_health() {

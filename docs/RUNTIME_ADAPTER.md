@@ -8,10 +8,10 @@ reconciler, or mutation endpoint.
 
 ## Contract Files
 
-- `schemas/runtime-adapter-capabilities-v1alpha1.schema.json` is the normative [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) document.
-- `schemas/runtime-adapter-compute-inventory-v1alpha1.schema.json` defines the normative response from `inventory.compute.list`.
+- `resources/schemas/runtime-adapter-capabilities-v1alpha1.schema.json` is the normative [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) document.
+- `resources/schemas/runtime-adapter-compute-inventory-v1alpha1.schema.json` defines the normative response from `inventory.compute.list`.
 - `src/runtime_adapter.rs` contains the matching public Rust types and semantic validators.
-- `fixtures/runtime-adapters/qwen-llama-cpp-*-v1alpha1.json` are reference fixtures; Qwen and llama.cpp are not special resource types.
+- `tests/fixtures/runtime-adapters/qwen-llama-cpp-*-v1alpha1.json` are reference fixtures; Qwen and llama.cpp are not special resource types.
 
 Validate the reference or another local document without contacting a runtime:
 

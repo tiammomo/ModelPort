@@ -367,9 +367,10 @@ struct CatalogProvider {
 fn catalog() -> &'static CatalogFile {
     static CATALOG: OnceLock<CatalogFile> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let parsed: CatalogFile =
-            serde_json::from_str(include_str!("../catalog/provider-adaptations-v1.json"))
-                .expect("embedded provider adaptation catalog must be valid JSON");
+        let parsed: CatalogFile = serde_json::from_str(include_str!(
+            "../resources/catalog/provider-adaptations-v1.json"
+        ))
+        .expect("embedded provider adaptation catalog must be valid JSON");
         assert_eq!(
             parsed.version, MODEL_ADAPTATION_CATALOG_VERSION,
             "embedded provider adaptation catalog version drift"

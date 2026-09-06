@@ -256,8 +256,8 @@ validate_config_examples() {
 }
 
 validate_runtime_adapter_examples() {
-  local capabilities="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
-  local compute_inventory="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json"
+  local capabilities="$ROOT_DIR/tests/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+  local compute_inventory="$ROOT_DIR/tests/fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json"
   local invalid="$CHECK_TMP_DIR/invalid-runtime-adapter-capabilities.json"
   local invalid_compute="$CHECK_TMP_DIR/invalid-runtime-adapter-compute-inventory.json"
 
@@ -303,6 +303,7 @@ main() {
   check_shell_syntax
   check_shell_lint
   run_check "checking Markdown links" node "$ROOT_DIR/scripts/check-doc-links.mjs"
+  run_check "checking lifecycle build freshness" node --test "$ROOT_DIR/tests/scripts/"*.test.mjs
   run_check "checking Rust formatting" cargo fmt --all -- --check
   run_check "running Rust tests" cargo test --locked --all-targets
   run_check "running Rust clippy" \

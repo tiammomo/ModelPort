@@ -7,7 +7,7 @@ provider-specific verification or future proposals.
 
 Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 Project decisions and contribution licensing are described in
-[GOVERNANCE.md](GOVERNANCE.md).
+[GOVERNANCE.md](../docs/project/GOVERNANCE.md).
 
 ## Development Setup
 
@@ -41,7 +41,7 @@ npm run build
 ```
 
 Full setup and the change-to-test matrix are in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+[docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
 ## Before A Pull Request
 
@@ -74,7 +74,7 @@ ordinary pull requests should prefer mock-backed checks.
 ## Code And Security Conventions
 
 - Preserve module boundaries described in
-  [Architecture](docs/ARCHITECTURE.md#backend-boundaries).
+  [Architecture](../docs/ARCHITECTURE.md#backend-boundaries).
 - Keep protocol conversion in adapters and provider quirks in explicit provider
   configuration.
 - Add tests for split SSE frames, errors after headers, Tool Use causality,

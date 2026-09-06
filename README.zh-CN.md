@@ -74,11 +74,14 @@ scripts/smoke-test.sh
 CIDR、安全 Cookie、CSRF 防护和控制台 API Key。不要提交 `.env`、Provider
 密钥、备份、Prompt、响应或原始敏感日志。
 
-请阅读[安全策略](SECURITY.md)、[隐私说明](PRIVACY.md)、
-[支持政策](SUPPORT.md)和[项目治理](GOVERNANCE.md)。ModelPort 是免费自托管
+请阅读[安全策略](.github/SECURITY.md)、[隐私说明](docs/project/PRIVACY.md)、
+[支持政策](.github/SUPPORT.md)和[项目治理](docs/project/GOVERNANCE.md)。ModelPort 是免费自托管
 软件；本项目不提供付费版本、托管服务或社区支持 SLA。
 
 ## 本地开发
+
+参见[开发指南与目录职责](docs/DEVELOPMENT.md#repository-map)。本地开发需要
+可连接的 PostgreSQL；开发脚本不会自动启动数据库。
 
 ```bash
 cp .env.example .env

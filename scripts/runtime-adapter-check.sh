@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-DOCUMENT_PATH="$ROOT_DIR/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+DOCUMENT_PATH="$ROOT_DIR/tests/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
 JSON=0
 
 usage() {

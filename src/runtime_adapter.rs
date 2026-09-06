@@ -15,9 +15,9 @@ pub const RUNTIME_ADAPTER_API_VERSION: &str = "runtime.modelport.io/v1alpha1";
 pub const RUNTIME_ADAPTER_CAPABILITIES_KIND: &str = "RuntimeAdapterCapabilities";
 pub const RUNTIME_ADAPTER_COMPUTE_INVENTORY_KIND: &str = "RuntimeAdapterComputeInventory";
 pub const RUNTIME_ADAPTER_CAPABILITIES_SCHEMA: &str =
-    include_str!("../schemas/runtime-adapter-capabilities-v1alpha1.schema.json");
+    include_str!("../resources/schemas/runtime-adapter-capabilities-v1alpha1.schema.json");
 pub const RUNTIME_ADAPTER_COMPUTE_INVENTORY_SCHEMA: &str =
-    include_str!("../schemas/runtime-adapter-compute-inventory-v1alpha1.schema.json");
+    include_str!("../resources/schemas/runtime-adapter-compute-inventory-v1alpha1.schema.json");
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -441,10 +441,12 @@ fn validate_compute_inventory_semantics(
 mod tests {
     use super::*;
 
-    const QWEN_FIXTURE: &str =
-        include_str!("../fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json");
-    const QWEN_COMPUTE_FIXTURE: &str =
-        include_str!("../fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json");
+    const QWEN_FIXTURE: &str = include_str!(
+        "../tests/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
+    );
+    const QWEN_COMPUTE_FIXTURE: &str = include_str!(
+        "../tests/fixtures/runtime-adapters/qwen-llama-cpp-compute-inventory-v1alpha1.json"
+    );
 
     #[test]
     fn validates_and_round_trips_the_qwen_reference_fixture() {

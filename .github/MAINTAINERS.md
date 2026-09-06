@@ -34,7 +34,7 @@ budget-capped workflow and must not run for forks.
 
 Issue forms and reviews must not request a complete `.env`, Provider key,
 session/client token, database backup, raw prompt/response, or unreviewed log.
-Security reports follow [SECURITY.md](../SECURITY.md), not a public issue.
+Security reports follow [SECURITY.md](SECURITY.md), not a public issue.
 
 ## Repository Controls
 

@@ -13,7 +13,7 @@ A model appearing in `/v1/models` proves neither account entitlement nor
 runtime compatibility.
 
 ModelPort also embeds a versioned adaptation catalog under
-`catalog/provider-adaptations-v1.json`. It records exact-model context/output
+`resources/catalog/provider-adaptations-v1.json`. It records exact-model context/output
 metadata, input modalities, tri-state Tool Use/reasoning capabilities,
 reasoning dialect/efforts, and replay constraints for the Providers ModelPort
 already exposes. This catalog is owned and reviewed in this repository; it is

@@ -191,4 +191,4 @@ adjustments; never rewrite older cost/usage rows to make totals align.
 Record the final version/digests, migration set, backup retained, acceptance
 results, maintenance duration, forced terminations, and every unreconciled
 request. Retain the rollback point for at least the latest Beta support window
-described in [Support](../SUPPORT.md).
+described in [Support](../.github/SUPPORT.md).

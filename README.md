@@ -83,8 +83,8 @@ proxy CIDRs, secure cookies, CSRF protection, and dashboard-issued API keys for
 shared use. Never commit `.env`, Provider keys, backups, prompts, responses, or
 raw sensitive logs.
 
-Read [Security](SECURITY.md), [Privacy](PRIVACY.md), [Support](SUPPORT.md), and
-[Governance](GOVERNANCE.md). ModelPort is free self-hosted software. The
+Read [Security](.github/SECURITY.md), [Privacy](docs/project/PRIVACY.md), [Support](.github/SUPPORT.md), and
+[Governance](docs/project/GOVERNANCE.md). ModelPort is free self-hosted software. The
 project provides no paid edition, hosted service, or community-support SLA.
 
 ## Development
@@ -92,6 +92,8 @@ project provides no paid edition, hosted service, or community-support SLA.
 The source-development path requires a reachable PostgreSQL instance; the
 development scripts do not start one. See [Development](docs/DEVELOPMENT.md)
 for a loopback-only disposable database command and the complete prerequisites.
+The [repository map](docs/DEVELOPMENT.md#repository-map) explains where code,
+resources, tests, and project policies belong.
 
 ```bash
 cp .env.example .env

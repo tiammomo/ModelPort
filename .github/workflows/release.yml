@@ -151,7 +151,7 @@ jobs:
             dockerfile: dashboard/Dockerfile
           - title: operations agent image
             image: modelport-ops-agent
-            dockerfile: ops-agent/Dockerfile
+            dockerfile: crates/ops-agent/Dockerfile
 
     steps:
       - name: Checkout release tag
