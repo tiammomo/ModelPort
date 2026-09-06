@@ -200,6 +200,9 @@ jobs:
       CUSTOM_OPENAI_BASE_URL: http://127.0.0.1:38084/v1
       CUSTOM_OPENAI_API_KEY: ci-custom-provider-key-with-sufficient-entropy
       CUSTOM_OPENAI_MODEL: ci-model
+      # Provider management tests use this approved catalog entry without
+      # contacting it. Every inference fixture still targets closed loopback.
+      DEEPSEEK_ANTHROPIC_AUTH_TOKEN: ci-deepseek-key-not-for-upstream
 
     steps:
       - name: Checkout
