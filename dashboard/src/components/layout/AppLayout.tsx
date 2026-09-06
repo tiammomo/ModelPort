@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
+import { SectionNavigation } from './SectionNavigation'
 import { CommandPalette } from '@/components/shared/CommandPalette'
 import { cn } from '@/lib/utils'
 import { Toaster } from 'sonner'
@@ -76,6 +77,7 @@ export function AppLayout() {
           className="flex-1 overflow-y-auto bg-muted/15 px-3 py-5 outline-none sm:px-4 md:py-6 lg:px-5 2xl:px-6"
         >
           <div className="mx-auto w-full max-w-[1920px]">
+            <SectionNavigation />
             <Outlet />
           </div>
         </main>

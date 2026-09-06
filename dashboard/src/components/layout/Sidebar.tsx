@@ -1,6 +1,6 @@
-import { NavLink, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useAppStore, useAuthStore } from '@/stores'
-import { NAV_SECTIONS, navItemsForRole } from '@/lib/constants'
+import { navGroupsForRole } from '@/lib/constants'
 import { api } from '@/lib/api-client'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
@@ -52,7 +52,7 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
   const role = useAuthStore((s) => s.currentUser?.role)
   const location = useLocation()
   const isCollapsed = mobile ? false : collapsed
-  const navItems = navItemsForRole(role)
+  const navItems = navGroupsForRole(role)
   const { data: liveness, isError: livenessError } = useQuery({
     queryKey: ['gateway-liveness'],
     queryFn: () => api.get<{ status: string }>('/livez'),
@@ -97,61 +97,31 @@ export function Sidebar({ onNavigate, mobile = false }: SidebarProps) {
         {/* Navigation */}
         <ScrollArea className="flex-1 py-3">
           <nav className="flex flex-col gap-3 px-2">
-            {NAV_SECTIONS.map((section) => {
-              const sectionItems = navItems.filter((item) => item.section === section)
-              if (sectionItems.length === 0) return null
-              return (
-                <div key={section} className="space-y-1">
-                  {!isCollapsed && (
-                    <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sidebar-foreground/40">
-                      {section}
-                    </p>
-                  )}
-                  {sectionItems.map((item) => {
-              const Icon = iconMap[item.icon]
-              const isActive =
-                location.pathname === item.path ||
-                (item.path !== '/dashboard' && location.pathname.startsWith(item.path))
-
+            {navItems.map((group) => {
+              const Icon = iconMap[group.icon]
+              const isActive = group.items.some((item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`))
               const link = (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
+                <Link
+                  key={group.path}
+                  to={group.path}
                   onClick={onNavigate}
+                  aria-current={isActive ? 'page' : undefined}
+                  aria-label={group.label}
                   className={cn(
-                    'group relative flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-[color,background-color] duration-150 before:absolute before:left-0 before:h-5 before:w-0.5 before:rounded-full before:bg-transparent before:transition-colors',
-                    isActive
-                      ? 'bg-sidebar-accent/85 text-sidebar-primary before:bg-sidebar-primary'
-                      : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+                    'group relative flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors',
+                    isActive ? 'bg-sidebar-accent/85 text-sidebar-primary' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
                   )}
                 >
-                  {Icon && (
-                    <Icon
-                      className={cn(
-                        'h-4 w-4 shrink-0 transition-colors',
-                        isActive ? 'text-sidebar-primary' : 'text-sidebar-foreground/50 group-hover:text-sidebar-foreground/80',
-                      )}
-                    />
-                  )}
-                  {!isCollapsed && <span>{item.label}</span>}
-                </NavLink>
+                  {Icon && <Icon className="h-4 w-4 shrink-0" />}
+                  {!isCollapsed && <span>{group.label}</span>}
+                </Link>
               )
-
-              if (isCollapsed) {
-                return (
-                  <Tooltip key={item.path}>
-                    <TooltipTrigger asChild>{link}</TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={8}>
-                      {item.label}
-                    </TooltipContent>
-                  </Tooltip>
-                )
-              }
-
-              return link
-                  })}
-                </div>
-              )
+              return isCollapsed ? (
+                <Tooltip key={group.path}>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={8}>{group.label}</TooltipContent>
+                </Tooltip>
+              ) : link
             })}
           </nav>
         </ScrollArea>
