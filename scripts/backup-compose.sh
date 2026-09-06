@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="${MODELPORT_COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
 BACKUP_DIR="${MODELPORT_BACKUP_DIR:-$ROOT_DIR/backups}"
 RETENTION_DAYS="${MODELPORT_BACKUP_RETENTION_DAYS:-14}"
 POSTGRES_IMAGE="${MODELPORT_BACKUP_POSTGRES_IMAGE:-postgres:18.4-alpine}"
@@ -17,6 +18,7 @@ Usage:
   scripts/backup-compose.sh upgrade-drill ARCHIVE
 
 Environment:
+  MODELPORT_COMPOSE_FILE          Deployment manifest (default: ./docker-compose.yml)
   MODELPORT_BACKUP_DIR             Destination directory (default: ./backups)
   MODELPORT_BACKUP_RETENTION_DAYS  Delete completed archives older than this (default: 14)
   MODELPORT_BACKUP_POSTGRES_IMAGE  Ephemeral restore/upgrade image (default: postgres:18.4-alpine)
@@ -181,37 +183,37 @@ extract_archive() {
 }
 
 verify_dump_catalog() {
-  docker compose -f "$ROOT_DIR/docker-compose.yml" exec -T postgres \
+  docker compose -f "$COMPOSE_FILE" exec -T postgres \
     pg_restore --list < "$STAGING_DIR/postgres.dump" >/dev/null
 }
 
 create_backup() {
   local timestamp final_archive temporary_archive
   local container_id image_id revision source_state postgres_container postgres_image postgres_version
-  docker compose -f "$ROOT_DIR/docker-compose.yml" ps --status running --services postgres \
+  docker compose -f "$COMPOSE_FILE" ps --status running --services postgres \
     | grep -qx postgres || die "Compose PostgreSQL service is not running"
 
   mkdir -p "$BACKUP_DIR"
   chmod 700 "$BACKUP_DIR"
   prepare_staging "$BACKUP_DIR"
 
-  docker compose -f "$ROOT_DIR/docker-compose.yml" exec -T postgres sh -c \
+  docker compose -f "$COMPOSE_FILE" exec -T postgres sh -c \
     'exec pg_dump --format=custom --no-owner --no-privileges --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
     > "$STAGING_DIR/postgres.dump"
   chmod 600 "$STAGING_DIR/postgres.dump"
   verify_dump_catalog
 
   container_id="$(
-    docker compose -f "$ROOT_DIR/docker-compose.yml" ps -q modelport
+    docker compose -f "$COMPOSE_FILE" ps -q modelport
   )"
   [[ -n "$container_id" ]] || die "Compose ModelPort service is not running"
   image_id="$(docker inspect "$container_id" --format '{{.Image}}')"
   revision="$(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"
   source_state="$(docker image inspect "$image_id" --format '{{index .Config.Labels "io.modelport.source-state"}}' 2>/dev/null || true)"
-  postgres_container="$(docker compose -f "$ROOT_DIR/docker-compose.yml" ps -q postgres)"
+  postgres_container="$(docker compose -f "$COMPOSE_FILE" ps -q postgres)"
   [[ -n "$postgres_container" ]] || die "Compose PostgreSQL service is not running"
   postgres_image="$(docker inspect "$postgres_container" --format '{{.Config.Image}}')"
-  postgres_version="$(docker compose -f "$ROOT_DIR/docker-compose.yml" exec -T postgres sh -c \
+  postgres_version="$(docker compose -f "$COMPOSE_FILE" exec -T postgres sh -c \
     'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --command="show server_version"')"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   python3 - "$STAGING_DIR/manifest.json" "$timestamp" "$(git -C "$ROOT_DIR" rev-parse HEAD)" "$image_id" "$revision" "$source_state" "$postgres_image" "$postgres_version" <<'PY'
