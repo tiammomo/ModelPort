@@ -122,11 +122,6 @@ check_linux_platform() {
   esac
 }
 
-is_placeholder_value() {
-  local value="${1:-}"
-  [[ -z "$value" || "$value" == replace-with-* || "$value" == *placeholder* ]]
-}
-
 check_required_secret() {
   local name="$1"
   local value="${!name:-}"
