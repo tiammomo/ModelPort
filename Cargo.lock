@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "model-port"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "async-stream",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "modelport-ops-agent"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "modelport-ops-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
