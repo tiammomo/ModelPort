@@ -170,6 +170,7 @@ jobs:
 
     permissions:
       contents: read
+      attestations: read
 
     services:
       postgres:
@@ -267,6 +268,36 @@ jobs:
           done
           sed -n '1,200p' "${RUNNER_TEMP}/modelport-e2e.log"
           exit 1
+
+      - name: Verify previous release rollback artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/modelport-rollback"
+          gh release download v0.1.1 --repo tiammomo/ModelPort \
+            --pattern model-port-v0.1.1-linux-amd64.tar.gz --pattern SHA256SUMS \
+            --dir "$RUNNER_TEMP/modelport-rollback"
+          cd "$RUNNER_TEMP/modelport-rollback"
+          sha256sum --check --ignore-missing SHA256SUMS
+          gh attestation verify model-port-v0.1.1-linux-amd64.tar.gz --repo tiammomo/ModelPort
+          tar -xzf model-port-v0.1.1-linux-amd64.tar.gz \
+            model-port-v0.1.1-linux-amd64/model-port
+
+      - name: Run isolated authentication, protocol and recovery acceptance
+        env:
+          MODELPORT_TEST_BINARY: ${{ github.workspace }}/target/debug/model-port
+          MODELPORT_ROLLBACK_TEST_BINARY: ${{ runner.temp }}/modelport-rollback/model-port-v0.1.1-linux-amd64/model-port
+          MODELPORT_ASSURANCE_OUTPUT_DIR: ${{ runner.temp }}/modelport-assurance
+        run: ./scripts/acceptance.sh --isolated
+
+      - name: Upload isolated acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: isolated-production-acceptance
+          path: ${{ runner.temp }}/modelport-assurance
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Run dashboard E2E
         run: npm --prefix dashboard run e2e

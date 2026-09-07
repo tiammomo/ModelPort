@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
+if [[ "${1:-}" == "--isolated" ]]; then
+  shift
+  [[ $# -eq 0 ]] || die "--isolated accepts no additional arguments"
+  exec "$ROOT_DIR/tests/runtime/run.sh"
+fi
+
 upstream=0
 case "${1:-}" in
   "")
@@ -14,11 +20,13 @@ case "${1:-}" in
     ;;
   -h|--help)
     cat <<'USAGE'
-Usage: scripts/acceptance.sh [--upstream]
+Usage: scripts/acceptance.sh [--isolated | --upstream]
 
 Runs a lightweight production acceptance check for personal and small-team deployments.
 Default mode does not call the upstream model provider.
 Use --upstream to also make one real /v1/messages request through the created API key.
+Use --isolated for signed OIDC, protocol, load and recovery tests with disposable
+PostgreSQL and loopback fixtures; no existing deployment or Provider is contacted.
 USAGE
     exit 0
     ;;

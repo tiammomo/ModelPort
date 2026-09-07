@@ -44,6 +44,12 @@ Linux/WSL2 中运行不产生真实模型请求的容量基线：
 ./scripts/capacity-acceptance.sh
 ```
 
+这条命令只验证准入规则。实际 HTTP、鉴权、流式、40 个独立用户的并发与恢复验收使用
+`scripts/acceptance.sh --isolated`；可设置 `MODELPORT_ASSURANCE_LOAD_SECONDS=60`
+进行 60 秒的分批持续运行。它使用隔离 PostgreSQL 和本地合成响应，不能作为真实 GPU、
+云模型吞吐或生产 RTO/RPO 的证明。实际部署所需证据统一见
+[投产验收](PRODUCTION.md#deployment-specific-evidence)。
+
 ## 第一阶段已经建立的保护
 
 ### 1. 数据库更新先检查

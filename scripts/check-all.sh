@@ -62,7 +62,7 @@ check_shell_lint() {
   while IFS= read -r -d '' file; do
     files+=("$file")
   done < <(
-    find "$ROOT_DIR/scripts" -type f -name '*.sh' -print0 | sort -z
+    find "$ROOT_DIR/scripts" "$ROOT_DIR/tests/runtime" -type f -name '*.sh' -print0 | sort -z
   )
 
   if command -v shellcheck >/dev/null 2>&1; then
