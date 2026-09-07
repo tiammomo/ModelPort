@@ -93,6 +93,34 @@ fn cli_deployment_preflight_requires_postgres_and_rejects_unsafe_enterprise_tls(
 }
 
 #[test]
+fn console_login_policy_rejects_lockout_and_password_assurance_bypass() {
+    for value in ["0", "false"] {
+        let output = run_config_validate(&[("MODELPORT_PASSWORD_LOGIN_ENABLED", value)]);
+        assert!(!output.status.success());
+        assert!(output_text(&output).contains("requires a configured OIDC provider"));
+    }
+    let invalid = run_config_validate(&[("MODELPORT_PASSWORD_LOGIN_ENABLED", "typo")]);
+    assert!(!invalid.status.success());
+    let oidc = [
+        ("MODELPORT_OIDC_ISSUER", "https://identity.example.com"),
+        ("MODELPORT_OIDC_CLIENT_ID", "modelport"),
+        (
+            "MODELPORT_OIDC_REDIRECT_URI",
+            "https://modelport.example.com/admin/auth/oidc/callback",
+        ),
+        ("MODELPORT_ADMIN_COOKIE_SECURE", "1"),
+        ("MODELPORT_OIDC_REQUIRED_ACR", "urn:modelport:assurance:mfa"),
+    ];
+    let bypass = run_config_validate(&oidc);
+    assert!(!bypass.status.success());
+    assert!(output_text(&bypass).contains("password login cannot bypass"));
+    let mut protected = oidc.to_vec();
+    protected.push(("MODELPORT_PASSWORD_LOGIN_ENABLED", "0"));
+    let output = run_config_validate(&protected);
+    assert!(output.status.success(), "{}", output_text(&output));
+}
+
+#[test]
 fn cli_deployment_preflight_enforces_the_enterprise_security_profile() {
     let missing_security = run_config_validate(&[
         ("MODELPORT_ENTERPRISE_MODE", "1"),

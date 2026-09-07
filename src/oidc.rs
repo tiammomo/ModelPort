@@ -93,6 +93,7 @@ type ReadyOidcClient = OidcClient<
 
 pub struct OidcService {
     config: Option<OidcConfig>,
+    password_enabled: bool,
     pending: Mutex<HashMap<[u8; 32], PendingAuthorization>>,
     metadata_cache: Mutex<Option<CachedMetadata>>,
     http_client: SecureHttpClient,
@@ -110,6 +111,7 @@ struct OidcConfig {
     username_claim: String,
     email_claim: String,
     allow_insecure_loopback: bool,
+    required_acr: Option<String>,
 }
 
 struct PendingAuthorization {
@@ -228,19 +230,22 @@ impl std::fmt::Debug for OidcService {
 impl OidcService {
     pub fn from_env() -> Result<Self, AppError> {
         let config = OidcConfig::from_env()?;
-        Self::new(config)
+        let password_enabled = password_login_enabled()?;
+        validate_login_policy(config.as_ref(), password_enabled)?;
+        Self::new(config, password_enabled)
     }
 
     pub fn validate_configuration() -> Result<(), AppError> {
-        OidcConfig::from_env().map(|_| ())
+        let config = OidcConfig::from_env()?;
+        validate_login_policy(config.as_ref(), password_login_enabled()?)
     }
 
     #[cfg(test)]
     pub fn disabled() -> Self {
-        Self::new(None).expect("disabled OIDC service should always initialize")
+        Self::new(None, true).expect("disabled OIDC service should always initialize")
     }
 
-    fn new(config: Option<OidcConfig>) -> Result<Self, AppError> {
+    fn new(config: Option<OidcConfig>, password_enabled: bool) -> Result<Self, AppError> {
         let allow_insecure_loopback = config
             .as_ref()
             .is_some_and(|config| config.allow_insecure_loopback);
@@ -251,6 +256,7 @@ impl OidcService {
             .map_err(|_| AppError::Config("failed to initialize OIDC HTTP client".to_owned()))?;
         Ok(Self {
             config,
+            password_enabled,
             pending: Mutex::new(HashMap::new()),
             metadata_cache: Mutex::new(None),
             http_client: SecureHttpClient {
@@ -263,7 +269,7 @@ impl OidcService {
 
     pub fn methods(&self) -> AuthenticationMethods {
         AuthenticationMethods {
-            password_enabled: true,
+            password_enabled: self.password_enabled,
             oidc: OidcMethod {
                 enabled: self.config.is_some(),
                 label: self
@@ -276,12 +282,26 @@ impl OidcService {
         }
     }
 
+    pub fn validate_console_access(&self, auth: &crate::auth::AuthStore) -> Result<(), AppError> {
+        if !self.password_enabled
+            && !self
+                .config
+                .as_ref()
+                .is_some_and(|config| auth.has_active_federated_admin(&config.issuer))
+        {
+            return Err(AppError::Config(
+                "SSO-only startup requires an active administrator already linked to this OIDC issuer; verify SSO and promote that identity before disabling password login".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn start(&self, return_to: Option<&str>) -> Result<OidcStart, OidcFlowError> {
         let config = self.config.as_ref().ok_or(OidcFlowError::Disabled)?;
         let return_to = validate_return_to(return_to.unwrap_or("/"))?;
         let client = self.ready_client(config).await?;
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-        let (authorization_url, csrf_state, nonce) = client
+        let mut authorization = client
             .authorize_url(
                 CoreAuthenticationFlow::AuthorizationCode,
                 CsrfToken::new_random,
@@ -289,8 +309,11 @@ impl OidcService {
             )
             .add_scope(Scope::new("profile".to_owned()))
             .add_scope(Scope::new("email".to_owned()))
-            .set_pkce_challenge(pkce_challenge)
-            .url();
+            .set_pkce_challenge(pkce_challenge);
+        if let Some(acr) = config.required_acr.as_deref() {
+            authorization = authorization.add_extra_param("acr_values", acr);
+        }
+        let (authorization_url, csrf_state, nonce) = authorization.url();
         let browser_flow = CsrfToken::new_random();
 
         self.insert_pending(
@@ -350,6 +373,11 @@ impl OidcService {
         }
 
         let claims_value = serde_json::to_value(claims).map_err(|_| OidcFlowError::InvalidToken)?;
+        if config.required_acr.as_deref().is_some_and(|required| {
+            claims_value.get("acr").and_then(Value::as_str) != Some(required)
+        }) {
+            return Err(OidcFlowError::InvalidToken);
+        }
         Ok(CompletedOidcLogin {
             issuer: config.issuer.clone(),
             subject: claims.subject().as_str().to_owned(),
@@ -497,10 +525,12 @@ impl OidcConfig {
         let client_id = env_optional("MODELPORT_OIDC_CLIENT_ID");
         let client_secret = env_optional("MODELPORT_OIDC_CLIENT_SECRET");
         let redirect_uri = env_optional("MODELPORT_OIDC_REDIRECT_URI");
+        let required_acr = env_optional("MODELPORT_OIDC_REQUIRED_ACR");
         let any_configured = issuer.is_some()
             || client_id.is_some()
             || client_secret.is_some()
-            || redirect_uri.is_some();
+            || redirect_uri.is_some()
+            || required_acr.is_some();
         if !any_configured {
             return Ok(None);
         }
@@ -565,6 +595,14 @@ impl OidcConfig {
             .unwrap_or_else(|| DEFAULT_EMAIL_CLAIM.to_owned());
         validate_claim_name(&username_claim, "MODELPORT_OIDC_USERNAME_CLAIM")?;
         validate_claim_name(&email_claim, "MODELPORT_OIDC_EMAIL_CLAIM")?;
+        if required_acr.as_ref().is_some_and(|acr| {
+            acr.len() > 256 || acr.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+        }) {
+            return Err(AppError::Config(
+                "MODELPORT_OIDC_REQUIRED_ACR must be one non-whitespace value of at most 256 bytes"
+                    .to_owned(),
+            ));
+        }
 
         Ok(Some(Self {
             issuer,
@@ -576,8 +614,36 @@ impl OidcConfig {
             username_claim,
             email_claim,
             allow_insecure_loopback,
+            required_acr,
         }))
     }
+}
+
+fn password_login_enabled() -> Result<bool, AppError> {
+    match env_optional("MODELPORT_PASSWORD_LOGIN_ENABLED").as_deref() {
+        None | Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON") => Ok(true),
+        Some("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF") => Ok(false),
+        Some(_) => Err(AppError::Config(
+            "MODELPORT_PASSWORD_LOGIN_ENABLED must be a boolean".to_owned(),
+        )),
+    }
+}
+
+fn validate_login_policy(
+    config: Option<&OidcConfig>,
+    password_enabled: bool,
+) -> Result<(), AppError> {
+    if !password_enabled && config.is_none() {
+        return Err(AppError::Config(
+            "disabling password login requires a configured OIDC provider".to_owned(),
+        ));
+    }
+    if password_enabled && config.is_some_and(|config| config.required_acr.is_some()) {
+        return Err(AppError::Config(
+            "MODELPORT_OIDC_REQUIRED_ACR requires MODELPORT_PASSWORD_LOGIN_ENABLED=0 so password login cannot bypass the assurance policy".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 impl<'c> AsyncHttpClient<'c> for SecureHttpClient {

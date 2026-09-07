@@ -89,6 +89,7 @@ pub(crate) async fn serve() -> Result<(), AppError> {
         retention_previews: Arc::new(RetentionPreviewStore::default()),
     };
 
+    state.oidc.validate_console_access(&state.auth)?;
     let listener = TcpListener::bind(bind_addr).await?;
     info!(
         %bind_addr,
