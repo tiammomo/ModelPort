@@ -6,36 +6,26 @@ network commands are in [Docker Compose](DOCKER.md); systemd is covered in
 
 ## Day-One Checks
 
-```bash
-scripts/config-validate.sh
-scripts/status.sh
-scripts/smoke-test.sh
-```
+Choose commands for the deployment you operate:
 
-When the service is not already healthy, `scripts/start.sh` reuses the release
-binary only when it is newer than the Rust sources, Cargo manifest/lockfile,
-and pinned toolchain file; otherwise it rebuilds with
-`cargo build --release --locked`. Use
-`MODELPORT_FORCE_BUILD=1 scripts/start.sh` to force a rebuild.
+| Deployment | Status | Recent gateway logs |
+| --- | --- | --- |
+| Docker Compose | `docker compose ps` | `docker compose logs --tail=80 modelport` |
+| systemd | `systemctl status modelport` | `journalctl -u modelport -n 80` |
+| Native source checkout | `scripts/dev.sh status` | `scripts/dev.sh logs` |
 
-`smoke-test.sh` checks liveness, authenticated diagnostics, and the model list.
-It does not call an upstream by default. A real call can cost money:
+For a non-default Compose manifest, add `-f "$MODELPORT_COMPOSE_FILE"` to
+Compose commands, as described in [Docker Compose](DOCKER.md). For native
+configuration and runtime diagnosis, use `scripts/dev.sh doctor`; startup,
+validation, rebuild behavior, and prerequisites live in
+[Development](DEVELOPMENT.md#backend).
 
-```bash
-scripts/smoke-test.sh --upstream
-```
+`scripts/smoke-test.sh` checks liveness, authenticated readiness, and the model
+list using the endpoint and credentials in the selected local environment.
+It makes no upstream calls by default; `--upstream` explicitly sends a real,
+potentially paid request. Health semantics are documented below.
 
 For a release or production trial, use [Production](PRODUCTION.md).
-
-`scripts/config-validate.sh` uses the same application and deployment preflight
-as server startup. Validation errors—including placeholders, broken
-provider/alias relationships, invalid or zero-valued non-zero guardrails,
-malformed PostgreSQL URLs/pool bounds, enterprise database/TLS policy, lease
-timing, trusted proxies, and allowed origins—also make the server refuse to
-start. Warnings remain visible in the service log but do not block startup.
-The command does not connect to PostgreSQL or prove that the configured root
-certificate and hostname are accepted; startup and authenticated `/readyz`
-cover reachability after the local preflight succeeds.
 
 ## Health Semantics
 
@@ -330,7 +320,7 @@ shared or production database.
 
 Safe maintenance sequence:
 
-1. Run `scripts/status.sh` and `scripts/doctor.sh`.
+1. Check deployment status and logs using [Day-One Checks](#day-one-checks).
 2. Create, verify, and restore-drill a backup.
 3. Export the request, usage, routing, and budget evidence required by policy.
 4. Apply only the reviewed retention/archive operation.

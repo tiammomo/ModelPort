@@ -89,28 +89,10 @@ project provides no paid edition, hosted service, or community-support SLA.
 
 ## Development
 
-The source-development path requires a reachable PostgreSQL instance; the
-development scripts do not start one. See [Development](docs/DEVELOPMENT.md)
-for a loopback-only disposable database command and the complete prerequisites.
-The [repository map](docs/DEVELOPMENT.md#repository-map) explains where code,
-resources, tests, and project policies belong.
-
-```bash
-cp .env.example .env
-cp config.example.toml config.toml
-# replace required placeholders
-scripts/start.sh
-
-cd dashboard
-npm ci
-npm run dev
-```
-
-Before submitting a change:
-
-```bash
-scripts/check-all.sh
-```
+Use the [development guide](docs/DEVELOPMENT.md) for the repository map,
+pinned tools, PostgreSQL setup, and frontend workflow. Native gateway commands
+share `scripts/dev.sh`; use `scripts/dev.sh help` to see the available actions.
+Before submitting a change, run `scripts/dev.sh check`.
 
 ## License
 

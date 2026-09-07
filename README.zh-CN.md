@@ -80,25 +80,9 @@ CIDR、安全 Cookie、CSRF 防护和控制台 API Key。不要提交 `.env`、P
 
 ## 本地开发
 
-参见[开发指南与目录职责](docs/DEVELOPMENT.md#repository-map)。本地开发需要
-可连接的 PostgreSQL；开发脚本不会自动启动数据库。
-
-```bash
-cp .env.example .env
-cp config.example.toml config.toml
-# 替换必填 placeholder
-scripts/start.sh
-
-cd dashboard
-npm ci
-npm run dev
-```
-
-提交变更前：
-
-```bash
-scripts/check-all.sh
-```
+[开发指南](docs/DEVELOPMENT.md)统一说明目录职责、工具版本、PostgreSQL 准备和
+前端开发流程。本地网关统一使用 `scripts/dev.sh`，运行 `scripts/dev.sh help`
+查看启动、停止、状态与排障命令；提交前运行 `scripts/dev.sh check`。
 
 ## 许可证
 

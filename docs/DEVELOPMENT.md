@@ -48,7 +48,7 @@ Before installing project dependencies, verify that the current shell resolves
 only Linux tools and matches the pinned versions:
 
 ```bash
-scripts/doctor.sh --development
+scripts/dev.sh doctor --development
 ```
 
 The check rejects Node/npm or other tools resolved from Windows-mounted
@@ -75,26 +75,41 @@ disposable database with `docker stop modelport-dev-postgres`.
 
 ```bash
 cp .env.example .env
+cp config.example.toml config.toml
 # replace every required placeholder
-scripts/config-validate.sh
+scripts/dev.sh validate
 scripts/dev.sh
 ```
 
-Background lifecycle:
+For daily source development, use one entry point:
 
-```bash
-scripts/start.sh
-scripts/status.sh
-scripts/restart.sh
-scripts/stop.sh
-```
+| Task | Command |
+| --- | --- |
+| Foreground gateway | `scripts/dev.sh` |
+| Background start / restart / stop | `scripts/dev.sh start`, `restart`, or `stop` |
+| Process and health summary | `scripts/dev.sh status` |
+| Recent gateway logs | `scripts/dev.sh logs` |
+| Configuration and runtime diagnosis | `scripts/dev.sh doctor` |
+| Complete repository checks | `scripts/dev.sh check` |
+| Rust-only checks | `scripts/dev.sh check --backend` |
+
+`scripts/dev.sh help` lists these commands without requiring local configuration
+or a toolchain. Commands resolve the checkout from the script location, so they
+also work when invoked by absolute path from another directory. The original
+`start.sh`, `stop.sh`, `restart.sh`, and `status.sh` forward to the same implementation.
+
+Native start/stop only manage binaries under this checkout's `target/debug/`
+or `target/release/`. A reused PID or another program listening on the same
+port is left alone. An existing unhealthy native process must be diagnosed or
+restarted explicitly. Use Compose or systemd to manage those deployments.
 
 The scripts keep PID/log files below `.modelport/` and never require committing
-the local `.env`. Before launching a stopped service, `scripts/start.sh` reuses
+the local `.env`. Before launching a stopped service, `scripts/dev.sh start` reuses
 `target/release/model-port` only when it is newer than `src/`, `crates/`,
 `resources/`, `migrations/`, `Cargo.toml`, `Cargo.lock`, and
-`rust-toolchain.toml`; missing inputs also invalidate the cache. Otherwise it rebuilds with
-`cargo build --release --locked`. `scripts/config-validate.sh` uses the same
+`rust-toolchain.toml`; missing inputs also invalidate the cache. Otherwise it
+rebuilds with
+`cargo build --release --locked --bin model-port`. `scripts/dev.sh validate` uses the same
 freshness helper. Set `MODELPORT_FORCE_BUILD=1` to bypass the cache explicitly.
 
 `model-port config validate` and normal server startup call the same application
@@ -130,7 +145,7 @@ references.
 Fast backend checks:
 
 ```bash
-scripts/check.sh
+scripts/dev.sh check --backend
 ```
 
 This runs `cargo fmt --all -- --check`, locked tests for all targets, and locked
@@ -148,8 +163,10 @@ The aggregate repository check also validates shell syntax, configuration
 examples, dashboard type/lint/unit/build, and Rust targets:
 
 ```bash
-scripts/check-all.sh
+scripts/dev.sh check
 ```
+
+### Dependency Audits
 
 CI additionally audits both locked dependency graphs. Run the same security
 gate locally after dependency changes:
@@ -157,8 +174,20 @@ gate locally after dependency changes:
 ```bash
 cargo install cargo-audit --locked --version 0.22.2
 cargo audit --deny warnings --file Cargo.lock
-npm --prefix dashboard audit --audit-level=low
+cargo install cargo-deny --locked --version 0.20.2
+cargo deny check
+node scripts/audit-dashboard.mjs
 ```
+
+`cargo audit` downloads the current RustSec advisory database, so this networked
+check is kept separate from the deterministic repository check script. Project
+exceptions live in `.cargo/audit.toml` and must document the exact dependency
+path, why the affected operation is unreachable, and the condition for removing
+the exception. `RUSTSEC-2023-0071` is currently limited to the transitive
+`openidconnect -> rsa` dependency: ModelPort verifies provider-signed ID tokens
+with public JWKs and does not perform the vulnerable RSA private-key operation.
+
+### Runtime And Deployment Checks
 
 Release-oriented backend images must be built with
 `scripts/build-container.sh`. It refuses uncommitted source and records the Git
@@ -170,14 +199,6 @@ The default build produces only gateway and Dashboard images. Add
 `--with-ops-agent` for the optional Agent; workspace tests and release jobs
 continue to cover all three workspace members.
 
-`cargo audit` downloads the current RustSec advisory database, so this networked
-check is kept separate from the deterministic repository check script. Project
-exceptions live in `.cargo/audit.toml` and must document the exact dependency
-path, why the affected operation is unreachable, and the condition for removing
-the exception. `RUSTSEC-2023-0071` is currently limited to the transitive
-`openidconnect -> rsa` dependency: ModelPort verifies provider-signed ID tokens
-with public JWKs and does not perform the vulnerable RSA private-key operation.
-
 Install the Playwright browser and OS dependencies using Playwright's supported
 installer for your host when needed, for example:
 
@@ -188,7 +209,7 @@ npx playwright install --with-deps chromium
 Runtime verification:
 
 ```bash
-scripts/doctor.sh
+scripts/dev.sh doctor
 scripts/smoke-test.sh
 scripts/acceptance.sh
 scripts/tool-use-acceptance.sh
@@ -212,39 +233,29 @@ and may incur cost. Use mock-backed Tool Use acceptance for routine adapter work
 
 ## Code Boundaries
 
-- HTTP route handlers should orchestrate, not absorb protocol conversion.
-- Keep provider-specific behavior behind provider configuration or adapters.
-- Do not log keys, authorization headers, prompts, raw multipart/base64 data, or
-  complete provider bodies.
-- Add regression tests for SSE splitting, Tool Use causality, errors after
-  headers, redirect policy, body limits, and secret redaction.
-- Treat API/README claims as tests: shipped, verified, and proposed must remain
-  distinct.
+Follow [Architecture](ARCHITECTURE.md#backend-boundaries) for module ownership
+and [Contributing](../.github/CONTRIBUTING.md#code-and-security-conventions)
+for code and security conventions. Keep existing protocol and persistence
+regression cases when separating a large module.
 
 ## Documentation Checks
 
-There is not yet a dedicated docs toolchain, so run these repository checks:
+Run the existing link checker after moving or editing documentation:
 
 ```bash
-# Show Markdown targets for manual/existence checking.
-rg -n '\]\([^)]+\)' -g '*.md' README*.md docs dashboard/README.md
-
-# Find stale source/config names and placeholders.
-rg -n 'src/database\.rs|gpt-4o|claude-sonnet-4-20250514|gemini-2\.5-flash' \
-  README*.md docs .env.example dashboard/README.md
-
-# Confirm documented options against scripts that provide a help mode.
-scripts/acceptance.sh --help
-scripts/bench.sh --help
-scripts/doctor.sh --help
-scripts/provider-matrix.sh --help
-scripts/tool-use-acceptance.sh --help
+node scripts/check-doc-links.mjs
 ```
 
-Also validate a minimal environment configuration and any shipped TOML example.
-Aliases in a full catalog must not be presented as a minimal copy/paste example
-when their providers are disabled.
+The complete repository check also validates configuration and Runtime Adapter
+examples. Check changed command examples against `--help` and keep the English
+and Chinese README paths aligned. Maintain one detailed procedure per topic;
+link to it from introductory and contribution pages.
 
-For English/Chinese entry pages, keep the same quick-start commands, endpoint
-names, safety warnings, and documentation links. Prefer links to one maintained
-reference over duplicating large default tables.
+## Local Build Cache
+
+`target/` is disposable build output. For disk pressure, first stop any active
+Cargo command, then remove only `target/debug/incremental/`. This preserves
+compiled dependencies and executables while reclaiming incremental compiler
+state. Subsequent source recompilation may be slower. `cargo clean` removes
+all build output and requires a full rebuild. Neither action removes `.env`,
+configuration, logs, or database volumes.
