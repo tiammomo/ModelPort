@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
+cd "$ROOT_DIR"
 
 DOCUMENT_PATH="$ROOT_DIR/tests/fixtures/runtime-adapters/qwen-llama-cpp-capabilities-v1alpha1.json"
 JSON=0

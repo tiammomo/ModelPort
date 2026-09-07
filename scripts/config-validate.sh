@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
+cd "$ROOT_DIR"
 
 load_env
 
@@ -21,4 +22,4 @@ if [[ "${MODELPORT_FORCE_BUILD:-0}" != "1" ]] && release_is_fresh; then
 fi
 
 setup_cc_fallback
-cargo run -- config validate
+cargo run --locked --bin model-port -- config validate

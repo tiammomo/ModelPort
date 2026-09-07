@@ -1,3 +1,4 @@
+import { Switch } from '@/components/ui/switch'
 import type { ReactNode } from 'react'
 import { CircleAlert } from 'lucide-react'
 import { Label } from '@/components/ui/label'
@@ -39,3 +40,21 @@ export function Field({
   )
 }
 
+export function SwitchRow({
+  label,
+  checked,
+  disabled,
+  onCheckedChange,
+}: {
+  label: string
+  checked: boolean
+  disabled?: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label className={cn('text-sm font-normal', disabled && 'text-muted-foreground')}>{label}</Label>
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} aria-label={label} />
+    </div>
+  )
+}

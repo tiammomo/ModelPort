@@ -18,18 +18,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { apiKeyExpiryState } from '@/features/api-keys/api-key-view'
 import {
-  CREDENTIAL_POOL_MODE_LABELS,
-  DEFAULT_CREDENTIAL_FORM,
   DEFAULT_PROVIDER_FORM,
   PROVIDER_OPERATIONAL_FILTERS,
-  credentialPayloadFromForm,
-  credentialToForm,
   defaultToolStreamingArguments,
   defaultToolUseForProviderForm,
   dependencyLabel,
   modelRouteTitle,
   providerDeleteBlockedFromError,
   providerDisplayTitle,
+  providerCredentialState,
   providerFilterCount,
   providerIdentity,
   providerInventoryGroups,
@@ -41,17 +38,16 @@ import {
   providerPayloadFromForm,
   providerRuntimeState,
   providerToForm,
-  type ProviderCredentialFormState,
   type ProviderFormState,
   type ProviderInventoryGroup,
   type ProviderOperationalFilter,
 } from '@/features/models/model-data'
 import { ModelAdaptationDialog } from '@/features/models/ModelAdaptationDialog'
-import { Field } from '@/features/models/ModelFormField'
+import { Field, SwitchRow } from '@/features/models/ModelFormField'
+import { ProviderCredentials } from '@/features/models/ProviderCredentials'
 import {
   providerReadiness,
   validateAliasForm,
-  validateCredentialForm,
   validateProviderForm,
   type ProviderReadinessLevel,
 } from '@/features/models/operator-state'
@@ -63,22 +59,17 @@ import {
   useCheckProviderBalance,
   useCreateAlias,
   useCreateProvider,
-  useCreateProviderCredential,
   useDeleteAlias,
   useDeleteProvider,
-  useDeleteProviderCredential,
   useDiscoverProviderModels,
   useNow,
   useProviders,
-  useSelectProviderCredential,
   useSetProviderDisabled,
   useSettings,
   useToggleModel,
   useUpdateDefaultModel,
   useUpdateDefaultProvider,
   useUpdateProvider,
-  useUpdateProviderCredential,
-  useUpdateProviderCredentialPoolMode,
   useUpdateProviderOrder,
 } from '@/hooks'
 import { PROVIDER_PROTOCOL_LABELS } from '@/lib/constants'
@@ -91,14 +82,12 @@ import {
   type ProviderTemplate,
 } from '@/lib/model-catalog'
 import { paginateItems } from '@/lib/pagination'
-import { cn, copyToClipboard, formatNumber, formatRelativeTime } from '@/lib/utils'
+import { cn, copyToClipboard, focusFirstInvalidDialogField, formatNumber, formatRelativeTime } from '@/lib/utils'
 import { useAuthStore } from '@/stores'
 import type {
 FidelityMode,
 MaxTokensField,
 Provider,
-ProviderCredential,
-ProviderCredentialPoolMode,
 ProviderDeleteBlocked,
 ProviderModelInventory,
 ProviderOnlineBalance,
@@ -129,7 +118,6 @@ import {
   Search,
   Settings,
   Trash2,
-  WalletCards,
 } from 'lucide-react'
 import { Fragment, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -199,11 +187,6 @@ export function ModelsPage() {
   const createProvider = useCreateProvider()
   const updateProvider = useUpdateProvider()
   const setProviderDisabled = useSetProviderDisabled()
-  const createProviderCredential = useCreateProviderCredential()
-  const updateProviderCredential = useUpdateProviderCredential()
-  const selectProviderCredential = useSelectProviderCredential()
-  const updateProviderCredentialPoolMode = useUpdateProviderCredentialPoolMode()
-  const deleteProviderCredential = useDeleteProviderCredential()
   const deleteProvider = useDeleteProvider()
   const toggleModel = useToggleModel()
   const bulkToggleModels = useBulkToggleModels()
@@ -220,17 +203,13 @@ export function ModelsPage() {
   const [showProviderDialog, setShowProviderDialog] = useState(false)
   const [aliasSubmitAttempted, setAliasSubmitAttempted] = useState(false)
   const [providerSubmitAttempted, setProviderSubmitAttempted] = useState(false)
-  const [credentialSubmitAttempted, setCredentialSubmitAttempted] = useState(false)
-  const [credentialDialogProvider, setCredentialDialogProvider] = useState<Provider | null>(null)
   const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null)
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
-  const [editingCredential, setEditingCredential] = useState<ProviderCredential | null>(null)
   const [editingModelAdaptation, setEditingModelAdaptation] = useState<{
     provider: Provider
     item: ProviderModelInventory
   } | null>(null)
   const [providerForm, setProviderForm] = useState<ProviderFormState>(DEFAULT_PROVIDER_FORM)
-  const [credentialForm, setCredentialForm] = useState<ProviderCredentialFormState>(DEFAULT_CREDENTIAL_FORM)
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
   const [deleteBlock, setDeleteBlock] = useState<ProviderDeleteBlocked | null>(null)
   const [deleteConfirmation, setDeleteConfirmation] = useState('')
@@ -244,11 +223,6 @@ export function ModelsPage() {
   const [aliasPageSize, setAliasPageSize] = useState(20)
   const [activeTab, setActiveTab] = useState('library')
   const [aliasDeleteTarget, setAliasDeleteTarget] = useState<string | null>(null)
-  const [credentialDeleteTarget, setCredentialDeleteTarget] = useState<{
-    provider: Provider
-    credential: ProviderCredential
-  } | null>(null)
-
   const configuredProviderIds = useMemo(() => new Set(providers.map((provider) => provider.id)), [providers])
   const defaultProvider = settings?.gateway.defaultProvider.trim() ?? ''
   const providerOrder = useMemo(
@@ -354,10 +328,6 @@ export function ModelsPage() {
       }
     : null
   const providerValidation = useMemo(() => validateProviderForm(providerForm), [providerForm])
-  const credentialValidation = useMemo(
-    () => validateCredentialForm(credentialForm, !editingCredential),
-    [credentialForm, editingCredential],
-  )
   const aliasValidation = useMemo(
     () => validateAliasForm(aliasForm.alias, aliasForm.target),
     [aliasForm.alias, aliasForm.target],
@@ -413,20 +383,6 @@ export function ModelsPage() {
     setProviderSubmitAttempted(false)
   }
 
-  const openCredentialDialog = (provider: Provider, credential?: ProviderCredential) => {
-    setCredentialDialogProvider(provider)
-    setEditingCredential(credential ?? null)
-    setCredentialForm(credentialToForm(provider, credential))
-    setCredentialSubmitAttempted(false)
-  }
-
-  const closeCredentialDialog = () => {
-    setCredentialDialogProvider(null)
-    setEditingCredential(null)
-    setCredentialForm(DEFAULT_CREDENTIAL_FORM)
-    setCredentialSubmitAttempted(false)
-  }
-
   const handleSubmitProvider = () => {
     setProviderSubmitAttempted(true)
     if (!providerValidation.valid) {
@@ -452,70 +408,11 @@ export function ModelsPage() {
     }
   }
 
-  const handleSubmitCredential = () => {
-    if (!credentialDialogProvider) return
-    setCredentialSubmitAttempted(true)
-    if (!credentialValidation.valid) {
-      toast.error('请先修正账号表单中的错误')
-      focusFirstInvalidDialogField()
-      return
-    }
-    const data = credentialPayloadFromForm(credentialForm, !editingCredential)
-    const options = {
-      onSuccess: () => {
-        toast.success(editingCredential
-          ? '账号引用已更新；如环境变量值有变化，请重启进程并重新测试'
-          : '账号引用已新增；注入环境变量、重启进程并重新测试后才会生效')
-        closeCredentialDialog()
-      },
-      onError: (error: unknown) => toast.error(error instanceof Error ? error.message : '保存账号失败'),
-    }
-
-    if (editingCredential) {
-      updateProviderCredential.mutate({
-        providerId: credentialDialogProvider.id,
-        credentialId: editingCredential.id,
-        data,
-      }, options)
-    } else {
-      createProviderCredential.mutate({
-        providerId: credentialDialogProvider.id,
-        data,
-      }, options)
-    }
-  }
-
   const handleSetProviderDisabled = (provider: Provider) => {
     const disabled = provider.status !== 'disabled'
     setProviderDisabled.mutate({ providerId: provider.id, disabled }, {
       onSuccess: () => toast.success(disabled ? `已禁用 ${provider.displayName}` : `已恢复 ${provider.displayName}`),
       onError: (error) => toast.error(error instanceof Error ? error.message : '更新供应商状态失败'),
-    })
-  }
-
-  const handleSelectProviderCredential = (provider: Provider, credentialId: string) => {
-    selectProviderCredential.mutate({ providerId: provider.id, credentialId }, {
-      onSuccess: () => toast.success(`已切换 ${provider.displayName} 账号`),
-      onError: (error) => toast.error(error instanceof Error ? error.message : '切换账号失败'),
-    })
-  }
-
-  const handleUpdateProviderCredentialPoolMode = (provider: Provider, mode: ProviderCredentialPoolMode) => {
-    updateProviderCredentialPoolMode.mutate({ providerId: provider.id, mode }, {
-      onSuccess: () => toast.success(`已更新 ${provider.displayName} 号池策略`),
-      onError: (error) => toast.error(error instanceof Error ? error.message : '更新号池策略失败'),
-    })
-  }
-
-  const handleDeleteProviderCredential = () => {
-    if (!credentialDeleteTarget) return
-    const { provider, credential } = credentialDeleteTarget
-    deleteProviderCredential.mutate({ providerId: provider.id, credentialId: credential.id }, {
-      onSuccess: () => {
-        toast.success(`已删除账号 ${credential.name}`)
-        setCredentialDeleteTarget(null)
-      },
-      onError: (error) => toast.error(error instanceof Error ? error.message : '删除账号失败'),
     })
   }
 
@@ -1081,18 +978,12 @@ export function ModelsPage() {
                 }}
                 onCopy={copyText}
                 onAlias={openAliasDialog}
-                onCreateCredential={() => openCredentialDialog(provider)}
-                onEditCredential={(credential) => openCredentialDialog(provider, credential)}
-                onSelectCredential={(credentialId) => handleSelectProviderCredential(provider, credentialId)}
-                onUpdateCredentialPoolMode={(mode) => handleUpdateProviderCredentialPoolMode(provider, mode)}
-                onDeleteCredential={(credential) => setCredentialDeleteTarget({ provider, credential })}
                 onToggleModel={(model, enabled) => handleToggleProviderModel(provider, model, enabled)}
                 onBulkToggleModels={(enabled) => handleBulkToggleProviderModels(provider, enabled)}
                 onSetDefaultModel={(model) => handleSetDefaultModel(provider, model)}
                 onEditModel={(item) => setEditingModelAdaptation({ provider, item })}
                 modelMutationKey={modelMutationKey}
                 bulkModelMutation={bulkModelMutation}
-                credentialBusy={selectProviderCredential.isPending || updateProviderCredentialPoolMode.isPending || deleteProviderCredential.isPending}
                 defaultModelMutationKey={defaultModelMutationKey}
               />
             ))}
@@ -1712,87 +1603,6 @@ export function ModelsPage() {
         onClose={() => setEditingModelAdaptation(null)}
       />}
 
-      <Dialog open={!!credentialDialogProvider} onOpenChange={(open) => { if (!open) closeCredentialDialog() }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editingCredential ? '编辑上游账号' : '新增上游账号'}</DialogTitle>
-            <DialogDescription>
-              账号只保存环境变量名；真实 API Key 仍放在 .env、容器 Secret 或系统环境变量中。保存后需重启并重新运行 Provider 连接测试。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            {!editingCredential && (
-              <Field label="账号 ID" htmlFor="credential-id" error={credentialSubmitAttempted ? credentialValidation.errors.id : undefined} description="用于账号池选择，创建后不可修改。" required>
-                <Input
-                  id="credential-id"
-                  value={credentialForm.id}
-                  onChange={(event) => setCredentialForm({ ...credentialForm, id: event.target.value.toLowerCase() })}
-                  placeholder="例如: account-a"
-                  aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.id)}
-                  aria-required="true"
-                />
-              </Field>
-            )}
-            <Field label="显示名称" htmlFor="credential-name" error={credentialSubmitAttempted ? credentialValidation.errors.name : undefined} required>
-              <Input
-                id="credential-name"
-                value={credentialForm.name}
-                onChange={(event) => setCredentialForm({ ...credentialForm, name: event.target.value })}
-                placeholder="例如: Mimo 主账号"
-                aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.name)}
-                aria-required="true"
-              />
-            </Field>
-            <Field label="API Key 环境变量" htmlFor="credential-api-key-env" error={credentialSubmitAttempted ? credentialValidation.errors.apiKeyEnv : undefined} description="只保存变量名；新增变量后必须重启进程才能读取。" required>
-              <Input
-                id="credential-api-key-env"
-                value={credentialForm.apiKeyEnv}
-                onChange={(event) => setCredentialForm({ ...credentialForm, apiKeyEnv: event.target.value })}
-                placeholder="例如: MIMO_OPENAI_API_KEY_ALT"
-                aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.apiKeyEnv)}
-                aria-required="true"
-              />
-            </Field>
-            <Field label="账号专用 Base URL" htmlFor="credential-base-url" error={credentialSubmitAttempted ? credentialValidation.errors.baseUrl : undefined} description="可选；用于同一 Provider 下的不同上游入口，留空沿用 Provider。">
-              <Input
-                id="credential-base-url"
-                value={credentialForm.baseUrl}
-                onChange={(event) => setCredentialForm({ ...credentialForm, baseUrl: event.target.value })}
-                placeholder="可选，不填则沿用供应商 Base URL"
-                aria-invalid={credentialSubmitAttempted && Boolean(credentialValidation.errors.baseUrl)}
-              />
-            </Field>
-            <div className="rounded-md border bg-muted/20 p-3">
-              <SwitchRow
-                label="启用账号"
-                checked={credentialForm.status === 'active'}
-                onCheckedChange={(checked) => setCredentialForm({ ...credentialForm, status: checked ? 'active' : 'disabled' })}
-              />
-            </div>
-            {credentialValidation.warnings.length > 0 && (
-              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100" role="status">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{credentialValidation.warnings.join(' ')}</span>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={closeCredentialDialog}>取消</Button>
-            <Button
-              onClick={handleSubmitCredential}
-              disabled={
-                createProviderCredential.isPending
-                || updateProviderCredential.isPending
-              }
-            >
-              {createProviderCredential.isPending || updateProviderCredential.isPending
-                ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />保存中</>
-                : editingCredential ? '保存账号' : '新增账号'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog open={!!deleteTarget} onOpenChange={(open) => {
         if (!open) {
           setDeleteTarget(null)
@@ -1865,29 +1675,6 @@ export function ModelsPage() {
                 检查依赖并删除
               </Button>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!credentialDeleteTarget} onOpenChange={(open) => { if (!open) setCredentialDeleteTarget(null) }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>删除上游账号</DialogTitle>
-            <DialogDescription>账号配置和健康记录会删除；真实环境变量不会被修改。</DialogDescription>
-          </DialogHeader>
-          <div className="rounded-md border bg-muted/30 p-3 text-sm">
-            <p className="font-medium">{credentialDeleteTarget?.credential.name}</p>
-            <p className="mt-1 font-mono text-xs text-muted-foreground">{credentialDeleteTarget?.credential.apiKeyEnv}</p>
-            {credentialDeleteTarget?.credential.active && (
-              <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">这是当前账号；删除后系统会选择其他可用账号，若没有候选则 Provider 可能不可路由。</p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCredentialDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDeleteProviderCredential} disabled={deleteProviderCredential.isPending}>
-              {deleteProviderCredential.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              删除账号
-            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1991,7 +1778,7 @@ function ProviderRoutingOverview({
   onOpenRouting: () => void
 }) {
   const credentialReady = defaultProvider
-    ? defaultProvider.hasApiKey || !defaultProvider.apiKeyRequired
+    ? providerCredentialState(defaultProvider).credentialReady
     : false
 
   return (
@@ -2126,18 +1913,12 @@ function ProviderCard({
   onDelete,
   onCopy,
   onAlias,
-  onCreateCredential,
-  onEditCredential,
-  onSelectCredential,
-  onUpdateCredentialPoolMode,
-  onDeleteCredential,
   onToggleModel,
   onBulkToggleModels,
   onSetDefaultModel,
   onEditModel,
   modelMutationKey,
   bulkModelMutation,
-  credentialBusy,
   defaultModelMutationKey,
 }: {
   provider: Provider
@@ -2156,24 +1937,15 @@ function ProviderCard({
   onDelete: () => void
   onCopy: (value: string) => Promise<void>
   onAlias: (alias?: string, target?: string) => void
-  onCreateCredential: () => void
-  onEditCredential: (credential: ProviderCredential) => void
-  onSelectCredential: (credentialId: string) => void
-  onUpdateCredentialPoolMode: (mode: ProviderCredentialPoolMode) => void
-  onDeleteCredential: (credential: ProviderCredential) => void
   onToggleModel: (model: string, enabled: boolean) => void
   onBulkToggleModels: (enabled: boolean) => void
   onSetDefaultModel: (model: string) => void
   onEditModel: (item: ProviderModelInventory) => void
   modelMutationKey: string | null
   bulkModelMutation: { providerId: string; enabled: boolean } | null
-  credentialBusy: boolean
   defaultModelMutationKey: string | null
 }) {
-  const credentials = provider.credentials ?? []
-  const credentialReady = provider.hasApiKey
-    || !provider.apiKeyRequired
-    || credentials.some((credential) => credential.status === 'active' && credential.hasApiKey)
+  const { credentials, credentialReady, activeCredential } = providerCredentialState(provider)
   const lastTest = provider.lastTest
   const connectionVerified = lastTest?.success === true
   const routeReady = provider.status === 'active'
@@ -2186,10 +1958,6 @@ function ProviderCard({
   const modelListId = `provider-models-${provider.id}`
   const identity = providerIdentity(provider)
   const displayTitle = providerDisplayTitle(provider)
-  const activeCredential = credentials.find((credential) => credential.active)
-    ?? credentials.find((credential) => credential.id === provider.activeCredentialId)
-    ?? null
-  const credentialPoolMode = provider.credentialPoolMode ?? 'failover'
   const modelGroups = providerModelGroups(provider)
   const inventoryGroups = providerInventoryGroups(provider)
   const inventoryItems = providerInventoryItems(provider)
@@ -2290,183 +2058,13 @@ function ProviderCard({
           </div>
         )}
 
-        <div className="rounded-md border bg-muted/20 p-3">
-          <div className="mb-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-            <div>
-              <p className="text-sm font-medium">上游账号</p>
-              <p className="text-xs text-muted-foreground">
-                {credentials.length > 0 ? `${credentials.length} 个账号 · ${CREDENTIAL_POOL_MODE_LABELS[credentialPoolMode]}` : '默认凭证'}
-              </p>
-            </div>
-            <div className="flex min-w-0 items-center gap-2">
-              <Select
-                value={credentialPoolMode}
-                onValueChange={(value) => onUpdateCredentialPoolMode(value as ProviderCredentialPoolMode)}
-                disabled={!canManage || credentialBusy || credentials.length === 0}
-              >
-                <SelectTrigger className="h-9 min-w-0" aria-label={`${displayTitle} 账号池策略`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="manual">手动</SelectItem>
-                  <SelectItem value="failover">故障切换</SelectItem>
-                  <SelectItem value="round_robin">轮询</SelectItem>
-                </SelectContent>
-              </Select>
-              {canManage && <Button variant="outline" size="sm" onClick={onCreateCredential}>
-                <Plus className="h-3.5 w-3.5" />
-                新增
-              </Button>}
-            </div>
-          </div>
-          {provider.id === 'deepseek' && canManage && (
-            <div className="mb-3 rounded-md border bg-background/70 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-medium">DeepSeek 线上余额</p>
-                    {onlineBalance && (
-                      <Badge variant={onlineBalance.isAvailable ? 'success' : 'destructive'}>
-                        {onlineBalance.isAvailable ? '可调用' : '余额不足'}
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    实时只读查询；充值、退款与账单以 DeepSeek 控制台为准。
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onCheckBalance}
-                  disabled={checkingBalance || !credentialReady}
-                >
-                  {checkingBalance
-                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    : <WalletCards className="mr-2 h-4 w-4" />}
-                  {checkingBalance ? '查询中' : '查询余额'}
-                </Button>
-              </div>
-              {onlineBalance && (
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {onlineBalance.balanceInfos.map((balance) => (
-                    <div key={balance.currency} className="rounded-md bg-muted/40 px-3 py-2 text-xs">
-                      <p className="text-muted-foreground">{balance.currency} 可用总额</p>
-                      <p className="mt-1 font-mono text-base font-semibold text-foreground">
-                        {balance.totalBalance} {balance.currency}
-                      </p>
-                      <p className="mt-1 text-muted-foreground">
-                        赠金 {balance.grantedBalance} · 充值 {balance.toppedUpBalance}
-                      </p>
-                    </div>
-                  ))}
-                  <p className="self-end text-xs text-muted-foreground">
-                    最近查询：{formatRelativeTime(onlineBalance.checkedAt)}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-          {credentials.length === 0 ? (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <Badge variant={credentialReady ? 'success' : 'destructive'}>
-                {credentialReady ? '默认环境变量可用' : '缺少默认密钥'}
-              </Badge>
-              <code className="rounded bg-background px-2 py-1 text-xs">{provider.apiKeyEnv || '无需 API Key'}</code>
-            </div>
-          ) : (
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-              <Select
-                value={activeCredential?.id || provider.activeCredentialId || credentials[0]?.id}
-                onValueChange={onSelectCredential}
-                disabled={!canManage || credentialBusy}
-              >
-                <SelectTrigger aria-label={`${displayTitle} 当前账号`}>
-                  <SelectValue placeholder="选择账号" />
-                </SelectTrigger>
-                <SelectContent>
-                  {credentials.map((credential) => (
-                    <SelectItem key={credential.id} value={credential.id} disabled={credential.status === 'disabled'}>
-                      {credential.name} · {credential.apiKeyEnv}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="flex flex-wrap items-center gap-2">
-                {activeCredential && (
-                  <>
-                    <Badge variant={activeCredential.hasApiKey ? 'success' : 'destructive'}>
-                      {activeCredential.hasApiKey ? 'Key 可用' : 'Key 缺失'}
-                    </Badge>
-                    {canManage && <Button variant="outline" size="sm" onClick={() => onEditCredential(activeCredential)} disabled={credentialBusy}>
-                      <Pencil className="h-3.5 w-3.5" />
-                      编辑
-                    </Button>}
-                    {canManage && <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => onDeleteCredential(activeCredential)}
-                      disabled={credentialBusy}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      删除
-                    </Button>}
-                  </>
-                )}
-              </div>
-              {activeCredential && (
-                <div className="min-w-0 space-y-1 text-xs text-muted-foreground lg:col-span-2">
-                  <p className="truncate">
-                    环境变量：<code className="text-foreground">{activeCredential.apiKeyEnv}</code>
-                  </p>
-                  {activeCredential.baseUrl && (
-                    <p className="truncate">
-                      Base URL：<code className="text-foreground">{activeCredential.baseUrl}</code>
-                    </p>
-                  )}
-                </div>
-              )}
-              <div className="space-y-2 lg:col-span-2">
-                {credentials.map((credential) => {
-                  const health = credential.health
-                  const healthStatus = health?.status ?? (credential.hasApiKey ? 'healthy' : 'degraded')
-                  const credentialRechargeBadge = health?.rechargeRequired ? '等待充值' : null
-                  return (
-                    <div key={credential.id} className="grid gap-2 rounded-md border bg-background/70 px-3 py-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                      <div className="min-w-0">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <span className="truncate text-sm font-medium">{credential.name}</span>
-                          {credential.active && <Badge variant="outline">当前</Badge>}
-                          {credential.status === 'disabled' && <Badge variant="secondary">禁用</Badge>}
-                        </div>
-                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                          <code className="max-w-full truncate text-foreground">{credential.apiKeyEnv}</code>
-                          {health?.lastUsedAt && <span>最近 {formatRelativeTime(health.lastUsedAt)}</span>}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5 md:justify-end">
-                        <Badge variant={credential.hasApiKey ? 'success' : 'destructive'}>
-                          {credential.hasApiKey ? 'Key 可用' : 'Key 缺失'}
-                        </Badge>
-                        <Badge variant={credentialHealthVariant(healthStatus)}>
-                          {credentialHealthLabel(healthStatus)}
-                        </Badge>
-                        {credentialRechargeBadge && <Badge variant="warning">{credentialRechargeBadge}</Badge>}
-                        <span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
-                          {health?.requestsTotal ? `${formatNumber(health.requestsTotal)} 次 · ${Math.round(health.successRate)}%` : '暂无请求'}
-                        </span>
-                      </div>
-                      {health?.lastError && (
-                        <p className="line-clamp-2 text-xs text-muted-foreground md:col-span-2">{health.lastError}</p>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-        </div>
+        <ProviderCredentials
+          provider={provider}
+          canManage={canManage}
+          onlineBalance={onlineBalance}
+          checkingBalance={checkingBalance}
+          onCheckBalance={onCheckBalance}
+        />
 
         <div className="grid gap-2 sm:grid-cols-2">
           {canManage && <Button
@@ -2735,41 +2333,11 @@ function ProviderActivationState({
   )
 }
 
-function credentialHealthLabel(status: string) {
-  if (status === 'cooldown') return '冷却'
-  if (status === 'degraded') return '降级'
-  return '健康'
-}
-
-function credentialHealthVariant(status: string): 'success' | 'warning' {
-  if (status === 'cooldown' || status === 'degraded') return 'warning'
-  return 'success'
-}
-
 function FormSectionHeader({ title, description }: { title: string; description: string }) {
   return (
     <div className="border-b pb-2 md:col-span-2">
       <p className="text-sm font-semibold">{title}</p>
       <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-    </div>
-  )
-}
-
-function SwitchRow({
-  label,
-  checked,
-  disabled,
-  onCheckedChange,
-}: {
-  label: string
-  checked: boolean
-  disabled?: boolean
-  onCheckedChange: (checked: boolean) => void
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <Label className={cn('text-sm font-normal', disabled && 'text-muted-foreground')}>{label}</Label>
-      <Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} aria-label={label} />
     </div>
   )
 }
@@ -2789,10 +2357,4 @@ function toolStreamingArgumentsLabel(value: NonNullable<Provider['toolUse']>['st
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback
-}
-
-function focusFirstInvalidDialogField() {
-  window.requestAnimationFrame(() => {
-    document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus()
-  })
 }

@@ -106,3 +106,9 @@ export function debounce<T extends (...args: unknown[]) => unknown>(
     timer = setTimeout(() => fn(...args), ms)
   }
 }
+
+export function focusFirstInvalidDialogField() {
+  window.requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus()
+  })
+}

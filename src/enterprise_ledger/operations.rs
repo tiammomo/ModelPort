@@ -897,3 +897,277 @@ impl EnterpriseLedger {
         Ok(())
     }
 }
+
+fn validate_ops_observation(observation: &OpsObservation) -> Result<(), AppError> {
+    let bounded = [
+        ("eventKey", observation.event_key.as_str(), 240_usize),
+        ("detectorType", observation.detector_type.as_str(), 80),
+        ("title", observation.title.as_str(), 240),
+        ("summary", observation.summary.as_str(), 2_000),
+        (
+            "recoveryCriteria",
+            observation.recovery_criteria.as_str(),
+            1_000,
+        ),
+    ];
+    for (name, value, maximum) in bounded {
+        let length = value.chars().count();
+        if length == 0 || length > maximum {
+            return Err(AppError::InvalidRequest(format!(
+                "{name} must contain 1 to {maximum} characters"
+            )));
+        }
+    }
+    let allowed = match observation.event_key.as_str() {
+        "readiness:gateway" => {
+            observation.detector_type == "readiness_storage"
+                && matches!(observation.severity, OpsSeverity::Sev1 | OpsSeverity::Sev2)
+        }
+        "provider:availability" => {
+            observation.detector_type == "provider_health"
+                && matches!(observation.severity, OpsSeverity::Sev2 | OpsSeverity::Sev3)
+        }
+        "requests:failure-ratio" => {
+            observation.detector_type == "request_anomaly"
+                && matches!(observation.severity, OpsSeverity::Sev2 | OpsSeverity::Sev3)
+        }
+        "budget:capacity" => {
+            observation.detector_type == "budget_quota"
+                && matches!(observation.severity, OpsSeverity::Sev2 | OpsSeverity::Sev3)
+        }
+        "ledger:finalization-backlog" => {
+            observation.detector_type == "ledger_backlog"
+                && matches!(observation.severity, OpsSeverity::Sev2 | OpsSeverity::Sev3)
+        }
+        "change:verification" => {
+            observation.detector_type == "post_change_verification"
+                && observation.severity == OpsSeverity::Sev2
+        }
+        _ => false,
+    };
+    if !allowed {
+        return Err(AppError::Forbidden(
+            "observation is outside the versioned operations rule allowlist".to_owned(),
+        ));
+    }
+    if !observation.affected_scope.is_object() || !observation.evidence.is_object() {
+        return Err(AppError::InvalidRequest(
+            "affectedScope and evidence must be JSON objects".to_owned(),
+        ));
+    }
+    if serde_json::to_vec(&observation.evidence)?.len() > 32 * 1_024 {
+        return Err(AppError::InvalidRequest(
+            "incident evidence must not exceed 32 KiB".to_owned(),
+        ));
+    }
+    if serde_json::to_vec(&observation.affected_scope)?.len() > 8 * 1_024 {
+        return Err(AppError::InvalidRequest(
+            "incident affectedScope must not exceed 8 KiB".to_owned(),
+        ));
+    }
+    let now = u64::try_from(now_millis()).unwrap_or_default();
+    if observation.observed_at_ms == 0
+        || observation.observed_at_ms > now.saturating_add(5 * 60 * 1_000)
+    {
+        return Err(AppError::InvalidRequest(
+            "observedAtMs must be a current, non-zero timestamp".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ops_heartbeat(heartbeat: &OpsHeartbeat) -> Result<(), AppError> {
+    for (name, value, maximum) in [
+        ("instanceId", heartbeat.instance_id.as_str(), 160_usize),
+        ("agentVersion", heartbeat.agent_version.as_str(), 80),
+        ("ruleSetVersion", heartbeat.rule_set_version.as_str(), 80),
+    ] {
+        let length = value.chars().count();
+        if length == 0 || length > maximum {
+            return Err(AppError::InvalidRequest(format!(
+                "{name} must contain 1 to {maximum} characters"
+            )));
+        }
+    }
+    if heartbeat.selected_model.as_deref().is_some_and(|value| {
+        value.is_empty() || value.chars().count() > 320 || value.chars().any(char::is_control)
+    }) {
+        return Err(AppError::InvalidRequest(
+            "heartbeat selectedModel must contain 1 to 320 non-control characters".to_owned(),
+        ));
+    }
+    if !matches!(
+        heartbeat.model_status.as_str(),
+        "disabled" | "configured" | "missing_credential" | "error"
+    ) {
+        return Err(AppError::InvalidRequest(
+            "heartbeat modelStatus is unsupported".to_owned(),
+        ));
+    }
+    if !matches!(
+        heartbeat.mode.as_str(),
+        "disabled" | "replay" | "shadow" | "read_only"
+    ) {
+        return Err(AppError::InvalidRequest(
+            "agent mode must be disabled, replay, shadow, or read_only".to_owned(),
+        ));
+    }
+    if !(10..=3_600).contains(&heartbeat.interval_seconds) {
+        return Err(AppError::InvalidRequest(
+            "agent intervalSeconds must be between 10 and 3600".to_owned(),
+        ));
+    }
+    let now = u64::try_from(now_millis()).unwrap_or_default();
+    if heartbeat.observed_at_ms == 0
+        || heartbeat.observed_at_ms > now.saturating_add(5 * 60 * 1_000)
+    {
+        return Err(AppError::InvalidRequest(
+            "heartbeat observedAtMs must be a current, non-zero timestamp".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ops_actor(actor_id: &str, actor_name: &str) -> Result<(), AppError> {
+    if actor_id.is_empty()
+        || actor_name.is_empty()
+        || actor_id.chars().count() > 160
+        || actor_name.chars().count() > 160
+    {
+        return Err(AppError::InvalidRequest(
+            "operations actor identity is missing or too long".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ops_evidence_hash(value: &Value) -> Result<String, AppError> {
+    let encoded = serde_json::to_vec(value)?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+async fn fetch_ops_incident_row(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    incident_id: &str,
+) -> Result<PgRow, AppError> {
+    Ok(sqlx::query(
+        "SELECT *,
+            (EXTRACT(EPOCH FROM first_seen_at) * 1000)::bigint AS first_seen_at_ms,
+            (EXTRACT(EPOCH FROM last_seen_at) * 1000)::bigint AS last_seen_at_ms,
+            (EXTRACT(EPOCH FROM resolved_at) * 1000)::bigint AS resolved_at_ms
+         FROM modelport_ops_incidents WHERE incident_id = $1",
+    )
+    .bind(incident_id)
+    .fetch_one(&mut **transaction)
+    .await?)
+}
+
+fn ops_incident_summary_from_row(row: &PgRow) -> Result<OpsIncidentSummary, AppError> {
+    let severity: String = row.try_get("severity")?;
+    let status: String = row.try_get("status")?;
+    Ok(OpsIncidentSummary {
+        id: row.try_get("incident_id")?,
+        event_key: row.try_get("event_key")?,
+        detector_type: row.try_get("detector_type")?,
+        severity: parse_ops_severity(&severity)?,
+        status: parse_ops_status(&status)?,
+        title: row.try_get("title")?,
+        summary: row.try_get("summary")?,
+        affected_scope: row.try_get("affected_scope")?,
+        recovery_criteria: row.try_get("recovery_criteria")?,
+        first_seen_at_ms: nonnegative_u64(row.try_get("first_seen_at_ms")?),
+        last_seen_at_ms: nonnegative_u64(row.try_get("last_seen_at_ms")?),
+        resolved_at_ms: row
+            .try_get::<Option<i64>, _>("resolved_at_ms")?
+            .map(nonnegative_u64),
+        occurrence_count: nonnegative_u64(row.try_get("occurrence_count")?),
+    })
+}
+
+fn parse_ops_severity(value: &str) -> Result<OpsSeverity, AppError> {
+    match value {
+        "SEV-1" => Ok(OpsSeverity::Sev1),
+        "SEV-2" => Ok(OpsSeverity::Sev2),
+        "SEV-3" => Ok(OpsSeverity::Sev3),
+        "SEV-4" => Ok(OpsSeverity::Sev4),
+        _ => Err(AppError::Database(
+            "operations incident contains an invalid severity".to_owned(),
+        )),
+    }
+}
+
+fn parse_ops_status(value: &str) -> Result<OpsIncidentStatus, AppError> {
+    match value {
+        "open" => Ok(OpsIncidentStatus::Open),
+        "acknowledged" => Ok(OpsIncidentStatus::Acknowledged),
+        "mitigating" => Ok(OpsIncidentStatus::Mitigating),
+        "monitoring" => Ok(OpsIncidentStatus::Monitoring),
+        "resolved" => Ok(OpsIncidentStatus::Resolved),
+        "suppressed" => Ok(OpsIncidentStatus::Suppressed),
+        _ => Err(AppError::Database(
+            "operations incident contains an invalid status".to_owned(),
+        )),
+    }
+}
+
+fn highest_ops_severity(values: Vec<OpsSeverity>) -> Option<OpsSeverity> {
+    values.into_iter().min_by_key(|severity| match severity {
+        OpsSeverity::Sev1 => 1,
+        OpsSeverity::Sev2 => 2,
+        OpsSeverity::Sev3 => 3,
+        OpsSeverity::Sev4 => 4,
+    })
+}
+
+fn ops_severity_from_rank(value: i32) -> Option<OpsSeverity> {
+    match value {
+        1 => Some(OpsSeverity::Sev1),
+        2 => Some(OpsSeverity::Sev2),
+        3 => Some(OpsSeverity::Sev3),
+        4 => Some(OpsSeverity::Sev4),
+        _ => None,
+    }
+}
+
+fn ops_agent_summary(heartbeat: &OpsHeartbeat) -> OpsAgentSummary {
+    OpsAgentSummary {
+        instance_id: heartbeat.instance_id.clone(),
+        agent_version: heartbeat.agent_version.clone(),
+        mode: heartbeat.mode.clone(),
+        rule_set_version: heartbeat.rule_set_version.clone(),
+        observed_at_ms: heartbeat.observed_at_ms,
+        queue_depth: heartbeat.queue_depth,
+        interval_seconds: heartbeat.interval_seconds,
+        online: u64::try_from(now_millis())
+            .unwrap_or_default()
+            .saturating_sub(heartbeat.observed_at_ms)
+            <= heartbeat.interval_seconds.saturating_mul(3_000),
+        analysis_enabled: heartbeat.analysis_enabled,
+        selected_model: heartbeat.selected_model.clone(),
+        model_status: heartbeat.model_status.clone(),
+        model_last_success_at_ms: heartbeat.model_last_success_at_ms,
+    }
+}
+
+fn ops_agent_summary_from_row(row: &PgRow) -> Result<OpsAgentSummary, AppError> {
+    let observed_at_ms = nonnegative_u64(row.try_get("observed_at_ms")?);
+    Ok(OpsAgentSummary {
+        instance_id: row.try_get("instance_id")?,
+        agent_version: row.try_get("agent_version")?,
+        mode: row.try_get("mode")?,
+        rule_set_version: row.try_get("rule_set_version")?,
+        observed_at_ms,
+        queue_depth: nonnegative_u64(row.try_get("queue_depth")?),
+        interval_seconds: nonnegative_u64(row.try_get("interval_seconds")?),
+        online: u64::try_from(now_millis())
+            .unwrap_or_default()
+            .saturating_sub(observed_at_ms)
+            <= nonnegative_u64(row.try_get("interval_seconds")?).saturating_mul(3_000),
+        analysis_enabled: row.try_get("analysis_enabled")?,
+        selected_model: row.try_get("selected_model")?,
+        model_status: row.try_get("model_status")?,
+        model_last_success_at_ms: row
+            .try_get::<Option<i64>, _>("model_last_success_at_ms")?
+            .map(nonnegative_u64),
+    })
+}

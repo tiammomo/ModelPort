@@ -179,8 +179,11 @@ Tool Use verification evidence is maintained separately in the
 - `src/database.rs`: SQLx PostgreSQL URL/TLS policy, pool bounds, acquisition
   timeout, and credential-safe location rendering.
 - `src/enterprise_ledger.rs`: mandatory-tenant request/attempt lifecycle,
-  operational log, usage-policy aggregation, budget, and append-only audit
-  repository. PostgreSQL is required at runtime; memory is test-only.
+  usage admission, budget settlement, retention, and append-only audit writes.
+  `enterprise_ledger/reporting.rs` owns read-only request/log/dashboard/usage
+  views; `enterprise_ledger/operations.rs` owns optional incident queries,
+  observations, validation, and row mapping. PostgreSQL is required at runtime;
+  memory is test-only.
 - `src/exchange.rs`: typed client-protocol parsing, capability/fidelity checks,
   Provider rendering, and cross-protocol response mapping.
 - `src/stream_lifecycle.rs`: shared upstream terminal state and normalized

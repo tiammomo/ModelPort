@@ -1,5 +1,5 @@
 import type { Provider } from '@/types'
-import { parseList, type ProviderCredentialFormState, type ProviderFormState } from './model-data'
+import { parseList, providerCredentialState, type ProviderCredentialFormState, type ProviderFormState } from './model-data'
 
 export type ProviderReadinessLevel = 'ready' | 'attention' | 'blocked' | 'disabled'
 
@@ -32,9 +32,7 @@ export function providerReadiness(provider: Provider, isDefault = false): Provid
     }
   }
 
-  const credentialReady = provider.hasApiKey
-    || !provider.apiKeyRequired
-    || Boolean(provider.credentials?.some((credential) => credential.status === 'active' && credential.hasApiKey))
+  const { credentialReady } = providerCredentialState(provider)
   if (!credentialReady) {
     return {
       level: 'blocked',

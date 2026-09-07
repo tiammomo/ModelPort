@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ENV_FILE="${MODELPORT_ENV_FILE:-$ROOT_DIR/.env}"
 RUNTIME_DIR="${MODELPORT_RUNTIME_DIR:-$ROOT_DIR/.modelport}"
 PID_FILE="${MODELPORT_PID_FILE:-$RUNTIME_DIR/model-port.pid}"
@@ -62,26 +62,29 @@ pid_from_file() {
   [[ -f "$PID_FILE" ]] && tr -d '[:space:]' < "$PID_FILE"
 }
 
-project_pids() {
-  ps -eo pid=,comm=,args= | awk -v root="$ROOT_DIR" '
-    $2 == "model-port" && (index($0, root "/target/debug/model-port") || index($0, root "/target/release/model-port") || index($0, "./target/debug/model-port") || index($0, "./target/release/model-port")) {
-      print $1
-    }
-  '
+# Only native binaries built in this checkout belong to these lifecycle scripts.
+# A listening port or a stale PID file is not proof of process ownership.
+owned_pid() {
+  local pid="${1:-}"
+  local executable
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  executable="$(readlink "/proc/$pid/exe" 2>/dev/null)" || return 1
+  executable="${executable%" (deleted)"}"
+  [[ "$executable" == "$RELEASE_BIN" || "$executable" == "$DEBUG_BIN" ]]
 }
 
-listen_pids() {
-  local port="${MODELPORT_BIND##*:}"
-  ss -ltnp 2>/dev/null | awk -v port=":$port" '
-    index($4, port) && match($0, /pid=[0-9]+/) {
-      print substr($0, RSTART + 4, RLENGTH - 4)
-    }
-  '
+project_pids() {
+  local pid
+  while read -r pid; do
+    if owned_pid "$pid"; then
+      printf '%s\n' "$pid"
+    fi
+  done < <(ps -eo pid=,comm= | awk '$2 == "model-port" { print $1 }')
 }
 
 setup_cc_fallback() {
   if [[ -x /usr/bin/gcc || -x /usr/bin/clang ]]; then
-    return
+    return 0
   fi
 
   if [[ -z "${ZIG_BIN:-}" ]]; then
@@ -92,7 +95,7 @@ setup_cc_fallback() {
     else
       # Leave Cargo's compiler discovery untouched when Zig is unavailable.
       # It may still find a usable clang/cc outside the conventional paths.
-      return
+      return 0
     fi
     export ZIG_BIN
   fi
@@ -175,3 +178,14 @@ is_placeholder_key() {
   value="$(upstream_key_value)"
   is_placeholder_value "$value"
 }
+
+run_rust_checks() (
+  cd "$ROOT_DIR"
+  setup_cc_fallback
+  log "checking Rust formatting"
+  cargo fmt --all -- --check
+  log "running Rust tests"
+  cargo test --locked --all-targets
+  log "running Rust clippy"
+  cargo clippy --locked --all-targets --all-features -- -D warnings
+)

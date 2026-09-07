@@ -9,67 +9,17 @@ Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 Project decisions and contribution licensing are described in
 [GOVERNANCE.md](../docs/project/GOVERNANCE.md).
 
-## Development Setup
+## Development And Verification
 
-The CI baseline is Rust stable and Node.js 24. Install Rust with `rustfmt` and
-`clippy`, Node.js/npm, `curl`, and a native compiler toolchain. Docker Compose is
-needed for the complete stack.
+Follow [Development](../docs/DEVELOPMENT.md) for the pinned toolchain,
+PostgreSQL setup, and daily commands. Run `scripts/dev.sh check` before a pull
+request; `scripts/dev.sh check --backend` is the Rust-only subset.
 
-Confirm that the current Linux shell uses the pinned toolchain and does not
-resolve Windows-mounted Node/npm binaries:
-
-```bash
-scripts/doctor.sh --development
-```
-
-`scripts/install-deps-ubuntu.sh` installs only native helper packages; it does
-not install Rust, Node.js, npm, Docker, or Playwright browsers.
-
-```bash
-git clone git@github.com:tiammomo/ModelPort.git
-cd ModelPort
-cp .env.example .env
-cp config.example.toml config.toml
-# replace required placeholders; never commit this file
-scripts/config-validate.sh
-scripts/check.sh
-
-cd dashboard
-npm ci
-npm run lint
-npm run build
-```
-
-Full setup and the change-to-test matrix are in
-[docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md).
-
-## Before A Pull Request
-
-Run the aggregate check:
-
-```bash
-scripts/check-all.sh
-```
-
-If working incrementally, `scripts/check.sh` is the backend-only subset and
-`cd dashboard && npm run check` is the dashboard subset.
-Dependency updates must also pass `cargo audit --deny warnings --file Cargo.lock`,
-`cargo deny check`, and `node scripts/audit-dashboard.mjs`; CI runs these
-gates. Never add a broad or non-expiring audit exception.
-
-Then choose checks by risk:
-
-- dashboard behavior: affected Playwright specs or `npm run e2e`;
-- auth, API keys, teams, quota, or backup: `scripts/acceptance.sh`;
-- protocol, SSE, or Tool Use: relevant Rust tests and
-  `scripts/tool-use-acceptance.sh`;
-- provider behavior: `scripts/provider-matrix.sh --model provider:model` and
-  real Tool Use acceptance when certification is intended;
-- Docker/systemd/reverse proxy: build/install the deployment and run smoke
-  through the deployed origin.
-
-Real upstream checks can incur cost and must use your own local secrets. CI and
-ordinary pull requests should prefer mock-backed checks.
+Use the [change-to-test matrix](../docs/DEVELOPMENT.md#change-to-test-matrix)
+for additional checks. Dependency changes must also pass the
+[dependency audits](../docs/DEVELOPMENT.md#dependency-audits). Never add a broad
+or non-expiring audit exception. Ordinary verification uses synthetic data;
+real Provider certification requires explicitly intended, potentially paid calls.
 
 ## Code And Security Conventions
 
