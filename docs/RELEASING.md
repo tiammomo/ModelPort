@@ -19,13 +19,17 @@ with a 30-day upgrade window for the previous Beta. There is no LTS or SLA.
    CodeQL, dependency review, and Scorecard checks are green.
    Any temporary dashboard audit exception must still match its documented
    deployment exposure and remain unexpired.
-4. A clean PostgreSQL migration and the old-row rejection fixture have been
+4. A clean PostgreSQL migration and historical-row preservation have been
    verified.
 5. Documentation, configuration examples, Compose, systemd, and dashboard use
    the same versioned contract.
 6. Any real-Provider claim has a dated, secret-free, commit-bound evidence
    artifact. Routine release CI makes no paid Provider calls.
-7. The version in `deploy/release/compose.yml` matches the tag, and Linux x86_64
+7. The isolated OIDC/protocol/load/database-fault/restore gate passes, including
+   rollback to the attested v0.1.1 binary. Evidence is stored by CI as
+   `isolated-production-acceptance`; this does not replace deployment-specific
+   Provider, MFA, capacity and RTO/RPO evidence.
+8. The version in `deploy/release/compose.yml` matches the tag, and Linux x86_64
    install, safe stop, backup/restore, upgrade, and rollback acceptance passes.
 
 ## Version And Tag
@@ -65,8 +69,13 @@ The release workflow:
 - publishes versioned backend and dashboard images to GHCR;
 - publishes Linux x86_64 container SBOMs, signs immutable image digests with
   keyless Cosign, and attaches GitHub provenance/SBOM attestations;
-- records both immutable image references as Release assets;
+- records all three immutable image references as Release assets;
 - creates the GitHub Release from the existing tag.
+
+The tag must resolve to a commit on protected `main`. Publication first creates
+a draft and uploads all assets, checks the asset count, then publishes it under
+the repository's immutable-release policy. Do not delete or retag a failed
+published version; issue a new patch version after fixing its cause.
 
 Release workflows use least-privilege job permissions and pin third-party
 Actions to complete commit SHAs.
@@ -102,9 +111,10 @@ Application rollback and database rollback are separate decisions.
   backup until production acceptance passes.
 - Never point an older release at a database after a migration unless that
   downgrade path was explicitly tested.
-- The current clean operational baseline does not import old request/attempt or
-  JSON state. Roll back by restoring the previous database and application
-  together.
+- The operational migrations preserve historical request/attempt records and
+  versioned auth/control state. Roll back by restoring the reviewed database
+  snapshot and compatible application together; do not infer downgrade safety
+  from a successful forward migration.
 - The PostgreSQL 18 Compose baseline uses a new
   `modelport_modelport-postgres-18` volume and the versioned
   `/var/lib/postgresql/18/docker` data directory. It intentionally does not

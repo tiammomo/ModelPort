@@ -25,6 +25,14 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require a commit on protected main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.protected')" = true
 
       - name: Match tag to backend and dashboard versions
         run: |
@@ -50,6 +58,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      attestations: read
 
   binary:
     name: Build and attest binary
@@ -305,4 +314,10 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "$release_title" \
+            --draft \
             "${release_flags[@]}"
+          # All assets must be present before immutable publication locks them.
+          expected="$(find dist -maxdepth 1 -type f | wc -l)"
+          actual="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
+          test "$actual" -eq "$expected"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

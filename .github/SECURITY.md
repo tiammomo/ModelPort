@@ -12,10 +12,13 @@ Older snapshots may not receive backports unless a release notice says so.
 
 ## Dependency Audit Exceptions
 
-Rust and dashboard dependency audits fail CI. A temporary exception is allowed
-only in `dashboard/npm-audit-exceptions.json`, with an exact advisory/package
-pair, an expiry date, and a deployment-specific exposure analysis. The audit
-fails for every unlisted advisory, expired exception, or stale exception.
+Rust and dashboard dependency audits fail CI. Dashboard exceptions live in
+`dashboard/npm-audit-exceptions.json`, with an exact advisory/package pair,
+an expiry date, and a deployment-specific exposure analysis. Rust exceptions
+are recorded in `.cargo/audit.toml` and `deny.toml`; the current RSA exception
+covers OIDC public-key verification, with the dependency path and removal
+condition documented there. Unlisted advisories fail CI; dashboard exceptions
+also fail when expired or stale.
 Exceptions are risk acceptance records, not claims that an affected package is
 generally safe.
 
@@ -63,6 +66,11 @@ Do not place exploit details, provider keys, session tokens, backups, or a full
   process-local and reset on restart.
 - Session cookies are HttpOnly and SameSite=Lax. Set
   `MODELPORT_ADMIN_COOKIE_SECURE=1` whenever the dashboard is served over HTTPS.
+- `MODELPORT_PASSWORD_LOGIN_ENABLED=0` enforces OIDC-only login at the backend.
+  Startup requires an active administrator already linked to that issuer.
+  `MODELPORT_OIDC_REQUIRED_ACR` additionally requires an exact signed `acr`
+  claim and forbids password fallback. Configure the identity provider's MFA
+  policy for that class; ModelPort does not implement an MFA factor itself.
 - Dashboard writes require a session, `X-ModelPort-CSRF`, and an allowed
   Origin/Referer when present. `MODELPORT_ALLOWED_ORIGINS` extends that write
   check; it does not enable browser CORS.
@@ -91,10 +99,10 @@ Do not place exploit details, provider keys, session tokens, backups, or a full
   internal upstream; local/custom runtimes retain HTTP support for controlled
   local integration. The HTTP override does not disable private/metadata-IP
   protection.
-- Hostnames are not currently pinned or revalidated after DNS resolution. A
-  hostname that resolves to an internal address is outside the current SSRF
-  guard. Use outbound firewall rules or an allowlist when administrators are not
-  fully trusted.
+- Provider hostnames are resolved and every resulting address is checked before
+  egress. Validated addresses are pinned to the HTTP connection, environment
+  proxies are disabled, and private/metadata addresses require explicit policy.
+  Keep outbound firewall rules or an allowlist as an independent control.
 - Upstream HTTP redirects are disabled and every GET/POST/SSE handshake requires
   2xx. A 3xx is treated as an upstream failure and mapped to client-facing 502,
   not followed or exposed as a client redirect. Upstream non-stream bodies and
