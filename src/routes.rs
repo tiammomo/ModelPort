@@ -1013,6 +1013,11 @@ async fn admin_login(
     State(state): State<AppState>,
     Json(input): Json<LoginInput>,
 ) -> Result<Response, AppError> {
+    if !state.oidc.methods().password_enabled {
+        return Err(AppError::Forbidden(
+            "password login is disabled; use single sign-on".to_owned(),
+        ));
+    }
     let _permit = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         ADMIN_LOGIN_WORKERS.acquire(),

@@ -401,12 +401,14 @@ direct path and cannot govern its usage or balance.
 | `MODELPORT_ADMIN_EMAIL` | `admin@modelport.local` | First-admin bootstrap email. |
 | `MODELPORT_ADMIN_SESSION_TTL_SECONDS` | `43200` | Dashboard session lifetime. |
 | `MODELPORT_ADMIN_COOKIE_SECURE` | off | Add `Secure` to the dashboard cookie. Set to `1` behind HTTPS. |
+| `MODELPORT_PASSWORD_LOGIN_ENABLED` | `1` | Set to `0` to reject password login at the backend. Requires configured OIDC and an active administrator already linked to that issuer at startup. |
 | `MODELPORT_REQUIRE_DUAL_APPROVAL` | off; always on in enterprise mode | Require an approved change request from two distinct administrators before high-risk identity, Provider, model, or hard-budget writes. Small-Team mode otherwise relies on the administrator session, CSRF protection, and audit trail so a one-admin first install remains operable. |
 | `MODELPORT_OIDC_ISSUER` | unset | OIDC issuer discovery URL. OIDC console sign-in stays disabled when no OIDC values are configured. |
 | `MODELPORT_OIDC_CLIENT_ID` | unset | OIDC client identifier; required with issuer and redirect URI when OIDC is enabled. |
 | `MODELPORT_OIDC_CLIENT_SECRET` | unset | Optional confidential-client secret. Leave unset only when the identity provider accepts the supported public-client code exchange. |
 | `MODELPORT_OIDC_REDIRECT_URI` | unset | Exact external callback URL; its path must be `/admin/auth/oidc/callback` with no query or fragment. |
 | `MODELPORT_OIDC_LABEL` | `Single sign-on` | Login-button label. |
+| `MODELPORT_OIDC_REQUIRED_ACR` | unset | Exact signed OIDC authentication-class claim required for login. Sends `acr_values` and rejects missing/mismatched claims. Requires password login disabled; the identity provider must enforce the corresponding MFA policy. |
 | `MODELPORT_OIDC_AUTO_PROVISION` | off | Create missing ordinary users after a valid OIDC login. Keep off initially and pre-create users; it never grants administrator access. |
 | `MODELPORT_OIDC_USERNAME_CLAIM` | `preferred_username` | ID-token claim used as the ModelPort username. |
 | `MODELPORT_OIDC_EMAIL_CLAIM` | `email` | ID-token claim read as the ModelPort email. Initial linking/JIT requires the standard `email` claim plus `email_verified=true`; verification is not inherited by a custom claim name. |

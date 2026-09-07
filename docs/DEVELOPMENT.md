@@ -212,8 +212,15 @@ Runtime verification:
 scripts/dev.sh doctor
 scripts/smoke-test.sh
 scripts/acceptance.sh
+scripts/acceptance.sh --isolated
 scripts/tool-use-acceptance.sh
 ```
+
+`--isolated` creates a disposable PostgreSQL database and loopback identity/model
+servers, then exercises signed OIDC, both client protocols, bounded load and
+recovery. It needs Docker and Node and builds the current gateway with Cargo.
+See [production acceptance](PRODUCTION.md#automated-acceptance) for evidence and
+rollback options. It does not load the local deployment's environment file.
 
 Commands with `--upstream`, plus `provider-matrix.sh`, make real provider calls
 and may incur cost. Use mock-backed Tool Use acceptance for routine adapter work.
@@ -224,7 +231,7 @@ and may incur cost. Use mock-backed Tool Use acceptance for routine adapter work
 | --- | --- |
 | Protocol/request/response mapping | Rust tests, smoke; provider matrix for the affected provider. |
 | SSE or Tool Use | Rust stream tests and `tool-use-acceptance.sh`; real upstream only for certification. |
-| Auth/policy/quota | Rust tests and `acceptance.sh`. |
+| Auth/policy/quota | Rust tests, `acceptance.sh` and `acceptance.sh --isolated`. |
 | Provider catalog/defaults | Config validation, `/v1/models`, provider matrix, docs catalog update. |
 | Dashboard behavior | lint, build, affected Playwright specs. |
 | Docker/systemd/reverse proxy | Render/build the deployment and run smoke through the deployed origin. |

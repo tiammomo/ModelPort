@@ -25,6 +25,17 @@ Protect `main` with:
 - restricted force pushes and branch deletion;
 - signed commits and tags where the signing setup is available.
 
+The Beta repository enforces PRs, the five GitHub Actions checks (including both
+CodeQL languages), current branches and resolved conversations for administrators
+too. Force pushes and branch deletion are disabled. The independent-approval
+count is currently zero: a second release/security maintainer has not completed
+the continuity gate below. Do not describe this as enforced two-person review.
+Raise the required review count and enable CODEOWNERS review after that handoff.
+The active version-tag ruleset prohibits updating or deleting `v*` tags without
+a bypass. Private vulnerability reporting, automatic Dependabot security
+updates and immutable publication are enabled. Existing older Releases are not
+retroactively made immutable by that setting.
+
 Routine CI uses the pinned Rust and Node versions, locked dependencies,
 fmt/test/clippy, dashboard checks, shell syntax, examples, and documentation
 links through `scripts/check-all.sh`. Paid Provider tests require an explicit,

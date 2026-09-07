@@ -113,6 +113,37 @@ the user or to a server-side BFF.
 
 ## Operational Notes
 
+### Require SSO And A Verified Authentication Class
+
+First exercise OIDC with password login still enabled, bind an ordinary user
+through its verified email, and explicitly promote that linked identity to
+administrator. Verify the administrator's SSO access before setting:
+
+```env
+MODELPORT_PASSWORD_LOGIN_ENABLED=0
+# Use the exact class your identity provider defines and enforces with MFA.
+MODELPORT_OIDC_REQUIRED_ACR=urn:example:authentication:mfa
+```
+
+The backend refuses password login, including direct API requests. Startup
+fails if there is no active administrator linked to the configured issuer.
+When an authentication class is set, the authorization request includes
+`acr_values`; the returned, signature-verified ID token must contain that exact
+`acr` value. Missing or lower/different claims fail before session creation.
+This setting cannot be combined with enabled password login. An `acr` string
+has meaning only under the operator's verified identity-provider policy; it
+does not itself prove an MFA factor was configured correctly.
+
+`MODELPORT_PASSWORD_LOGIN_ENABLED` defaults to `1` for existing deployments.
+Changes require a restart. An operator with server configuration access can
+restore the bootstrap password path by setting it back to `1` and removing
+the required ACR setting, then restarting during an approved recovery window.
+Keep that access controlled and audit the recovery. No HTTP recovery bypass
+is provided. The login-method probe may offer a password retry during a network
+failure; the backend still enforces the configured policy.
+
+### Session And Provider Boundaries
+
 - OIDC authorization state and ModelPort console sessions are process-local in
   the current release. A restart invalidates in-progress login flows and active
   sessions.
@@ -130,6 +161,17 @@ the user or to a server-side BFF.
   target or Referer. The bundled Nginx configuration already does this.
 - Keep Provider API keys in the ModelPort server environment or an external
   secret manager. Never expose them to the browser.
+
+### Automated And Real-Provider Acceptance
+
+`scripts/acceptance.sh --isolated` runs a real authorization-code/PKCE exchange
+against a loopback identity provider with an ephemeral RSA signing key. It
+checks issuer, audience, nonce, expiry, signature, access-token hash, browser
+binding, replay rejection, disabled identities, and SSO/ACR enforcement.
+Use [Production](PRODUCTION.md#deployment-specific-evidence) to record the
+separate acceptance of your actual identity provider, MFA policy, account
+offboarding and operator recovery. Identity-provider single logout remains
+outside this release's supported contract.
 
 ## Troubleshooting
 

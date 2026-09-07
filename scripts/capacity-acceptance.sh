@@ -16,12 +16,13 @@ main() {
   cd "$ROOT_DIR"
   cargo test --locked governance::tests:: -- --nocapture
   printf '%s\n' \
-    '[modelport-capacity] 40-user admission baseline passed:' \
+    '[modelport-capacity] admission policy unit invariants passed (not a runtime load test):' \
     '  per-user local execution=1, queued=2' \
     '  global interactive queue=16' \
     '  local_first/balanced overflow threshold=5s' \
     '  local_strict timeout=60s with HTTP 429 Retry-After' \
-    '  batch queue=independent low priority'
+    '  batch queue=independent low priority' \
+    '  runtime concurrency/recovery: scripts/acceptance.sh --isolated'
 }
 
 main "$@"

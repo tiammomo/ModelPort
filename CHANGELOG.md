@@ -5,6 +5,33 @@ All notable ModelPort changes are recorded here. The project follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-07
+
+### Authentication and production acceptance
+
+- Add optional backend-enforced SSO-only login and exact signed OIDC `acr`
+  requirements. Reject password fallback when assurance is required and refuse
+  SSO-only startup without an active administrator linked to the configured
+  issuer. Existing deployments retain password login unless explicitly changed.
+- Add isolated signed OIDC/PKCE, Messages/Chat Completions Tool Use, distinct-user
+  concurrent streaming, cancellation, database interruption, restore and actual
+  v0.1.1 binary rollback acceptance to the PostgreSQL CI gate. Record synthetic
+  evidence separately from real Provider, GPU, IdP and production RTO/RPO claims.
+- Require release commits on protected main and upload draft assets before
+  immutable publication. Repository branch/tag protection, vulnerability
+  reporting and automated security-update settings are enabled separately.
+- Correct stale DNS-pinning, migration and production-readiness documentation.
+
+### Internal maintenance
+
+- Group repository policies, fixtures and deployment assets by ownership.
+- Separate ledger reporting and provider credential management, share
+  credential readiness and correct credential-pool readiness in route summaries.
+- Consolidate native lifecycle and checks in `scripts/dev.sh`, preserve legacy
+  entries, resolve commands from their checkout and stop only owned processes.
+- Include embedded resources and workspace inputs in native build freshness
+  checks; centralize repeated development and troubleshooting procedures.
+
 ## [0.1.1] - 2026-09-06
 
 ### Release correction
@@ -116,6 +143,7 @@ Back up PostgreSQL and run a restore drill before upgrading. Compose still uses
 the PostgreSQL 18 volume `modelport_modelport-postgres-18`; export any older
 volume before removing it.
 
-[Unreleased]: https://github.com/tiammomo/ModelPort/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/tiammomo/ModelPort/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.2
 [0.1.1]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tiammomo/ModelPort/tree/v0.1.0

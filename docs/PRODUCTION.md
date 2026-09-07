@@ -23,9 +23,10 @@ name of a fail-closed configuration switch, not an enterprise-readiness claim.
 
 The accepted forty-user hybrid-routing target is defined in
 [ADR-0005](adr/0005-forty-user-hybrid-routing-baseline.md). Its first phase
-still uses one ModelPort instance. Routing modes, per-user queue fairness,
-managed secrets, and active-active operation remain target behavior until their
-individual implementation and acceptance gates pass.
+still uses one ModelPort instance. Routing modes and per-user queue rules have
+implementation and automated acceptance. Managed-secret injection is operator
+owned, and active-active operation remains unsupported. These implemented
+rules do not establish a particular real-model throughput or latency.
 
 ## Go-Live Checklist
 
@@ -48,6 +49,30 @@ individual implementation and acceptance gates pass.
       set, rollback point, and incident contacts.
 
 ## Automated Acceptance
+
+Run the isolated runtime gate on a Linux host with Docker, Node and the pinned
+Rust toolchain:
+
+```bash
+MODELPORT_ASSURANCE_OUTPUT_DIR=/tmp/modelport-assurance scripts/acceptance.sh --isolated
+```
+
+It creates and removes its own PostgreSQL container, signs OIDC tokens with an
+ephemeral key, and uses only loopback synthetic model responses. It tests both
+Messages and Chat Completions text, live streams and complete Tool Use turns;
+40 distinct scoped users across 400 paced requests; stream cancellation and
+truncation; process restart; database interruption without unrecorded egress;
+and restored auth/control fingerprints plus ledger row counts. CI additionally
+verifies the checksum and GitHub attestation of v0.1.1, then runs that actual
+binary against the restored database for paired application rollback.
+
+Evidence contains commit/source state, latency distributions, rejection counts
+and recovery outcomes, with no credentials or conversation content. Set
+`MODELPORT_ASSURANCE_LOAD_SECONDS=60` for a longer paced run (1–120 seconds;
+the request budget remains 400). This synthetic gate validates gateway behavior,
+not production model capacity or production RTO/RPO. `capacity-acceptance.sh`
+separately checks policy unit invariants. Neither script certifies a real GPU
+or cloud Provider.
 
 Run configuration validation before starting or restarting the candidate:
 
@@ -110,6 +135,23 @@ Keep:
 
 A fixture-backed pass supports a controlled gateway trial. A dated Provider
 pass supports only the exact model, path, account conditions, and commit tested.
+
+## Deployment-Specific Evidence
+
+Keep the following as pending until the named deployment has produced and
+retained the evidence. Repository CI cannot complete these rows for an operator.
+
+| Gate | Required evidence |
+| --- | --- |
+| Identity | Actual issuer/client/callback and HTTPS proxy; enforced MFA class; disabled-user behavior; session lifetime; tested operator recovery. |
+| Provider protocols | Exact image digest, model, endpoint, account and date; both required client protocols; text, stream completion, tool-result continuation, failures and cancellation; an explicit request/cost cap. |
+| Capacity | Actual host/GPU/model and workload; 40 separate identities; sustained concurrency, semantic TTFT/P95, queue/rejection counts, CPU/memory/DB pool use; agreed pass thresholds. |
+| Recovery | Encrypted off-host backup, managed PostgreSQL TLS/PITR, timed restore and paired application rollback; operator-approved RTO/RPO. |
+| Operations | Alerts delivered to an assigned owner, backup operator and maintenance window; candidate digest recorded and post-deployment smoke passed. |
+
+Routine acceptance uses fixtures. Run paid upstream checks only for a named
+account/model with an explicit budget. A published Release or merged `main`
+commit does not establish which digest a production host is running.
 
 ## Reliability Objectives
 

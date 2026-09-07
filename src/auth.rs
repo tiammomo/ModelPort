@@ -770,6 +770,22 @@ impl AuthStore {
             .count()
     }
 
+    pub fn has_active_federated_admin(&self, issuer: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("auth lock poisoned")
+            .users
+            .values()
+            .any(|user| {
+                user.role == "admin"
+                    && user.status == "active"
+                    && user
+                        .federated_identities
+                        .iter()
+                        .any(|identity| identity.issuer == issuer)
+            })
+    }
+
     pub fn session_cookie(&self, token: &str) -> String {
         let mut cookie = format!(
             "{ADMIN_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
