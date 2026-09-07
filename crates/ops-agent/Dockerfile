@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG RUST_VERSION=1.96.0
-ARG MODELPORT_VERSION=0.1.2
+ARG MODELPORT_VERSION=0.1.3
 ARG MODELPORT_SOURCE_REVISION=unknown
 ARG MODELPORT_SOURCE_STATE=unknown
 ARG MODELPORT_BUILD_DATE=unknown
@@ -31,6 +31,7 @@ RUN useradd --system --home /nonexistent --shell /usr/sbin/nologin modelport-ops
   && chown -R modelport-ops:modelport-ops /var/lib/modelport-ops
 
 COPY --from=builder /app/target/release/modelport-ops-agent /usr/local/bin/modelport-ops-agent
+COPY --from=builder /app/Cargo.lock /usr/share/modelport/sbom/Cargo.lock
 
 ARG MODELPORT_SOURCE_REVISION
 ARG MODELPORT_SOURCE_STATE

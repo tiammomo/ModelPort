@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG MODELPORT_VERSION=0.1.2
+ARG MODELPORT_VERSION=0.1.3
 ARG MODELPORT_SOURCE_REVISION=unknown
 ARG MODELPORT_SOURCE_STATE=unknown
 ARG MODELPORT_BUILD_DATE=unknown
@@ -33,6 +33,7 @@ LABEL org.opencontainers.image.title="ModelPort Dashboard" \
 COPY deploy/docker/dashboard.nginx-main.conf /etc/nginx/nginx.conf
 COPY deploy/docker/dashboard.nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/package.json /app/package-lock.json /usr/share/modelport/sbom/
 
 USER nginx
 
