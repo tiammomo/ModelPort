@@ -5,6 +5,7 @@ import {
   defaultToolStreamingArguments,
   parseList,
   providerInventoryItems,
+  providerCredentialState,
   providerOrigin,
   providerPayloadFromForm,
   providerToForm,
@@ -126,5 +127,27 @@ describe('model feature data', () => {
     expect(dependencyLabel('defaultProvider')).toBe('默认 Provider')
     expect(dependencyLabel('providerOrder')).toBe('Provider 顺序')
     expect(dependencyLabel('apiKey')).toBe('API 密钥')
+  })
+})
+
+describe('provider credential availability', () => {
+  const credential = { id: 'pool-a', providerId: 'openai', name: 'Account A', apiKeyEnv: 'POOL_A_KEY', status: 'active' as const, active: false, hasApiKey: true }
+
+  it('recognizes a resolved pool credential when the default environment key is missing', () => {
+    const source = provider({ hasApiKey: false, credentials: [credential], activeCredentialId: credential.id })
+    expect(providerCredentialState(source).credentialReady).toBe(true)
+    expect(providerCredentialState(source).activeCredential?.id).toBe(credential.id)
+  })
+
+  it('ignores disabled or unresolved pool credentials for readiness', () => {
+    expect(providerCredentialState(provider({ hasApiKey: false, credentials: [{ ...credential, status: 'disabled' }] })).credentialReady).toBe(false)
+    expect(providerCredentialState(provider({ hasApiKey: false, credentials: [{ ...credential, hasApiKey: false }] })).credentialReady).toBe(false)
+    expect(providerCredentialState(provider({ hasApiKey: false, apiKeyRequired: false })).credentialReady).toBe(true)
+  })
+
+  it('keeps the runtime active credential ahead of the configured fallback', () => {
+    const active = { ...credential, id: 'pool-b', active: true }
+    const source = provider({ credentials: [credential, active], activeCredentialId: credential.id })
+    expect(providerCredentialState(source).activeCredential?.id).toBe(active.id)
   })
 })

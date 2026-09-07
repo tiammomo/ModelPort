@@ -506,3 +506,16 @@ export function dependencyLabel(type: string): string {
   if (type === 'route') return '路由配置'
   return type
 }
+
+export function providerCredentialState(provider: Provider) {
+  const credentials = provider.credentials ?? []
+  return {
+    credentials,
+    credentialReady: provider.hasApiKey || !provider.apiKeyRequired
+      || credentials.some((credential) => credential.status === 'active' && credential.hasApiKey),
+    activeCredential: credentials.find((credential) => credential.active)
+      ?? credentials.find((credential) => credential.id === provider.activeCredentialId)
+      ?? null,
+    credentialPoolMode: provider.credentialPoolMode ?? 'failover',
+  }
+}

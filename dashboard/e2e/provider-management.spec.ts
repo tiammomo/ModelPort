@@ -55,7 +55,7 @@ test.describe('provider management', () => {
     await expect(card.getByText('已禁用')).toHaveCount(0)
   })
 
-  test('exposes credential pool controls on provider cards', async ({ page }) => {
+  test('validates, creates, edits and deletes credentials on provider cards', async ({ page }) => {
     const suffix = Date.now().toString(36)
     const providerId = 'deepseek'
     const credentialId = `e2e_pool_${suffix}`
@@ -70,6 +70,9 @@ test.describe('provider management', () => {
     try {
       await card.getByRole('button', { name: '新增' }).click()
       const credentialDialog = page.getByRole('dialog')
+      await credentialDialog.getByRole('button', { name: '新增账号' }).click()
+      await expect(credentialDialog.locator('#credential-id')).toHaveAttribute('aria-invalid', 'true')
+      await expect(credentialDialog.locator('#credential-id')).toBeFocused()
       await credentialDialog.getByPlaceholder('例如: account-a').fill(credentialId)
       await credentialDialog.getByPlaceholder('例如: Mimo 主账号').fill('Pool Account A')
       await credentialDialog.getByPlaceholder('例如: MIMO_OPENAI_API_KEY_ALT').fill(`E2E_POOL_KEY_${suffix.toUpperCase()}`)
@@ -83,6 +86,20 @@ test.describe('provider management', () => {
       await card.getByRole('combobox').first().click()
       await page.getByRole('option', { name: '轮询' }).click()
       await expect(card).toContainText('轮询')
+
+      await card.getByRole('button', { name: '编辑上游账号 Pool Account A' }).click()
+      const editDialog = page.getByRole('dialog')
+      await expect(editDialog.locator('#credential-id')).toHaveCount(0)
+      await editDialog.locator('#credential-name').fill('Pool Account Updated')
+      await editDialog.getByRole('button', { name: '保存账号' }).click()
+      await expect(editDialog).not.toBeVisible()
+      await expect(card).toContainText('Pool Account Updated')
+
+      await card.getByRole('button', { name: '删除上游账号 Pool Account Updated' }).click()
+      await page.getByRole('dialog').getByRole('button', { name: '删除账号' }).click()
+      await expect(page.getByRole('dialog')).not.toBeVisible()
+      await expect(card).not.toContainText('Pool Account Updated')
+      await expect(card).toContainText('默认凭证')
     } finally {
       await page.request.delete(
         `/admin/providers/${providerId}/credentials/${encodeURIComponent(credentialId)}`,
