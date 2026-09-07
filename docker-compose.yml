@@ -33,7 +33,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.2}
+        MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.3}
         MODELPORT_SOURCE_REVISION: ${MODELPORT_SOURCE_REVISION:-unknown}
         MODELPORT_SOURCE_STATE: ${MODELPORT_SOURCE_STATE:-unknown}
         MODELPORT_BUILD_DATE: ${MODELPORT_BUILD_DATE:-unknown}
@@ -99,7 +99,7 @@ services:
       context: .
       dockerfile: dashboard/Dockerfile
       args:
-        MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.2}
+        MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.3}
         MODELPORT_SOURCE_REVISION: ${MODELPORT_SOURCE_REVISION:-unknown}
         MODELPORT_SOURCE_STATE: ${MODELPORT_SOURCE_STATE:-unknown}
         MODELPORT_BUILD_DATE: ${MODELPORT_BUILD_DATE:-unknown}
@@ -129,7 +129,7 @@ services:
       context: .
       dockerfile: crates/ops-agent/Dockerfile
       args:
-        MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.2}
+        MODELPORT_VERSION: ${MODELPORT_VERSION:-0.1.3}
         MODELPORT_SOURCE_REVISION: ${MODELPORT_SOURCE_REVISION:-unknown}
         MODELPORT_SOURCE_STATE: ${MODELPORT_SOURCE_STATE:-unknown}
         MODELPORT_BUILD_DATE: ${MODELPORT_BUILD_DATE:-unknown}

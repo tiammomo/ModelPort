@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG RUST_VERSION=1.96.0
-ARG MODELPORT_VERSION=0.1.2
+ARG MODELPORT_VERSION=0.1.3
 ARG MODELPORT_SOURCE_REVISION=unknown
 ARG MODELPORT_SOURCE_STATE=unknown
 ARG MODELPORT_BUILD_DATE=unknown
@@ -34,6 +34,7 @@ RUN mkdir -p /data /config \
   && chown -R modelport:modelport /data /config
 
 COPY --from=builder /app/target/release/model-port /usr/local/bin/model-port
+COPY --from=builder /app/Cargo.lock /usr/share/modelport/sbom/Cargo.lock
 
 # Keep source metadata after dependency and binary layers so a new commit label
 # does not invalidate the slow apt or Rust build cache.

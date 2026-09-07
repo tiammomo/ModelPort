@@ -66,11 +66,21 @@ The release workflow:
 - builds the Linux amd64 backend archive;
 - emits SHA-256 checksums and an SPDX JSON SBOM;
 - creates GitHub build-provenance and SBOM attestations;
-- publishes versioned backend and dashboard images to GHCR;
+- publishes versioned gateway, dashboard and Operations Agent images to GHCR;
 - publishes Linux x86_64 container SBOMs, signs immutable image digests with
   keyless Cosign, and attaches GitHub provenance/SBOM attestations;
 - records all three immutable image references as Release assets;
 - creates the GitHub Release from the existing tag.
+
+Runtime images retain their locked application dependency metadata under
+`/usr/share/modelport/sbom/`, outside the dashboard's served directory. Container
+SBOM verification requires Cargo or npm package entries as well as the scanner's
+system package inventory. The pinned Syft scanner explicitly adds its Cargo/npm
+[lockfile catalogers](https://oss.anchore.com/docs/guides/sbom/catalogers/), which
+are not enabled by the default image scan. Lockfile entries describe build inputs, including
+workspace/build dependencies; they do not prove each package is reachable in
+the running service. The v0.1.2 and earlier container SBOMs lack this application
+inventory; use v0.1.3 or newer for the corrected container evidence.
 
 The tag must resolve to a commit on protected `main`. Publication first creates
 a draft and uploads all assets, checks the asset count, then publishes it under

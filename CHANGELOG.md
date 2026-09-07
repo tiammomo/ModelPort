@@ -5,6 +5,17 @@ All notable ModelPort changes are recorded here. The project follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-07
+
+### Release correction
+
+- Include locked Rust and npm application dependency metadata in runtime
+  images, outside the dashboard's web root. Container SPDX inventories now
+  include application dependencies alongside operating-system packages.
+- Fail release publication if a container SBOM lacks the expected Cargo/npm
+  entries. Earlier container SBOMs covered operating-system packages only;
+  their artifacts and tags remain unchanged.
+
 ## [0.1.2] - 2026-09-07
 
 ### Authentication and production acceptance
@@ -143,7 +154,8 @@ Back up PostgreSQL and run a restore drill before upgrading. Compose still uses
 the PostgreSQL 18 volume `modelport_modelport-postgres-18`; export any older
 volume before removing it.
 
-[Unreleased]: https://github.com/tiammomo/ModelPort/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/tiammomo/ModelPort/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.3
 [0.1.2]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.2
 [0.1.1]: https://github.com/tiammomo/ModelPort/releases/tag/v0.1.1
 [0.1.0]: https://github.com/tiammomo/ModelPort/tree/v0.1.0
