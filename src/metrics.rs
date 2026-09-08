@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::control::UsageEstimate;
@@ -54,6 +54,7 @@ struct MetricsInner {
     messages: BTreeMap<MessageKey, MessageCounterSet>,
     rejections: BTreeMap<RejectionKey, u64>,
     ledger_operations: BTreeMap<String, LedgerOperationMetrics>,
+    runtime_adapter_collections: BTreeMap<String, RuntimeAdapterCollectionMetrics>,
     routing_decisions: BTreeMap<RoutingDecisionKey, u64>,
     routing_shadow_disagreements_total: u64,
     reconciled_requests_total: u64,
@@ -95,6 +96,14 @@ struct UsageCounterSet {
 struct LedgerOperationMetrics {
     failures_total: u64,
     degraded: bool,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeAdapterCollectionMetrics {
+    successes_total: u64,
+    failures_total: BTreeMap<String, u64>,
+    last_attempt_timestamp_seconds: u64,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -206,6 +215,33 @@ impl Metrics {
         metrics.degraded = !success;
         if !success {
             metrics.failures_total = metrics.failures_total.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn record_runtime_adapter_collection(
+        &self,
+        adapter_id: &str,
+        result: Result<(), &'static str>,
+    ) {
+        let mut inner = self.inner.lock().expect("metrics lock poisoned");
+        let metrics = inner
+            .runtime_adapter_collections
+            .entry(adapter_id.to_owned())
+            .or_default();
+        metrics.last_attempt_timestamp_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        match result {
+            Ok(()) => {
+                metrics.successes_total = metrics.successes_total.saturating_add(1);
+                metrics.last_error = None;
+            }
+            Err(error) => {
+                let failures = metrics.failures_total.entry(error.to_owned()).or_default();
+                *failures = failures.saturating_add(1);
+                metrics.last_error = Some(error.to_owned());
+            }
         }
     }
 
@@ -411,6 +447,33 @@ impl Metrics {
             "modelport_ledger_reconciled_attempts_total {}\n",
             inner.reconciled_attempts_total
         ));
+        output.push('\n');
+
+        output.push_str("# HELP modelport_runtime_adapter_collection_successes_total Successful Runtime Adapter Compute collection attempts.\n");
+        output.push_str("# TYPE modelport_runtime_adapter_collection_successes_total counter\n");
+        output.push_str("# HELP modelport_runtime_adapter_collection_failures_total Failed Runtime Adapter Compute collection attempts by bounded error class.\n");
+        output.push_str("# TYPE modelport_runtime_adapter_collection_failures_total counter\n");
+        output.push_str("# HELP modelport_runtime_adapter_collection_last_attempt_timestamp_seconds Unix timestamp of the latest Runtime Adapter collection attempt.\n");
+        output.push_str(
+            "# TYPE modelport_runtime_adapter_collection_last_attempt_timestamp_seconds gauge\n",
+        );
+        for (adapter_id, metrics) in &inner.runtime_adapter_collections {
+            let adapter_id = escape_label_value(adapter_id);
+            output.push_str(&format!(
+                "modelport_runtime_adapter_collection_successes_total{{adapter_id=\"{adapter_id}\"}} {}\n",
+                metrics.successes_total
+            ));
+            for (error, count) in &metrics.failures_total {
+                output.push_str(&format!(
+                    "modelport_runtime_adapter_collection_failures_total{{adapter_id=\"{adapter_id}\",error=\"{}\"}} {count}\n",
+                    escape_label_value(error)
+                ));
+            }
+            output.push_str(&format!(
+                "modelport_runtime_adapter_collection_last_attempt_timestamp_seconds{{adapter_id=\"{adapter_id}\"}} {}\n",
+                metrics.last_attempt_timestamp_seconds
+            ));
+        }
 
         output
     }
@@ -558,6 +621,8 @@ mod tests {
         metrics.record_rejection("messages", "validation", "invalid_request");
         metrics.record_ledger_operation("request_finalization", false);
         metrics.record_reconciliation(2, 3);
+        metrics.record_runtime_adapter_collection("edge-1", Err("transport"));
+        metrics.record_runtime_adapter_collection("edge-1", Ok(()));
         metrics.record_routing_decision("shadow", "balanced", "mimo", true);
         metrics.record_message(
             MessageMetricLabels {
@@ -627,6 +692,12 @@ mod tests {
         ));
         assert!(rendered.contains("modelport_ledger_reconciled_requests_total 2"));
         assert!(rendered.contains("modelport_ledger_reconciled_attempts_total 3"));
+        assert!(rendered.contains(
+            r#"modelport_runtime_adapter_collection_successes_total{adapter_id="edge-1"} 1"#
+        ));
+        assert!(rendered.contains(
+            r#"modelport_runtime_adapter_collection_failures_total{adapter_id="edge-1",error="transport"} 1"#
+        ));
         assert!(rendered.contains(
             r#"modelport_routing_decisions_total{mode="shadow",profile="balanced",provider="mimo"} 1"#
         ));

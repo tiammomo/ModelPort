@@ -1,5 +1,3 @@
-#![allow(dead_code)] // The scheduler/admin integration follows this reviewed storage slice.
-
 use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -36,6 +34,7 @@ pub(crate) enum RuntimeComputeSnapshotWrite {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // Read by the staged admin API after Issue #29.
 pub(crate) enum RuntimeComputeFreshness {
     Fresh,
     Stale,
@@ -43,6 +42,7 @@ pub(crate) enum RuntimeComputeFreshness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Read by the staged admin API after Issue #29.
 pub(crate) struct RuntimeComputeInventoryState {
     pub(crate) freshness: RuntimeComputeFreshness,
     pub(crate) inventory: Option<RuntimeAdapterComputeInventory>,
@@ -146,6 +146,7 @@ impl EnterpriseLedger {
         }
     }
 
+    #[allow(dead_code)] // Read by the staged admin API after Issue #29.
     pub(crate) async fn latest_runtime_compute_inventory(
         &self,
         adapter_id: &str,

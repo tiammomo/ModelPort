@@ -27,6 +27,18 @@ potentially paid request. Health semantics are documented below.
 
 For a release or production trial, use [Production](PRODUCTION.md).
 
+## Runtime Adapter Collection
+
+Configured Runtime Adapters are polled by a provider-neutral, read-only
+background collector. Each enabled adapter is attempted immediately at
+startup, then on its configured interval. A shared concurrency bound prevents
+an adapter fleet from exhausting the process; a failing adapter is isolated
+with bounded backoff and sanitized error logging. Accepted Compute inventories
+are immutable ledger evidence, while `fresh`, `stale`, and `unavailable` remain
+server-owned projections. Shutdown stops new collection attempts and drains
+active attempts within a bounded timeout. The collector grants no Runtime
+Adapter mutation authority and does not expose an admin API.
+
 ## Health Semantics
 
 - `/livez` proves that the HTTP process can answer. It does not inspect storage

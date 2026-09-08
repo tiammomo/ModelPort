@@ -25,6 +25,7 @@ use crate::{
         self, AppState, GatewaySecurityPolicy, RateLimiter, RetentionPreviewStore,
         TrustedProxyConfig,
     },
+    runtime_adapter::collector::RuntimeAdapterCollector,
     smart_router::SmartRouter,
     version,
 };
@@ -91,6 +92,12 @@ pub(crate) async fn serve() -> Result<(), AppError> {
 
     state.oidc.validate_console_access(&state.auth)?;
     let listener = TcpListener::bind(bind_addr).await?;
+    let collector = RuntimeAdapterCollector::start(
+        config.runtime_adapters.clone(),
+        state.ledger.clone(),
+        state.metrics.clone(),
+        draining.clone(),
+    )?;
     info!(
         %bind_addr,
         version = version::VERSION,
@@ -99,12 +106,21 @@ pub(crate) async fn serve() -> Result<(), AppError> {
         "ModelPort listening"
     );
 
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
         routes::router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal(draining))
-    .await?;
+    .await;
+
+    let collector_timeout = runtime_adapter_collector_drain_timeout();
+    if !collector.shutdown(collector_timeout).await {
+        warn!(
+            timeout_seconds = collector_timeout.as_secs(),
+            "timed out draining Runtime Adapter collection tasks during shutdown"
+        );
+    }
+    serve_result?;
 
     let drain_timeout = finalization_drain_timeout();
     if !finalizers.drain(drain_timeout).await {
@@ -134,6 +150,10 @@ fn finalization_drain_timeout() -> Duration {
             .unwrap_or(30)
             .max(1),
     )
+}
+
+fn runtime_adapter_collector_drain_timeout() -> Duration {
+    Duration::from_secs(10)
 }
 
 async fn shutdown_signal(draining: Arc<AtomicBool>) {

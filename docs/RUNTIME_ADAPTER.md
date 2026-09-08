@@ -3,8 +3,9 @@
 ModelPort publishes versioned, read-only discovery and Compute Node/GPU
 observation contracts for external inference runtimes. The shipped v1alpha1
 artifacts include wire contracts, offline validators, and a reusable
-authenticated collection client. They do not expose a persisted inventory API,
-reconciler, or mutation endpoint.
+authenticated collection client. The external contract does not define an
+admin API, reconciler, or mutation endpoint; ModelPort separately persists
+validated observations and schedules bounded read-only collection.
 
 ## Contract Files
 
@@ -49,6 +50,15 @@ conflicting reuse of an adapter snapshot identity or observation timestamp is
 rejected. The latest query derives `fresh`, `stale`, or `unavailable` from the
 validated observation time, server time, and a bounded server-owned policy.
 Derived state never changes the stored Runtime Adapter document.
+
+When an enabled adapter is configured, ModelPort starts a bounded background
+collector. It performs an immediate capabilities-first Compute read, persists
+validated observations, then polls at the configured interval. Failed adapters
+use bounded exponential backoff and do not stop healthy adapters; collection is
+read-only and stops with the server during graceful shutdown. Collector metrics
+contain only adapter IDs and bounded error classes. This collector does not add
+an admin API, mutation operation, GPU control, or provider-specific runtime
+management.
 
 ## Capability Rules
 
@@ -108,8 +118,8 @@ reinterpreted across versions. Additive experimental data belongs in
 `local-inference-stack` checker remains an explicitly selected compatibility
 mode, not the source of this contract.
 
-Configuration integration, collection scheduling, retention, admin APIs, and
-all writes remain deferred to reviewed Issues. Offline
+Retention, admin APIs, and all Runtime Adapter mutation operations remain
+deferred to reviewed Issues. Offline
 validation cannot start a process, download a model, access a GPU, or call a
 network endpoint; the collection client performs only the two advertised safe
 reads requested by its caller.

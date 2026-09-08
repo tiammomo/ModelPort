@@ -81,7 +81,6 @@ struct MemoryLedger {
     usage_reservations: HashMap<String, MemoryUsageReservation>,
     budget_events: Vec<EnterpriseBudgetEvent>,
     audit_events: Vec<EnterpriseAuditEvent>,
-    #[allow(dead_code)] // Used by the staged collection integration after this storage seam.
     runtime_compute_snapshots: HashMap<(String, String), compute_inventory::MemoryComputeSnapshot>,
     ops_incidents: BTreeMap<String, OpsIncidentDetail>,
     ops_event_index: HashMap<String, String>,

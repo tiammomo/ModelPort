@@ -5,6 +5,12 @@ All notable ModelPort changes are recorded here. The project follows
 
 ## [Unreleased]
 
+### Runtime Adapter collection
+
+- Collect validated Compute inventory immediately and periodically for every
+  enabled Runtime Adapter, with per-adapter isolation, a shared concurrency
+  bound, sanitized metrics and logs, bounded retry, and graceful shutdown.
+
 ## [0.1.3] - 2026-09-07
 
 ### Release correction

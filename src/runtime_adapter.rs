@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::AppError;
 
 mod client;
+pub(crate) mod collector;
 
 pub use client::{
     RuntimeAdapterClient, RuntimeAdapterClientConfig, RuntimeAdapterComputeObservation,

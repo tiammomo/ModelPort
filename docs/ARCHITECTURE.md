@@ -101,11 +101,11 @@ they are not eight top-level navigation entries:
 | --- | --- | --- | --- |
 | Models | Catalog identities, capabilities, limits, compatibility, and rate cards | Models | Partial: Provider-scoped inventory and logical catalog ship today |
 | Providers | Hosted/local connectivity, credentials, account pools, health, and trust policy | Providers | Implemented under Settings and model views |
-| Compute | Compute Nodes, GPUs, capacity observations, labels, freshness, and provenance | Compute | Target; no first-class inventory yet |
+| Compute | Compute Nodes, GPUs, capacity observations, labels, freshness, and provenance | Compute | Partial: validated snapshot persistence and bounded collection ship; admin presentation remains a target |
 | Deployments | Model/runtime/compute binding, endpoint, desired state, observed state, and reconciliation | Deployments | Target; local endpoints are currently configured as Providers |
 | Routing | Logical models, aliases, eligibility, fallback, smart decisions, and evidence | Routing | Implemented, with some controls under Settings and Governance |
 | Governance | Users, teams, keys, policies, quotas, budgets, and approvals | Governance | Implemented |
-| Observability | Requests, attempts, usage, cost, latency, GPU/runtime telemetry, and retained evidence | Observability | Partial: request and Provider evidence ship; compute telemetry is target |
+| Observability | Requests, attempts, usage, cost, latency, GPU/runtime telemetry, and retained evidence | Observability | Partial: request, Provider, and bounded Runtime Adapter collection metrics ship; compute dashboards remain a target |
 | Operations | Readiness, incidents, backup, retention, upgrades, diagnostics, and reconciliation | Operations | Implemented for gateway operations; deployment operations are target |
 
 This mapping is an information architecture contract, not a requirement to
@@ -290,7 +290,8 @@ boundary. Its adapter identities, discovery origins, credentials, and
 collection/freshness policy do not participate in inference Provider routing
 or inherit development-harness metadata. Enabled entries are validated and
 their environment-backed credentials resolved at configuration load; polling
-and inventory presentation are separate lifecycle slices.
+is a bounded server lifecycle, while inventory presentation remains a separate
+admin API slice.
 
 Dashboard changes to control-plane records are persisted. They do not rewrite
 `.env` or `config.toml`.
