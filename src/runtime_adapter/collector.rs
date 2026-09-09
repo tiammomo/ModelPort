@@ -25,7 +25,12 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 pub(crate) struct RuntimeAdapterCollector {
     draining: Arc<AtomicBool>,
     wake: Arc<Notify>,
-    tasks: Vec<JoinHandle<()>>,
+    tasks: Vec<CollectionTask>,
+}
+
+struct CollectionTask {
+    adapter_id: String,
+    handle: JoinHandle<()>,
 }
 
 impl RuntimeAdapterCollector {
@@ -47,16 +52,19 @@ impl RuntimeAdapterCollector {
         let mut tasks = Vec::with_capacity(clients.len());
 
         for (adapter_id, client, poll_interval) in clients {
-            tasks.push(tokio::spawn(collection_loop(
-                adapter_id,
-                client,
-                poll_interval,
-                Arc::clone(&ledger),
-                Arc::clone(&metrics),
-                Arc::clone(&permits),
-                Arc::clone(&draining),
-                Arc::clone(&wake),
-            )));
+            tasks.push(CollectionTask {
+                adapter_id: adapter_id.clone(),
+                handle: tokio::spawn(collection_loop(
+                    adapter_id,
+                    client,
+                    poll_interval,
+                    Arc::clone(&ledger),
+                    Arc::clone(&metrics),
+                    Arc::clone(&permits),
+                    Arc::clone(&draining),
+                    Arc::clone(&wake),
+                )),
+            });
         }
 
         Ok(Self {
@@ -70,16 +78,24 @@ impl RuntimeAdapterCollector {
         self.draining.store(true, Ordering::Release);
         self.wake.notify_waiters();
         let deadline = tokio::time::Instant::now() + timeout;
-        while let Some(mut task) = self.tasks.pop() {
-            match tokio::time::timeout_at(deadline, &mut task).await {
+        while let Some(CollectionTask {
+            adapter_id,
+            mut handle,
+        }) = self.tasks.pop()
+        {
+            match tokio::time::timeout_at(deadline, &mut handle).await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    warn!(error = %error, "Runtime Adapter collector task failed to join");
+                Ok(Err(_)) => {
+                    warn!(
+                        adapter_id,
+                        error_class = "task_join",
+                        "Runtime Adapter collector task failed to join"
+                    );
                 }
                 Err(_) => {
-                    task.abort();
+                    handle.abort();
                     for pending in &self.tasks {
-                        pending.abort();
+                        pending.handle.abort();
                     }
                     return false;
                 }
@@ -118,18 +134,19 @@ async fn collection_loop(
             break;
         }
 
+        metrics.record_runtime_adapter_collection_attempt(&adapter_id);
         let result = collect_once(&client, &ledger).await;
         drop(permit);
         let delay = match result {
-            Ok(()) => {
+            Ok(_) => {
                 consecutive_failures = 0;
-                metrics.record_runtime_adapter_collection(&adapter_id, Ok(()));
+                metrics.record_runtime_adapter_collection_result(&adapter_id, Ok(()));
                 poll_interval
             }
             Err(error) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let error_class = log_collection_failure(&adapter_id, &error);
-                metrics.record_runtime_adapter_collection(&adapter_id, Err(error_class));
+                metrics.record_runtime_adapter_collection_result(&adapter_id, Err(error_class));
                 retry_delay(&adapter_id, consecutive_failures, poll_interval)
             }
         };
@@ -150,12 +167,11 @@ async fn collection_loop(
 async fn collect_once(
     client: &RuntimeAdapterClient,
     ledger: &EnterpriseLedger,
-) -> Result<(), AppError> {
+) -> Result<crate::enterprise_ledger::compute_inventory::RuntimeComputeSnapshotWrite, AppError> {
     let observation = client.collect_compute_inventory().await?;
     ledger
         .persist_runtime_compute_inventory(&observation.inventory)
-        .await?;
-    Ok(())
+        .await
 }
 
 fn log_collection_failure(adapter_id: &str, error: &AppError) -> &'static str {
@@ -169,17 +185,24 @@ fn log_collection_failure(adapter_id: &str, error: &AppError) -> &'static str {
 
 fn retry_delay(adapter_id: &str, consecutive_failures: u32, poll_interval: Duration) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(5);
-    let base = Duration::from_secs(1_u64 << exponent);
     let cap = poll_interval.min(MAX_BACKOFF);
-    let base = base.min(cap);
-    let jitter_window_ms = (base.as_millis() / 4).max(1);
-    // Stable per-adapter jitter keeps tests deterministic while de-synchronizing the fleet.
-    let hash = adapter_id.bytes().fold(0_u64, |value, byte| {
-        value.wrapping_mul(31).wrapping_add(u64::from(byte))
-    });
-    let jitter_ms = u64::try_from(u128::from(hash) % jitter_window_ms).unwrap_or(0);
-    base.saturating_add(Duration::from_millis(jitter_ms))
-        .min(cap)
+    let nominal = Duration::from_secs(1_u64 << exponent).min(cap);
+    // An 80-100% factor preserves jitter at the cap instead of truncating it away.
+    let hash = adapter_id
+        .bytes()
+        .fold(u64::from(consecutive_failures), |value, byte| {
+            value.wrapping_mul(31).wrapping_add(u64::from(byte))
+        });
+    let factor_basis_points = 8_000_u64.saturating_add(hash % 2_000);
+    let nominal_ms = u64::try_from(nominal.as_millis()).unwrap_or(u64::MAX);
+    Duration::from_millis(
+        nominal_ms
+            .saturating_mul(factor_basis_points)
+            .checked_div(10_000)
+            .unwrap_or(nominal_ms)
+            .max(1),
+    )
+    .min(cap)
 }
 
 #[cfg(test)]
@@ -307,10 +330,22 @@ mod tests {
 
     #[test]
     fn retry_backoff_is_bounded_and_deterministic() {
-        let first = retry_delay("edge-1", 1, Duration::from_secs(10));
-        assert_eq!(first, retry_delay("edge-1", 1, Duration::from_secs(10)));
-        assert!(first >= Duration::from_secs(1));
-        assert!(retry_delay("edge-1", 20, Duration::from_secs(10)) <= Duration::from_secs(10));
+        let delays = (1..=5)
+            .map(|failure| retry_delay("edge-1", failure, Duration::from_secs(20)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delays,
+            (1..=5)
+                .map(|failure| retry_delay("edge-1", failure, Duration::from_secs(20)))
+                .collect::<Vec<_>>()
+        );
+        assert!(delays[0] >= Duration::from_millis(800));
+        assert!(delays[0] < Duration::from_secs(1));
+        assert!(delays.windows(2).all(|pair| pair[1] >= pair[0]));
+        let capped = retry_delay("edge-1", 20, Duration::from_secs(10));
+        assert!((Duration::from_secs(8)..Duration::from_secs(10)).contains(&capped));
+        assert_ne!(capped, retry_delay("edge-1", 21, Duration::from_secs(10)));
+        assert_ne!(capped, retry_delay("edge-2", 20, Duration::from_secs(10)));
     }
 
     #[tokio::test]
@@ -337,18 +372,24 @@ mod tests {
         )
         .await;
         let ledger = Arc::new(EnterpriseLedger::memory());
+        let metrics = Arc::new(Metrics::new());
         let collector = RuntimeAdapterCollector::start(
             BTreeMap::from([(
                 "drain-adapter".to_owned(),
                 adapter_config("drain-adapter", base_url, Duration::from_millis(1)),
             )]),
             Arc::clone(&ledger),
-            Arc::new(Metrics::new()),
+            Arc::clone(&metrics),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
 
         wait_until(Duration::from_secs(1), || !calls.lock().unwrap().is_empty()).await;
+        assert!(metrics.render_prometheus().lines().any(|line| {
+            line.starts_with(
+                "modelport_runtime_adapter_collection_last_attempt_timestamp_seconds{adapter_id=\"drain-adapter\"}",
+            )
+        }));
         let started = std::time::Instant::now();
         assert!(collector.shutdown(Duration::from_secs(1)).await);
         assert!(started.elapsed() >= Duration::from_millis(50));
@@ -389,6 +430,79 @@ mod tests {
         assert!(!collector.shutdown(Duration::from_millis(20)).await);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(*calls.lock().unwrap(), vec!["capabilities"]);
+    }
+
+    #[tokio::test]
+    async fn collect_once_preserves_snapshot_idempotency() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let base_url = spawn_adapter(
+            "idempotent-adapter",
+            Arc::clone(&calls),
+            Arc::default(),
+            Duration::ZERO,
+            false,
+        )
+        .await;
+        let client_config =
+            adapter_config("idempotent-adapter", base_url, Duration::from_secs(60)).client_config;
+        let client = RuntimeAdapterClient::new(client_config).unwrap();
+        let ledger = EnterpriseLedger::memory();
+
+        assert_eq!(
+            collect_once(&client, &ledger).await.unwrap(),
+            crate::enterprise_ledger::compute_inventory::RuntimeComputeSnapshotWrite::Inserted
+        );
+        assert_eq!(
+            collect_once(&client, &ledger).await.unwrap(),
+            crate::enterprise_ledger::compute_inventory::RuntimeComputeSnapshotWrite::Idempotent
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_state_collector_persists_validated_inventory() {
+        let Ok(database_url) = std::env::var("MODELPORT_TEST_DATABASE_URL") else {
+            return;
+        };
+        let adapter_id = format!("postgres-{}", uuid::Uuid::new_v4().simple());
+        let base_url = spawn_adapter(
+            &adapter_id,
+            Arc::default(),
+            Arc::default(),
+            Duration::ZERO,
+            false,
+        )
+        .await;
+        let ledger = Arc::new(
+            EnterpriseLedger::postgres_for_tests(&database_url)
+                .await
+                .unwrap(),
+        );
+        let collector = RuntimeAdapterCollector::start(
+            BTreeMap::from([(
+                adapter_id.clone(),
+                adapter_config(&adapter_id, base_url, Duration::from_secs(60)),
+            )]),
+            Arc::clone(&ledger),
+            Arc::new(Metrics::new()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let state = ledger
+                    .latest_runtime_compute_inventory(&adapter_id, Duration::from_secs(90))
+                    .await
+                    .unwrap();
+                if state.inventory.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(collector.shutdown(Duration::from_secs(1)).await);
     }
 
     #[test]
@@ -497,9 +611,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_adapter_does_not_block_a_healthy_adapter() {
+        let healthy_calls = Arc::new(Mutex::new(Vec::new()));
+        let failing_calls = Arc::new(Mutex::new(Vec::new()));
         let healthy_url = spawn_adapter(
             "healthy-adapter",
-            Arc::default(),
+            Arc::clone(&healthy_calls),
             Arc::default(),
             Duration::ZERO,
             false,
@@ -507,7 +623,7 @@ mod tests {
         .await;
         let failing_url = spawn_adapter(
             "failing-adapter",
-            Arc::default(),
+            Arc::clone(&failing_calls),
             Arc::default(),
             Duration::ZERO,
             true,
@@ -523,7 +639,7 @@ mod tests {
                 ),
                 (
                     "healthy-adapter".to_owned(),
-                    adapter_config("healthy-adapter", healthy_url, Duration::from_secs(60)),
+                    adapter_config("healthy-adapter", healthy_url, Duration::from_millis(20)),
                 ),
             ]),
             Arc::clone(&ledger),
@@ -554,7 +670,45 @@ mod tests {
         })
         .await
         .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(healthy_calls.lock().unwrap().len() >= 4);
+        assert_eq!(failing_calls.lock().unwrap().len(), 1);
         assert!(collector.shutdown(Duration::from_secs(1)).await);
+    }
+
+    #[test]
+    fn shutdown_join_failure_logs_only_a_bounded_class() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(CapturedWriter(Arc::clone(&captured)))
+            .finish();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let task = tokio::spawn(async {
+                    panic!("secret join payload");
+                });
+                tokio::task::yield_now().await;
+                let collector = RuntimeAdapterCollector {
+                    draining: Arc::new(AtomicBool::new(false)),
+                    wake: Arc::new(Notify::new()),
+                    tasks: vec![CollectionTask {
+                        adapter_id: "join-adapter".to_owned(),
+                        handle: task,
+                    }],
+                };
+                assert!(collector.shutdown(Duration::from_secs(1)).await);
+            });
+        });
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("join-adapter"));
+        assert!(output.contains("task_join"));
+        assert!(!output.contains("secret join payload"));
     }
 
     fn adapter_config(

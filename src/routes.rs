@@ -1539,7 +1539,7 @@ async fn admin_reload_config(
         "issues": issues,
         "reloadScope": {
             "applied": ["provider catalog", "base provider keys", "base urls", "model lists", "aliases", "legacy client auth token"],
-            "requiresRestart": ["bind address", "request body limit", "concurrency layer", "rate limits", "HTTP client timeouts", "trusted proxies", "security flags", "admin session and cookie settings", "storage", "new credential-profile environment variables"],
+            "requiresRestart": ["bind address", "request body limit", "concurrency layer", "rate limits", "HTTP client timeouts", "trusted proxies", "security flags", "admin session and cookie settings", "storage", "Runtime Adapter registry and collection policy", "new credential-profile environment variables"],
         },
     })))
 }
@@ -6425,6 +6425,12 @@ data: [DONE]
         assert_eq!(body["providerCount"], json!(2));
         assert_eq!(body["settings"]["gateway"]["providerOrder"][1], "custom");
         assert_eq!(body["reloadScope"]["requiresRestart"][0], "bind address");
+        assert!(
+            body["reloadScope"]["requiresRestart"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("Runtime Adapter registry and collection policy"))
+        );
     }
 
     #[test]

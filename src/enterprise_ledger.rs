@@ -881,7 +881,7 @@ impl EnterpriseLedger {
     }
 
     #[cfg(test)]
-    async fn postgres_for_tests(database_url: &str) -> Result<Self, AppError> {
+    pub(crate) async fn postgres_for_tests(database_url: &str) -> Result<Self, AppError> {
         let pool = connect_pool(database_url, Some(4)).await?;
         sqlx::migrate!("./migrations")
             .run(&pool)

@@ -103,7 +103,6 @@ struct RuntimeAdapterCollectionMetrics {
     successes_total: u64,
     failures_total: BTreeMap<String, u64>,
     last_attempt_timestamp_seconds: u64,
-    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -218,7 +217,19 @@ impl Metrics {
         }
     }
 
-    pub(crate) fn record_runtime_adapter_collection(
+    pub(crate) fn record_runtime_adapter_collection_attempt(&self, adapter_id: &str) {
+        let mut inner = self.inner.lock().expect("metrics lock poisoned");
+        inner
+            .runtime_adapter_collections
+            .entry(adapter_id.to_owned())
+            .or_default()
+            .last_attempt_timestamp_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+    }
+
+    pub(crate) fn record_runtime_adapter_collection_result(
         &self,
         adapter_id: &str,
         result: Result<(), &'static str>,
@@ -228,19 +239,13 @@ impl Metrics {
             .runtime_adapter_collections
             .entry(adapter_id.to_owned())
             .or_default();
-        metrics.last_attempt_timestamp_seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
         match result {
             Ok(()) => {
                 metrics.successes_total = metrics.successes_total.saturating_add(1);
-                metrics.last_error = None;
             }
             Err(error) => {
                 let failures = metrics.failures_total.entry(error.to_owned()).or_default();
                 *failures = failures.saturating_add(1);
-                metrics.last_error = Some(error.to_owned());
             }
         }
     }
@@ -621,8 +626,10 @@ mod tests {
         metrics.record_rejection("messages", "validation", "invalid_request");
         metrics.record_ledger_operation("request_finalization", false);
         metrics.record_reconciliation(2, 3);
-        metrics.record_runtime_adapter_collection("edge-1", Err("transport"));
-        metrics.record_runtime_adapter_collection("edge-1", Ok(()));
+        metrics.record_runtime_adapter_collection_attempt("edge-1");
+        metrics.record_runtime_adapter_collection_result("edge-1", Err("transport"));
+        metrics.record_runtime_adapter_collection_attempt("edge-1");
+        metrics.record_runtime_adapter_collection_result("edge-1", Ok(()));
         metrics.record_routing_decision("shadow", "balanced", "mimo", true);
         metrics.record_message(
             MessageMetricLabels {
@@ -698,6 +705,23 @@ mod tests {
         assert!(rendered.contains(
             r#"modelport_runtime_adapter_collection_failures_total{adapter_id="edge-1",error="transport"} 1"#
         ));
+        let last_attempt = rendered
+            .lines()
+            .find(|line| {
+                line.starts_with(
+                    "modelport_runtime_adapter_collection_last_attempt_timestamp_seconds{adapter_id=\"edge-1\"}",
+                )
+            })
+            .expect("runtime adapter last-attempt metric");
+        assert!(
+            last_attempt
+                .rsplit_once(' ')
+                .unwrap()
+                .1
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
         assert!(rendered.contains(
             r#"modelport_routing_decisions_total{mode="shadow",profile="balanced",provider="mimo"} 1"#
         ));

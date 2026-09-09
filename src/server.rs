@@ -93,7 +93,7 @@ pub(crate) async fn serve() -> Result<(), AppError> {
     state.oidc.validate_console_access(&state.auth)?;
     let listener = TcpListener::bind(bind_addr).await?;
     let collector = RuntimeAdapterCollector::start(
-        config.runtime_adapters.clone(),
+        state.config.snapshot().runtime_adapters,
         state.ledger.clone(),
         state.metrics.clone(),
         draining.clone(),

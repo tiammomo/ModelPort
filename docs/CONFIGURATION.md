@@ -64,9 +64,11 @@ is never part of the TOML document or a serializable configuration type.
 must cover at least one polling interval. Disabled declarations are inert:
 their endpoint and credential are neither required nor resolved. Duplicate
 TOML adapter tables, invalid enabled declarations, missing credentials, and a
-registry over 64 entries fail configuration loading closed. This registry does
-not start polling; background collection and admin inventory APIs remain
-separate reviewed work.
+registry over 64 entries fail configuration loading closed. At server startup,
+each enabled entry receives a supervised, read-only collection loop with an
+immediate capabilities-first attempt and bounded periodic retry. Registry,
+credential, polling, and stale-after changes require a process restart; an
+admin inventory API remains separate reviewed work.
 
 ## Required Minimum: DeepSeek-Only Example
 
@@ -992,6 +994,7 @@ lossless, but its configured output limits are still enforced.
 | Trusted proxies, health exposure, private/insecure-URL policy, CSRF/origin policy | No | Yes |
 | Admin bootstrap, session TTL, secure-cookie flag | No | Yes |
 | Storage backend or state paths | No | Yes |
+| Runtime Adapter registry, credentials, polling interval, or stale-after policy | No | Yes |
 
 Reload from the dashboard Operations tab or restart the service. A successful
 reload validates the new base snapshot but does not mutate `.env` or TOML.

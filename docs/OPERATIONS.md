@@ -36,8 +36,9 @@ an adapter fleet from exhausting the process; a failing adapter is isolated
 with bounded backoff and sanitized error logging. Accepted Compute inventories
 are immutable ledger evidence, while `fresh`, `stale`, and `unavailable` remain
 server-owned projections. Shutdown stops new collection attempts and drains
-active attempts within a bounded timeout. The collector grants no Runtime
-Adapter mutation authority and does not expose an admin API.
+active attempts for up to 10 seconds before emitting a sanitized warning. The
+collector grants no Runtime Adapter mutation authority and does not expose an
+admin API.
 
 ## Health Semantics
 
@@ -465,10 +466,12 @@ is process-local and requires restart/recreate after a configuration change.
 ## Configuration Reload
 
 The dashboard Operations tab can reload the base configuration. Provider,
-model, alias, and route values can update for new requests. Process layers,
-security policies, transport settings, storage, sessions, and newly introduced
-process environment variables require a restart. Use the full matrix in
-[Configuration](CONFIGURATION.md#reload-versus-restart).
+model, alias, and route values can update for new requests. Runtime Adapter
+registry and collection-policy changes require a restart so the supervised
+loops and their credentials stay aligned with the active process. Process
+layers, security policies, transport settings, storage, sessions, and newly
+introduced process environment variables also require a restart. Use the full
+matrix in [Configuration](CONFIGURATION.md#reload-versus-restart).
 
 Dashboard Settings exposes effective server/auth/rate values as read-only
 runtime facts. Default provider and provider order remain runtime control-plane
