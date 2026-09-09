@@ -26,6 +26,7 @@ strip = "symbols"
 async-stream = "0.3"
 argon2 = "0.5"
 axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 futures-util = "0.3"
 httpdate = "1"
 jsonschema = { version = "0.48", default-features = false }

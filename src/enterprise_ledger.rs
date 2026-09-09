@@ -42,6 +42,8 @@ use crate::{
     usage::{current_period, quota_increment},
 };
 
+pub(crate) mod compute_inventory;
+
 const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 const DEFAULT_RECONCILE_INTERVAL_SECS: u64 = 60;
 const MIN_LEASE_TTL_SECS: u64 = 30;
@@ -79,6 +81,7 @@ struct MemoryLedger {
     usage_reservations: HashMap<String, MemoryUsageReservation>,
     budget_events: Vec<EnterpriseBudgetEvent>,
     audit_events: Vec<EnterpriseAuditEvent>,
+    runtime_compute_snapshots: HashMap<(String, String), compute_inventory::MemoryComputeSnapshot>,
     ops_incidents: BTreeMap<String, OpsIncidentDetail>,
     ops_event_index: HashMap<String, String>,
     ops_heartbeats: BTreeMap<String, OpsHeartbeat>,
@@ -878,7 +881,7 @@ impl EnterpriseLedger {
     }
 
     #[cfg(test)]
-    async fn postgres_for_tests(database_url: &str) -> Result<Self, AppError> {
+    pub(crate) async fn postgres_for_tests(database_url: &str) -> Result<Self, AppError> {
         let pool = connect_pool(database_url, Some(4)).await?;
         sqlx::migrate!("./migrations")
             .run(&pool)

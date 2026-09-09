@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::AppError;
 
 mod client;
+pub(crate) mod collector;
 
 pub use client::{
     RuntimeAdapterClient, RuntimeAdapterClientConfig, RuntimeAdapterComputeObservation,
@@ -18,6 +19,17 @@ pub const RUNTIME_ADAPTER_CAPABILITIES_SCHEMA: &str =
     include_str!("../resources/schemas/runtime-adapter-capabilities-v1alpha1.schema.json");
 pub const RUNTIME_ADAPTER_COMPUTE_INVENTORY_SCHEMA: &str =
     include_str!("../resources/schemas/runtime-adapter-compute-inventory-v1alpha1.schema.json");
+
+pub(crate) fn is_valid_runtime_adapter_id(adapter_id: &str) -> bool {
+    let bytes = adapter_id.as_bytes();
+    let edge = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    (1..=63).contains(&bytes.len())
+        && edge(bytes[0])
+        && edge(bytes[bytes.len() - 1])
+        && bytes
+            .iter()
+            .all(|byte| edge(*byte) || matches!(byte, b'.' | b'_' | b'-'))
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
