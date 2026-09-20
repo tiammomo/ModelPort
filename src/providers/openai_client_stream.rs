@@ -563,6 +563,7 @@ fn compact_json(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use axum::response::IntoResponse;
     use futures_util::{StreamExt, stream};
 
     use crate::http::SseFrame;
@@ -608,5 +609,77 @@ mod tests {
             crate::stream_lifecycle::UpstreamStreamState::Completed
         );
         assert_eq!(lifecycle.usage().map(|usage| usage.output_tokens), Some(2));
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_tool_block_indexes_map_to_openai_tool_indexes() {
+        let frames: SseFrameStream = Box::pin(stream::iter(vec![
+            Ok(frame(
+                r#"{"type":"message_start","message":{"id":"msg_1"}}"#,
+            )),
+            Ok(frame(
+                r#"{"type":"content_block_start","index":7,"content_block":{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}}"#,
+            )),
+            Ok(frame(
+                r#"{"type":"content_block_delta","index":7,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}"#,
+            )),
+            Ok(frame(
+                r#"{"type":"content_block_delta","index":7,"delta":{"type":"input_json_delta","partial_json":"\"Shanghai\"}"}}"#,
+            )),
+            Ok(frame(
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+            )),
+            Ok(frame(r#"{"type":"message_stop"}"#)),
+        ]));
+
+        let lifecycle = StreamLifecycle::new();
+
+        let events = anthropic_stream_to_openai(
+            frames,
+            "virtual-model".to_owned(),
+            false,
+            lifecycle.clone(),
+        );
+        let response = axum::response::sse::Sse::new(events).into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE body should render");
+        let stream = String::from_utf8(body.to_vec()).expect("SSE body should be UTF-8");
+        let payloads = stream
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        assert!(payloads.iter().any(|data| data == "[DONE]"));
+
+        let tool_start = payloads
+            .iter()
+            .find(|data| data.contains(r#""id":"toolu_1""#))
+            .expect("tool start chunk should be emitted");
+        assert!(tool_start.contains(r#""index":0"#));
+        assert!(tool_start.contains(r#""name":"weather""#));
+
+        let argument_chunks = payloads
+            .iter()
+            .filter(|data| data.contains(r#""arguments""#) && !data.contains(r#""id":"toolu_1""#))
+            .collect::<Vec<_>>();
+        assert_eq!(argument_chunks.len(), 2);
+        assert!(
+            argument_chunks
+                .iter()
+                .all(|data| data.contains(r#""index":0"#))
+        );
+
+        let finish = payloads
+            .iter()
+            .find(|data| data.contains(r#""finish_reason":"tool_calls""#))
+            .expect("tool use stop reason should map to OpenAI tool_calls");
+        assert!(finish.contains(r#""delta":{}"#));
+
+        assert_eq!(
+            lifecycle.state(),
+            crate::stream_lifecycle::UpstreamStreamState::Completed
+        );
     }
 }
